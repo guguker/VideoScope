@@ -44,7 +44,7 @@ def _belongs_to_cluster(hit: EvidenceHit, cluster: list[EvidenceHit], tolerance:
 
 
 def calibrate_hits(hits: list[EvidenceHit], *, rank_blend: float = 0.16) -> list[EvidenceHit]:
-    """Blend incomparable model scores with rank inside each modality."""
+    """Объединяет несопоставимые оценки моделей с учётом ранга внутри каждой модальности."""
     grouped: dict[str, list[EvidenceHit]] = {}
     for hit in hits:
         grouped.setdefault(hit.modality, []).append(hit)
@@ -80,7 +80,7 @@ def _score(
     weights = modality_weights or MODALITY_WEIGHTS
     for hit in cluster:
         weight = weights.get(hit.modality, MODALITY_WEIGHTS.get(hit.modality, 0.75))
-        # Intent weights are ranking priors, not confidence multipliers.
+        # Веса, заданные типом запроса, — априорные приоритеты, а не множители уверенности.
         gain = 0.75 + 0.25 * max(0.0, min(2.0, weight))
         weighted_sum += max(0.0, min(1.0, hit.score)) * gain
     average = weighted_sum / len(cluster) if cluster else 0.0

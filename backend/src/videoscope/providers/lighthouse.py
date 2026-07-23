@@ -38,7 +38,7 @@ class LighthouseRetriever:
         except Exception:
             from videoscope.providers.lighthouse_qdetr import QDDETRPredictor
 
-            return QDDETRPredictor, "VideoScope CLIP compatibility adapter"
+            return QDDETRPredictor, "адаптер совместимости VideoScope с CLIP"
 
     def status(self) -> ProviderStatus:
         if self.checkpoint is None or not self.checkpoint.is_file():
@@ -56,14 +56,15 @@ class LighthouseRetriever:
                 self.id,
                 "Lighthouse QD-DETR",
                 ProviderState.UNAVAILABLE,
-                "Lighthouse is not installed",
+                "Lighthouse не установлен",
                 optional=True,
             )
         return ProviderStatus(
             self.id,
             "Lighthouse QD-DETR",
             ProviderState.READY,
-            f"CPU inference with CLIP features, 150 second windows ({implementation})",
+            f"Обработка на CPU с признаками CLIP и окнами по 150 секунд "
+            f"({implementation})",
             optional=True,
         )
 

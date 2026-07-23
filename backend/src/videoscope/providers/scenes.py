@@ -63,13 +63,13 @@ class SceneDetector:
                 self.id,
                 "PySceneDetect",
                 ProviderState.UNAVAILABLE,
-                "Python package is not installed",
+                "Пакет Python не установлен",
             )
         return ProviderStatus(
             self.id,
             "PySceneDetect",
             ProviderState.READY,
-            "Adaptive scene boundary detection",
+            "Адаптивное определение границ сцен",
         )
 
     def detect(self, source: Path, duration: float) -> list[tuple[float, float]]:
@@ -88,4 +88,3 @@ class SceneDetector:
             duration=duration,
             max_scene_seconds=self.max_scene_seconds,
         )
-

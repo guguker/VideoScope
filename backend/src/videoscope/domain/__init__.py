@@ -1,2 +1,1 @@
-"""Domain models and pure business rules."""
-
+"""Модели предметной области и чистые бизнес-правила."""

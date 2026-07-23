@@ -74,7 +74,7 @@ export function LibraryPanel({
       await onRename(video, name)
       cancelRename()
     } catch {
-      // App displays the API error in a toast; keep the editor open for correction.
+      // Приложение показывает ошибку API во всплывающем сообщении; оставляем редактор открытым.
     } finally {
       setSaving(false)
     }

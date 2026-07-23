@@ -10,7 +10,7 @@ import numpy as np
 
 
 class HashEmbedding:
-    """Deterministic local fallback based on word and character features."""
+    """Детерминированный локальный резервный вариант на основе признаков слов и символов."""
 
     def __init__(self, dimensions: int = 384) -> None:
         if dimensions < 16:
@@ -44,7 +44,7 @@ class HashEmbedding:
 
 
 class SemanticEmbedding:
-    """FastEmbed with a deterministic offline fallback."""
+    """FastEmbed с детерминированным автономным резервным вариантом."""
 
     def __init__(
         self,

@@ -16,7 +16,7 @@ def merge_timed_text(
     max_duration: float = 14.0,
     max_gap: float = 1.25,
 ) -> list[TimedText]:
-    """Build retrieval-sized speech windows instead of embedding stray words."""
+    """Формирует пригодные для поиска фрагменты речи вместо векторизации отдельных слов."""
     merged: list[TimedText] = []
     group: list[TimedText] = []
 

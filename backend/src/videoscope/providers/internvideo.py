@@ -30,7 +30,7 @@ class HTTPClient(Protocol):
 
 
 class InternVideoReranker:
-    """Optional GPU reranker using an InternVideo 2.5 inference endpoint."""
+    """Необязательный модуль повторного ранжирования на GPU через сервис вывода InternVideo 2.5."""
 
     id = "internvideo"
     model_name = "OpenGVLab/InternVideo2_5_Chat_8B"
@@ -64,14 +64,15 @@ class InternVideoReranker:
                 self.id,
                 "InternVideo 2.5",
                 ProviderState.NEEDS_CONFIGURATION,
-                "Optional 8B GPU reranker; configure INTERNVIDEO_ENDPOINT",
+                "Необязательное повторное ранжирование на GPU (8 млрд параметров); "
+                "задайте INTERNVIDEO_ENDPOINT",
                 optional=True,
             )
         return ProviderStatus(
             self.id,
             "InternVideo 2.5",
             ProviderState.READY,
-            f"GPU candidate reranker: {self.model_name}",
+            f"Повторное ранжирование кандидатов на GPU: {self.model_name}",
             optional=True,
         )
 

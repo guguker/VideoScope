@@ -13,7 +13,7 @@ from videoscope.search.fusion import EvidenceHit
 
 
 class SiglipVisualIndex:
-    """Multilingual frame-to-text retrieval backed by SigLIP 2."""
+    """Многоязычный поиск соответствий между кадрами и текстом на базе SigLIP 2."""
 
     id = "siglip2"
 
@@ -53,13 +53,13 @@ class SiglipVisualIndex:
                     self.id,
                     "SigLIP 2",
                     ProviderState.NEEDS_CONFIGURATION,
-                    f"Model is not downloaded: {self.model_name}",
+                    f"Модель не загружена: {self.model_name}",
                 )
         return ProviderStatus(
             self.id,
             "SigLIP 2",
             ProviderState.READY,
-            f"Multilingual visual retrieval: {self.model_name}",
+            f"Многоязычный визуальный поиск: {self.model_name}",
         )
 
     @staticmethod
@@ -182,7 +182,7 @@ class SiglipVisualIndex:
 
     @staticmethod
     def _rank_score(similarity: float) -> float:
-        """Map SigLIP cosine to a stable ranking scale, not a claimed probability."""
+        """Преобразует близость SigLIP в шкалу ранжирования, не выдавая её за вероятность."""
         logit = (similarity - 0.05) * 20.0
         if logit >= 0:
             return 1.0 / (1.0 + math.exp(-logit))
