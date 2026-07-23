@@ -1,0 +1,17 @@
+.DS_Store
+.env
+.venv/
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+__pycache__/
+*.py[cod]
+*.egg-info/
+node_modules/
+dist/
+playwright-report/
+test-results/
+data/
+frontend/.vite/
+.pnpm-store/

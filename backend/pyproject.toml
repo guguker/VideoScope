@@ -1,0 +1,71 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "videoscope-backend"
+version = "0.1.0"
+description = "Local multimodal video search and clip export backend"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+  "fastapi>=0.115,<1",
+  "uvicorn[standard]>=0.34,<1",
+  "python-multipart>=0.0.20,<1",
+  "pydantic-settings>=2.7,<3",
+  "qdrant-client[fastembed]>=1.13,<2",
+  "scenedetect[opencv]>=0.6.6,<0.7",
+  "pillow>=11,<13",
+  "numpy>=1.26,<3",
+  "httpx>=0.28,<1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3,<9",
+  "pytest-asyncio>=0.25,<1",
+  "pytest-cov>=6,<8",
+]
+apple = [
+  "mlx-whisper>=0.4,<1",
+]
+ocr = [
+  "paddleocr>=3,<4",
+  "transformers>=5.8,<6",
+  "torch>=2.6,<3",
+  "torchvision>=0.21,<1",
+]
+roboflow = [
+  "inference-sdk>=0.40,<1",
+  "rfdetr>=1.7.1,<1.8",
+  "supervision>=0.27,<1",
+]
+vision = [
+  "easydict>=1.13,<2",
+  "torch>=2.6,<3",
+  "torchvision>=0.21,<1",
+  "transformers>=5.8,<6",
+  "open-clip-torch>=2.31,<4",
+]
+
+[project.scripts]
+videoscope = "videoscope.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/videoscope"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.pytest.ini_options]
+addopts = "-q --strict-markers --strict-config"
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.coverage.run]
+branch = true
+source = ["videoscope"]
+
+[tool.coverage.report]
+fail_under = 80
+show_missing = true
+skip_covered = true
