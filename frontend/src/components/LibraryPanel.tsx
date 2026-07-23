@@ -1,0 +1,221 @@
+import {
+  Check,
+  Film,
+  LoaderCircle,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Pencil,
+  RefreshCw,
+  Search,
+  Video,
+  X,
+} from 'lucide-react'
+import { useMemo, useState } from 'react'
+import type { VideoItem } from '../types'
+import { formatBytes, formatDuration } from '../lib/time'
+
+interface LibraryPanelProps {
+  videos: VideoItem[]
+  selectedId: string | null
+  collapsed: boolean
+  onToggleCollapsed: () => void
+  onSelect: (video: VideoItem) => void
+  onReindex: (video: VideoItem) => void
+  onRename: (video: VideoItem, name: string) => Promise<void>
+  onUpload: () => void
+}
+
+const statusLabels: Record<VideoItem['status'], string> = {
+  queued: 'В очереди',
+  processing: 'Обработка',
+  ready: 'Готово',
+  failed: 'Ошибка',
+}
+
+function videoName(video: VideoItem): string {
+  return video.display_name || video.original_name
+}
+
+export function LibraryPanel({
+  videos,
+  selectedId,
+  collapsed,
+  onToggleCollapsed,
+  onSelect,
+  onReindex,
+  onRename,
+  onUpload,
+}: LibraryPanelProps) {
+  const [filter, setFilter] = useState('')
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [draftName, setDraftName] = useState('')
+  const [saving, setSaving] = useState(false)
+  const visibleVideos = useMemo(() => {
+    const query = filter.trim().toLocaleLowerCase('ru')
+    if (!query) return videos
+    return videos.filter((video) => videoName(video).toLocaleLowerCase('ru').includes(query))
+  }, [filter, videos])
+
+  const startRename = (video: VideoItem) => {
+    setEditingId(video.id)
+    setDraftName(videoName(video).replace(/\.[^.]+$/, ''))
+  }
+
+  const cancelRename = () => {
+    setEditingId(null)
+    setDraftName('')
+  }
+
+  const saveRename = async (video: VideoItem) => {
+    const name = draftName.trim()
+    if (!name || saving) return
+    setSaving(true)
+    try {
+      await onRename(video, name)
+      cancelRename()
+    } catch {
+      // App displays the API error in a toast; keep the editor open for correction.
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <aside className={`panel library-panel ${collapsed ? 'is-collapsed' : ''}`} aria-label="Библиотека видео">
+      <div className="panel-heading">
+        <div className="library-heading-copy">
+          <h2>Библиотека</h2>
+          <span className="panel-count">{videos.length}</span>
+        </div>
+        <button
+          className="icon-button library-collapse"
+          type="button"
+          onClick={onToggleCollapsed}
+          title={collapsed ? 'Развернуть библиотеку' : 'Свернуть библиотеку'}
+          aria-label={collapsed ? 'Развернуть библиотеку' : 'Свернуть библиотеку'}
+        >
+          {collapsed ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}
+        </button>
+      </div>
+      <label className="compact-search library-filter">
+        <Search size={15} />
+        <input
+          value={filter}
+          onChange={(event) => setFilter(event.target.value)}
+          placeholder="Фильтр по названию"
+          aria-label="Фильтр библиотеки"
+        />
+      </label>
+      <div className="library-list">
+        {visibleVideos.map((video) => (
+          <div
+            className={`library-row ${selectedId === video.id ? 'is-selected' : ''}`}
+            key={video.id}
+          >
+            {editingId === video.id && !collapsed ? (
+              <form
+                className="library-select library-rename-form"
+                onSubmit={(event) => {
+                  event.preventDefault()
+                  void saveRename(video)
+                }}
+              >
+                <input
+                  autoFocus
+                  value={draftName}
+                  onChange={(event) => setDraftName(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Escape') cancelRename()
+                  }}
+                  aria-label="Новое название видео"
+                  maxLength={160}
+                />
+                <button
+                  className="icon-button"
+                  type="submit"
+                  disabled={!draftName.trim() || saving}
+                  title="Сохранить"
+                  aria-label="Сохранить название"
+                >
+                  {saving ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />}
+                </button>
+                <button
+                  className="icon-button"
+                  type="button"
+                  onClick={cancelRename}
+                  title="Отмена"
+                  aria-label="Отменить переименование"
+                >
+                  <X size={15} />
+                </button>
+              </form>
+            ) : (
+              <button
+                className="library-select"
+                type="button"
+                onClick={() => onSelect(video)}
+                title={collapsed ? videoName(video) : undefined}
+              >
+              <span className="library-thumb">
+                {video.thumbnail_url ? (
+                  <img src={video.thumbnail_url} alt="" />
+                ) : video.status === 'processing' || video.status === 'queued' ? (
+                  <LoaderCircle className="spin" size={19} />
+                ) : (
+                  <Film size={19} />
+                )}
+              </span>
+              <span className="library-copy">
+                <strong title={videoName(video)}>{videoName(video)}</strong>
+                <span className="library-meta">
+                  {video.duration ? formatDuration(video.duration) : formatBytes(video.size_bytes)}
+                  <i aria-hidden="true" />
+                  <em className={`status-text status-${video.status}`}>{statusLabels[video.status]}</em>
+                </span>
+                {(video.status === 'processing' || video.status === 'queued') && (
+                  <span className="mini-progress" aria-label={`${Math.round(video.progress * 100)}%`}>
+                    <span style={{ width: `${Math.max(3, video.progress * 100)}%` }} />
+                  </span>
+                )}
+              </span>
+            </button>
+            )}
+            {editingId !== video.id && video.status !== 'processing' && video.status !== 'queued' && (
+              <span className="library-actions">
+                {!collapsed && (
+                  <button
+                    className="icon-button library-rename"
+                    type="button"
+                    onClick={() => startRename(video)}
+                    title="Переименовать"
+                    aria-label={`Переименовать ${videoName(video)}`}
+                  >
+                    <Pencil size={14} />
+                  </button>
+                )}
+                <button
+                  className="icon-button library-reindex"
+                  type="button"
+                  onClick={() => onReindex(video)}
+                  title="Переиндексировать"
+                  aria-label={`Переиндексировать ${videoName(video)}`}
+                >
+                  <RefreshCw size={15} />
+                </button>
+              </span>
+            )}
+          </div>
+        ))}
+        {videos.length === 0 && (
+          <button className="library-empty" type="button" onClick={onUpload}>
+            <Video size={22} />
+            <span>Добавить первое видео</span>
+          </button>
+        )}
+        {videos.length > 0 && visibleVideos.length === 0 && (
+          <p className="empty-filter">Совпадений нет</p>
+        )}
+      </div>
+    </aside>
+  )
+}
