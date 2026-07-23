@@ -1,2 +1,1 @@
-"""Optional and required processing providers."""
-
+"""Обязательные и необязательные модули обработки."""

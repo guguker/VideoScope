@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 
 class ThreadedProcessingQueue:
-    """Serial worker queue that keeps memory-heavy ML models off request threads."""
+    """Последовательная очередь, не запускающая ресурсоёмкие модели в потоках обработки запросов."""
 
     def __init__(self, indexer: Indexer) -> None:
         self.indexer = indexer
@@ -43,4 +43,3 @@ class ThreadedProcessingQueue:
         self._closed = True
         self._queue.put(None)
         self._worker.join(timeout=5)
-

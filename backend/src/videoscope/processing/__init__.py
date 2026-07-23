@@ -1,2 +1,1 @@
-"""Background video processing pipeline."""
-
+"""Конвейер фоновой обработки видео."""

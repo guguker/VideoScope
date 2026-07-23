@@ -113,7 +113,7 @@ def _stems(token: str) -> set[str]:
     if len(token) < 5 or not re.search(r"[а-я]", token):
         return output
 
-    # Russian surnames commonly keep the nominative form and append one case ending.
+    # Русские фамилии часто сохраняют форму именительного падежа с добавлением одного окончания.
     if re.search(r"(?:ов|ев|ин)(?:а|у|ым|е|ы|и)$", token):
         output.add(re.sub(r"(?:а|у|ым|е|ы|и)$", "", token))
 
@@ -188,7 +188,7 @@ def lexical_match(query: str, text: str) -> LexicalMatch:
 
 
 class SearchLexicon:
-    """Small user-editable glossary for names and domain terminology."""
+    """Небольшой редактируемый пользователем словарь имён и терминов предметной области."""
 
     def __init__(self, path: Path) -> None:
         self.path = Path(path)

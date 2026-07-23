@@ -27,7 +27,7 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
       const body = (await response.json()) as { detail?: string }
       if (body.detail) message = body.detail
     } catch {
-      // The fallback message already contains the HTTP status.
+      // Резервное сообщение уже содержит код состояния HTTP.
     }
     throw new ApiError(message, response.status)
   }

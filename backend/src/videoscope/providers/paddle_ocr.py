@@ -34,14 +34,14 @@ class PaddleOCRReader:
                 self.id,
                 "PaddleOCR",
                 ProviderState.UNAVAILABLE,
-                "paddleocr is not installed",
+                "PaddleOCR не установлен",
                 optional=True,
             )
         return ProviderStatus(
             self.id,
             "PaddleOCR",
             ProviderState.READY,
-            "PP-OCR with the Transformers engine",
+            "PP-OCR с модельным движком Transformers",
             optional=True,
         )
 

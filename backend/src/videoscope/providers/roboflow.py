@@ -48,14 +48,15 @@ class RoboflowDetector:
                     self.id,
                     "Roboflow RF-DETR",
                     ProviderState.UNAVAILABLE,
-                    "Install rfdetr and supervision",
+                    "Установите пакеты rfdetr и supervision",
                     optional=True,
                 )
             return ProviderStatus(
                 self.id,
                 "Roboflow RF-DETR",
                 ProviderState.READY,
-                f"Local object detection: {self.model_id} (frames stay on device)",
+                f"Локальное обнаружение объектов: {self.model_id} "
+                "(кадры не покидают устройство)",
                 optional=True,
             )
         if not self.api_key:
@@ -63,7 +64,8 @@ class RoboflowDetector:
                 self.id,
                 "Roboflow",
                 ProviderState.NEEDS_CONFIGURATION,
-                f"Set ROBOFLOW_API_KEY (model: {self.model_id or 'not selected'})",
+                f"Задайте ROBOFLOW_API_KEY "
+                f"(модель: {self.model_id or 'не выбрана'})",
                 optional=True,
             )
         if not self.model_id:
@@ -71,7 +73,7 @@ class RoboflowDetector:
                 self.id,
                 "Roboflow",
                 ProviderState.NEEDS_CONFIGURATION,
-                "Set ROBOFLOW_MODEL_ID",
+                "Задайте ROBOFLOW_MODEL_ID",
                 optional=True,
             )
         try:
@@ -127,7 +129,7 @@ class RoboflowDetector:
         if not isinstance(response, dict):
             return []
 
-        # Supervision validates the Roboflow response shape and applies class-aware NMS.
+        # Supervision проверяет структуру ответа Roboflow и выполняет NMS с учётом классов.
         detections = sv.Detections.from_inference(response).with_nms(threshold=0.5)
         predictions = response.get("predictions") or []
         tags: list[ObjectTag] = []

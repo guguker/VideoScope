@@ -49,13 +49,13 @@ class WhisperTranscriber:
                 self.id,
                 "Whisper MLX",
                 ProviderState.UNAVAILABLE,
-                "mlx-whisper is not installed",
+                "mlx-whisper не установлен",
             )
         return ProviderStatus(
             self.id,
             "Whisper MLX",
             ProviderState.READY,
-            f"Local speech recognition: {self.model}",
+            f"Локальное распознавание речи: {self.model}",
         )
 
     def transcribe(self, source: Path) -> list[TimedText]:

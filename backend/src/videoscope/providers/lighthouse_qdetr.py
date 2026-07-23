@@ -8,11 +8,11 @@ import numpy as np
 
 
 class QDDETRPredictor:
-    """Dependency-isolated CLIP/QD-DETR inference path for Lighthouse.
+    """Изолированный от зависимостей путь вывода CLIP/QD-DETR для Lighthouse.
 
-    Lighthouse imports every supported audio and video encoder from its public
-    ``models`` module. This adapter keeps the official QD-DETR model code and
-    checkpoint format while loading only the CLIP components VideoScope uses.
+    Публичный модуль ``models`` библиотеки Lighthouse импортирует все поддерживаемые
+    аудио- и видеокодировщики. Этот адаптер сохраняет официальный код модели QD-DETR
+    и формат контрольной точки, загружая только те компоненты CLIP, которые использует VideoScope.
     """
 
     _image_size = 224

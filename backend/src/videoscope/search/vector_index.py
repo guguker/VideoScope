@@ -35,16 +35,19 @@ class QdrantVectorIndex:
             )
         ensure_ready = getattr(self.embedding, "ensure_ready", None)
         if ensure_ready is not None and not ensure_ready():
-            detail = str(getattr(self.embedding, "last_error", None) or "text encoder failed to load")
+            detail = str(
+                getattr(self.embedding, "last_error", None)
+                or "не удалось загрузить кодировщик текста"
+            )
             return ProviderStatus(
                 self.id,
                 "Qdrant",
                 ProviderState.UNAVAILABLE,
-                f"Semantic encoder is unavailable: {detail[:160]}",
+                f"Семантический кодировщик недоступен: {detail[:160]}",
             )
         backend = getattr(self.embedding, "backend", "local")
         last_error = getattr(self.embedding, "last_error", None)
-        detail = f"Embedded local index, encoder: {backend}"
+        detail = f"Встроенный локальный индекс, кодировщик: {backend}"
         if last_error:
             detail += f" ({str(last_error)[:120]})"
         return ProviderStatus(
@@ -186,7 +189,7 @@ class QdrantVectorIndex:
 
 
 class MemoryVectorIndex:
-    """Small deterministic fallback used only when qdrant-client is unavailable."""
+    """Небольшой детерминированный резервный индекс при недоступности qdrant-client."""
 
     id = "memory-index"
 
@@ -246,7 +249,7 @@ class MemoryVectorIndex:
 
 
 class EmptyVectorIndex:
-    """Fail-closed fallback: lexical search stays available without fake semantic scores."""
+    """Безопасный резервный вариант: лексический поиск без фиктивных семантических оценок."""
 
     def replace_video(self, _video_id: str, _segments: list[SegmentRecord]) -> None:
         return None
