@@ -1,10 +1,13 @@
-.PHONY: install install-ml models install-lighthouse index-objects index-visual index-visual-quality index-speech dev test test-backend test-frontend build demo
+.PHONY: install install-ml install-video models install-lighthouse index-objects index-visual index-visual-quality index-speech dev test test-backend test-frontend build demo
 
 install:
 	./scripts/bootstrap.sh
 
 install-ml:
 	.venv/bin/python -m pip install -e 'backend[apple,ocr,roboflow,vision]'
+
+install-video:
+	.venv/bin/python -m pip install -e 'backend[video]'
 
 models:
 	.venv/bin/python scripts/download-models.py

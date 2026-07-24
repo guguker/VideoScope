@@ -14,7 +14,7 @@ def test_routes_action_to_visual_temporal_search() -> None:
     plan = QueryRouter().route("игрок поднимает руку", requested_lighthouse=True)
 
     assert plan.intent == "action"
-    assert {"visual", "objects", "lighthouse"} <= plan.modalities
+    assert {"speech", "ocr", "visual", "objects", "lighthouse"} <= plan.modalities
     assert plan.use_lighthouse is True
     assert plan.refine_temporally is True
 
@@ -47,4 +47,3 @@ def test_explicit_mode_overrides_automatic_routing() -> None:
     assert plan.intent == "speech"
     assert plan.modalities == frozenset({"speech"})
     assert plan.use_lighthouse is False
-

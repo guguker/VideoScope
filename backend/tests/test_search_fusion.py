@@ -64,3 +64,19 @@ def test_calibration_preserves_raw_score_and_adds_rank_signal() -> None:
     assert calibrated[0].score > calibrated[1].score
     assert calibrated[0].metadata["raw_score"] == 0.62
     assert calibrated[0].metadata["calibrated_score"] == calibrated[0].score
+
+
+def test_action_weight_does_not_saturate_and_replace_rank_with_chronology() -> None:
+    hits = [
+        EvidenceHit("v1", "earlier", 100, 106, "visual", 0.97, "earlier"),
+        EvidenceHit("v1", "stronger-late", 6800, 6806, "visual", 0.99, "later"),
+    ]
+
+    results = fuse_hits(
+        calibrate_hits(hits),
+        limit=1,
+        modality_weights={"visual": 1.48},
+    )
+
+    assert results[0].start == 6800
+    assert results[0].score < 1.0

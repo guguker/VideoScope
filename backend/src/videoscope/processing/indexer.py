@@ -191,12 +191,17 @@ class Indexer:
 
             self.repository.update_video(video_id, progress=0.45, stage="vision")
             total_frames = max(1, len(frame_paths))
-            ocr_failed = False
-            objects_failed = False
+            ocr_consecutive_failures = 0
+            objects_consecutive_failures = 0
+            maximum_consecutive_failures = 3
             for index, (start, end, frame_path) in enumerate(frame_paths):
-                if self.ocr is not None and not ocr_failed:
+                if (
+                    self.ocr is not None
+                    and ocr_consecutive_failures < maximum_consecutive_failures
+                ):
                     try:
                         recognized = self.ocr.read(frame_path)
+                        ocr_consecutive_failures = 0
                         unique: dict[str, tuple[str, float]] = {}
                         for text, confidence in recognized:
                             normalized = " ".join(text.split()).strip()
@@ -221,11 +226,15 @@ class Indexer:
                             )
                     except Exception as error:
                         warnings.append(f"ocr: {error}")
-                        ocr_failed = True
+                        ocr_consecutive_failures += 1
 
-                if self.objects is not None and not objects_failed:
+                if (
+                    self.objects is not None
+                    and objects_consecutive_failures < maximum_consecutive_failures
+                ):
                     try:
                         tags = self.objects.detect(frame_path)
+                        objects_consecutive_failures = 0
                         if tags:
                             self.repository.add_segment(
                                 segment_id=uuid4().hex,
@@ -250,7 +259,7 @@ class Indexer:
                             )
                     except Exception as error:
                         warnings.append(f"objects: {error}")
-                        objects_failed = True
+                        objects_consecutive_failures += 1
 
                 self.repository.update_video(
                     video_id,

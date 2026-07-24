@@ -3,13 +3,97 @@ from __future__ import annotations
 import json
 import math
 from pathlib import Path
-from typing import Any
+import re
+from typing import Any, Protocol
 
 import numpy as np
 
 from videoscope.providers.base import ProviderState, ProviderStatus
 from videoscope.repository import SegmentRecord
 from videoscope.search.fusion import EvidenceHit
+from videoscope.search.sports_events import (
+    aggregate_stage_percentiles,
+    aggregate_top_k_stage_percentiles,
+    classify_basketball_event_query,
+    event_prompt_stages,
+    rank_made_free_throw_windows,
+    rank_made_two_point_windows,
+    rank_temporal_event_windows,
+)
+
+
+class DenseFrameExtractor(Protocol):
+    def extract_frames(
+        self,
+        source: Path,
+        destination: Path,
+        start: float,
+        end: float,
+        *,
+        step: float,
+        max_width: int = 640,
+    ) -> list[object]: ...
+
+
+_JERSEY_NUMBER_PATTERN = re.compile(
+    r"(?:под\s+номером|номер(?:ом)?|№|jersey(?:\s+number)?)\s*#?\s*(\d{1,2})",
+    flags=re.IGNORECASE,
+)
+
+
+def visual_prompt_variants(query: str) -> list[str]:
+    """Добавляет предметные англоязычные формулировки без изменения запроса пользователя."""
+    normalized = " ".join(query.split()).strip()
+    if not normalized:
+        return []
+    prompts = [normalized]
+
+    event_specification = classify_basketball_event_query(normalized)
+    if event_specification is not None:
+        if event_specification.event_type == "made_three_point":
+            prompts.extend(
+                [
+                    "basketball player shoots a three-point jump shot from behind the arc",
+                    "basketball player makes a three-point shot from behind the arc",
+                    "the basketball goes through the hoop after a three-point shot",
+                    "a complete made three-point basketball shot from release to basket",
+                ]
+            )
+        elif event_specification.event_type == "made_two_point":
+            prompts.extend(
+                [
+                    "basketball player makes a two-point shot from inside the three-point line",
+                    "the basketball goes through the hoop after a two-point shot",
+                    "a complete made two-point basketball shot from release to basket",
+                ]
+            )
+        elif event_specification.event_type == "made_free_throw":
+            prompts.extend(
+                [
+                    "basketball player makes a free throw from the free throw line",
+                    "the basketball goes through the hoop after a free throw",
+                    "a complete made free throw from release to basket",
+                ]
+            )
+
+    jersey_match = _JERSEY_NUMBER_PATTERN.search(normalized)
+    if jersey_match:
+        prompts.append(
+            f"basketball player wearing jersey number {jersey_match.group(1)}"
+        )
+
+    return list(dict.fromkeys(prompts))
+
+
+def made_three_point_prompt_stages(
+) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
+    """Возвращает формулировки выпуска, результата и контекста после броска."""
+    specification = event_prompt_stages("made_three_point")
+    return (
+        specification.release_prompts,
+        specification.outcome_prompts,
+        specification.followup_prompts,
+    )
 
 
 class SiglipVisualIndex:
@@ -121,7 +205,7 @@ class SiglipVisualIndex:
         return encoded[0].detach().float().cpu().numpy()
 
     def _text_vectors(self, query: str) -> np.ndarray:
-        prompts = [query]
+        prompts = visual_prompt_variants(query)
         normalized = query.casefold()
         if len(query.split()) <= 5 and not any(
             subject in normalized
@@ -173,6 +257,57 @@ class SiglipVisualIndex:
         metadata_path.write_text(json.dumps(metadata, ensure_ascii=False), encoding="utf-8")
         model_path.write_text(self.model_name, encoding="utf-8")
 
+    def replace_video_source(
+        self,
+        video_id: str,
+        source: Path,
+        duration: float,
+        extractor: DenseFrameExtractor,
+        *,
+        step: float = 1.0,
+        max_width: int = 640,
+        frames_dir: Path | None = None,
+    ) -> None:
+        """Строит равномерный индекс, чтобы короткие действия не терялись между сценами."""
+        if duration <= 0:
+            raise ValueError("video duration must be positive")
+        step = max(0.25, step)
+        target = self.path / video_id
+        resolved_frames_dir = Path(frames_dir) if frames_dir else target / "frames"
+        frames = extractor.extract_frames(
+            Path(source),
+            resolved_frames_dir,
+            0.0,
+            duration,
+            step=step,
+            max_width=max_width,
+        )
+        paths = [Path(getattr(frame, "path")) for frame in frames]
+        timestamps = [float(getattr(frame, "timestamp")) for frame in frames]
+        if not paths:
+            self.replace_video(video_id, [])
+            return
+
+        vectors_path, metadata_path = self._video_paths(video_id)
+        model_path = vectors_path.parent / "model.txt"
+        vectors_path.parent.mkdir(parents=True, exist_ok=True)
+        vectors = self._image_vectors(paths)
+        np.save(vectors_path, vectors.astype(np.float32, copy=False), allow_pickle=False)
+        metadata = [
+            {
+                "segment_id": f"dense-{index:06d}",
+                "start": timestamp,
+                "end": min(duration, timestamp + step),
+                "thumbnail_path": str(path),
+            }
+            for index, (timestamp, path) in enumerate(zip(timestamps, paths, strict=True))
+        ]
+        metadata_path.write_text(
+            json.dumps(metadata, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        model_path.write_text(self.model_name, encoding="utf-8")
+
     def _probability(self, similarity: float) -> float:
         logit = similarity * self._logit_scale + self._logit_bias
         if logit >= 0:
@@ -183,11 +318,7 @@ class SiglipVisualIndex:
     @staticmethod
     def _rank_score(similarity: float) -> float:
         """Преобразует близость SigLIP в шкалу ранжирования, не выдавая её за вероятность."""
-        logit = (similarity - 0.05) * 20.0
-        if logit >= 0:
-            return 1.0 / (1.0 + math.exp(-logit))
-        exp_logit = math.exp(logit)
-        return exp_logit / (1.0 + exp_logit)
+        return max(0.0, min(1.0, (similarity + 1.0) / 2.0))
 
     def search(
         self,
@@ -198,7 +329,28 @@ class SiglipVisualIndex:
     ) -> list[EvidenceHit]:
         if not query.strip() or limit <= 0 or not self.path.is_dir():
             return []
-        query_vectors = self._text_vectors(query)
+        event_specification = classify_basketball_event_query(query)
+        event_stage_vectors: dict[str, np.ndarray] | None = None
+        query_vectors: np.ndarray | None = None
+        if event_specification is not None:
+            prompt_groups = {
+                "release": event_specification.release_prompts,
+                "outcome": event_specification.outcome_prompts,
+                "followup": event_specification.followup_prompts,
+                "contrast": event_specification.contrast_prompts,
+                "plus": event_specification.plus_prompts,
+                "miss": event_specification.miss_prompts,
+                "transition": event_specification.transition_prompts,
+            }
+            event_stage_vectors = {
+                name: np.stack(
+                    [self._text_vector(prompt) for prompt in prompts]
+                )
+                for name, prompts in prompt_groups.items()
+                if prompts
+            }
+        else:
+            query_vectors = self._text_vectors(query)
         candidates: list[EvidenceHit] = []
         selected = video_ids or [path.name for path in self.path.iterdir() if path.is_dir()]
         for video_id in selected:
@@ -219,12 +371,208 @@ class SiglipVisualIndex:
                 continue
             vectors = np.load(vectors_path, allow_pickle=False)
             metadata: list[dict[str, Any]] = json.loads(metadata_path.read_text(encoding="utf-8"))
+            expected_dimensions = (
+                event_stage_vectors["release"].shape[1]
+                if event_stage_vectors is not None
+                else query_vectors.shape[1]  # type: ignore[union-attr]
+            )
             if (
                 vectors.ndim != 2
                 or vectors.shape[0] != len(metadata)
-                or vectors.shape[1] != query_vectors.shape[1]
+                or vectors.shape[1] != expected_dimensions
             ):
                 continue
+            if event_stage_vectors is not None:
+                assert event_specification is not None
+                release_scores = aggregate_stage_percentiles(
+                    vectors @ event_stage_vectors["release"].T
+                )
+                outcome_scores = aggregate_stage_percentiles(
+                    vectors @ event_stage_vectors["outcome"].T
+                )
+                timestamps = np.array(
+                    [float(item["start"]) for item in metadata],
+                    dtype=np.float32,
+                )
+                positive_steps = np.diff(timestamps)
+                positive_steps = positive_steps[positive_steps > 0]
+                step = (
+                    float(np.median(positive_steps))
+                    if len(positive_steps)
+                    else 1.0
+                )
+                window_frames = max(
+                    1,
+                    int(math.ceil(event_specification.max_gap_seconds / step)),
+                )
+                followup_frames = max(
+                    1,
+                    int(
+                        math.ceil(
+                            event_specification.followup_gap_seconds / step
+                        )
+                    ),
+                )
+                suppression_frames = max(
+                    1,
+                    int(
+                        math.ceil(
+                            event_specification.suppression_seconds / step
+                        )
+                    ),
+                )
+                if (
+                    event_specification.scoring_strategy
+                    == "release_outcome_followup"
+                ):
+                    followup_scores = aggregate_stage_percentiles(
+                        vectors @ event_stage_vectors["followup"].T
+                    )
+                    event_windows = rank_temporal_event_windows(
+                        release_scores,
+                        outcome_scores,
+                        followup_scores=followup_scores,
+                        max_gap=window_frames,
+                        followup_gap=followup_frames,
+                        suppression_radius=suppression_frames,
+                        minimum_followup_score=(
+                            event_specification.minimum_followup_score
+                        ),
+                        limit=limit,
+                    )
+                    stage_order = ["release", "outcome", "followup"]
+                elif (
+                    event_specification.scoring_strategy
+                    == "made_two_fixed_lag"
+                ):
+                    contrast_scores = aggregate_stage_percentiles(
+                        vectors @ event_stage_vectors["contrast"].T
+                    )
+                    event_windows = rank_made_two_point_windows(
+                        release_scores,
+                        outcome_scores,
+                        contrast_scores,
+                        release_lags=(
+                            max(1, int(round(3.0 / step))),
+                            max(1, int(round(2.0 / step))),
+                        ),
+                        contrast_lag=max(1, int(round(2.0 / step))),
+                        suppression_radius=suppression_frames,
+                        limit=limit,
+                    )
+                    stage_order = ["release", "contrast", "outcome"]
+                else:
+                    release_scores = aggregate_stage_percentiles(
+                        vectors @ event_stage_vectors["release"].T,
+                        quantile=0.75,
+                    )
+                    outcome_scores = aggregate_stage_percentiles(
+                        vectors @ event_stage_vectors["outcome"].T,
+                        quantile=0.75,
+                    )
+                    plus_scores = aggregate_stage_percentiles(
+                        vectors @ event_stage_vectors["plus"].T
+                    )
+                    miss_scores = aggregate_top_k_stage_percentiles(
+                        vectors @ event_stage_vectors["miss"].T,
+                        top_k=2,
+                    )
+                    transition_scores = aggregate_stage_percentiles(
+                        vectors @ event_stage_vectors["transition"].T
+                    )
+                    event_windows = rank_made_free_throw_windows(
+                        release_scores,
+                        outcome_scores,
+                        plus_scores,
+                        miss_scores,
+                        transition_scores,
+                        release_lag=max(1, int(round(2.0 / step))),
+                        plus_window=max(0, int(round(2.0 / step))),
+                        reset_window=(
+                            max(0, int(round(2.0 / step))),
+                            max(0, int(round(5.0 / step))),
+                        ),
+                        negative_window=max(0, int(round(3.0 / step))),
+                        suppression_radius=suppression_frames,
+                        limit=limit,
+                    )
+                    stage_order = [
+                        "release",
+                        "outcome",
+                        "plus",
+                        "reset",
+                        "miss",
+                        "transition",
+                    ]
+                for window in event_windows:
+                    release_item = metadata[window.release_index]
+                    outcome_item = metadata[window.outcome_index]
+                    followup_item = (
+                        metadata[window.followup_index]
+                        if window.followup_index is not None
+                        else None
+                    )
+                    component_scores = {
+                        "raw_release_score": window.raw_release_score,
+                        "contrast_score": window.contrast_score,
+                        "plus_score": window.plus_score,
+                        "reset_score": window.reset_score,
+                        "miss_score": window.miss_score,
+                        "transition_score": window.transition_score,
+                    }
+                    event_metadata = {
+                        name: value
+                        for name, value in component_scores.items()
+                        if value is not None
+                    }
+                    candidates.append(
+                        EvidenceHit(
+                            video_id=video_id,
+                            segment_id=(
+                                "visual-event:"
+                                f"{release_item['segment_id']}:"
+                                f"{outcome_item['segment_id']}"
+                            ),
+                            start=float(release_item["start"]),
+                            end=float(outcome_item["end"]),
+                            modality="visual",
+                            score=window.score,
+                            text=query,
+                            metadata={
+                                "source": "siglip2-temporal-event",
+                                "event_type": event_specification.event_type,
+                                "event_candidate": True,
+                                "requires_ball_through_hoop": (
+                                    event_specification.requires_ball_through_hoop
+                                ),
+                                "release_cue": event_specification.release_cue,
+                                "outcome_cue": event_specification.outcome_cue,
+                                "stage_order": stage_order,
+                                "core_score": window.core_score,
+                                "release_score": window.release_score,
+                                "outcome_score": window.outcome_score,
+                                "followup_score": window.followup_score,
+                                "release_timestamp": float(release_item["start"]),
+                                "outcome_timestamp": float(outcome_item["start"]),
+                                "thumbnail_path": release_item.get("thumbnail_path"),
+                                "temporal_event": True,
+                                "temporal_refinement": True,
+                                **event_metadata,
+                                **(
+                                    {
+                                        "followup_timestamp": float(
+                                            followup_item["start"]
+                                        )
+                                    }
+                                    if followup_item is not None
+                                    else {}
+                                ),
+                            },
+                        )
+                    )
+                continue
+
+            assert query_vectors is not None
             similarities = np.max(vectors @ query_vectors.T, axis=1)
             for index in np.argsort(similarities)[::-1][:limit]:
                 item = metadata[int(index)]

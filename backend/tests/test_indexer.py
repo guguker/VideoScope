@@ -148,3 +148,47 @@ def test_indexer_keeps_working_when_optional_provider_fails(tmp_path) -> None:
     assert video is not None
     assert video.status == "ready"
     assert "ocr" in (video.error or "")
+
+
+def test_indexer_recovers_after_transient_ocr_error(tmp_path) -> None:
+    class TransientOCR:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def read(self, _image: Path):  # type: ignore[no-untyped-def]
+            self.calls += 1
+            if self.calls == 1:
+                raise OSError(5, "temporary input/output error")
+            return [("HOME 90 GUEST 87", 0.92)]
+
+    repository = Repository(tmp_path / "db.sqlite3")
+    repository.initialize()
+    media = tmp_path / "video.mp4"
+    media.write_bytes(b"video")
+    repository.create_video(
+        video_id="video-1",
+        original_name="match.mp4",
+        stored_name="video.mp4",
+        media_path=str(media),
+        size_bytes=5,
+    )
+    indexer = Indexer(
+        repository=repository,
+        thumbnails_dir=tmp_path / "thumbs",
+        ffmpeg=FakeFFmpeg(),  # type: ignore[arg-type]
+        scenes=FakeScenes(),  # type: ignore[arg-type]
+        speech=None,
+        ocr=TransientOCR(),  # type: ignore[arg-type]
+        objects=None,
+        vector_index=RecordingIndex(),  # type: ignore[arg-type]
+    )
+
+    indexer.process("video-1")
+
+    ocr_segments = [
+        segment
+        for segment in repository.list_segments("video-1")
+        if segment.modality == "ocr"
+    ]
+    assert len(ocr_segments) == 1
+    assert ocr_segments[0].text == "HOME 90 GUEST 87"
