@@ -44,6 +44,7 @@ const modalityLabels: Record<string, string> = {
   ocr: 'OCR',
   objects: 'Объекты',
   scene: 'Сцена',
+  qwen_video: 'Проверка видео',
   internvideo: 'InternVideo',
 }
 
@@ -69,6 +70,7 @@ const sourceLabels: Record<string, string> = {
   'lexical-phonetic': 'похожее звучание',
   'lexical-fuzzy': 'нечёткое слово',
   'internvideo2.5': 'InternVideo 2.5',
+  'qwen-video-verifier': 'Qwen · последовательность кадров',
 }
 
 const intentLabels: Record<string, string> = {
@@ -127,7 +129,15 @@ function VideoPlayer({
   )
 }
 
-const timelineLanes = ['speech', 'visual', 'objects', 'ocr', 'lighthouse', 'internvideo'] as const
+const timelineLanes = [
+  'speech',
+  'visual',
+  'qwen_video',
+  'objects',
+  'ocr',
+  'lighthouse',
+  'internvideo',
+] as const
 
 function EvidenceTimeline({
   results,

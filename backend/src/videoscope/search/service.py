@@ -366,7 +366,7 @@ class SearchService:
             try:
                 fused = self.candidate_reranker.rerank(normalized_query, fused)  # type: ignore[assignment, arg-type]
             except Exception:
-                logger.exception("InternVideo reranking failed")
+                logger.exception("Candidate video reranking failed")
         output: list[SearchResultView] = []
         for index, result in enumerate(fused):
             video = videos.get(result.video_id)

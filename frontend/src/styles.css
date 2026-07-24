@@ -892,6 +892,7 @@ a:focus-visible {
 
 .timeline-speech { --timeline-color: #087e69; }
 .timeline-visual { --timeline-color: #376fa5; }
+.timeline-qwen_video { --timeline-color: #6550a8; }
 .timeline-objects { --timeline-color: #b87513; }
 .timeline-ocr { --timeline-color: #b9433a; }
 .timeline-lighthouse { --timeline-color: #77508c; }

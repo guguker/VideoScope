@@ -8,6 +8,7 @@ MODELS = (
     "mlx-community/whisper-large-v3-turbo",
     "google/siglip2-base-patch16-224",
     "google/siglip2-base-patch16-384",
+    "mlx-community/Qwen3.5-9B-MLX-4bit",
 )
 
 FASTEMBED_FILES = (

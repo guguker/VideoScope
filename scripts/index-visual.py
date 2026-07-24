@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from videoscope.config import AppSettings
+from videoscope.media.ffmpeg import FFmpeg
 from videoscope.providers.base import ProviderState
 from videoscope.repository import Repository
 from videoscope.search.visual_index import SiglipVisualIndex
@@ -11,6 +12,7 @@ def main() -> None:
     settings.ensure_directories()
     repository = Repository(settings.database_path)
     repository.initialize()
+    ffmpeg = FFmpeg()
     index = SiglipVisualIndex(
         settings.visual_index_dir,
         model_name=settings.siglip_model,
@@ -22,13 +24,21 @@ def main() -> None:
 
     videos = [video for video in repository.list_videos() if video.status == "ready"]
     for position, video in enumerate(videos, start=1):
-        scenes = [
-            segment
-            for segment in repository.list_segments(video.id)
-            if segment.modality == "scene"
-        ]
-        print(f"[{position}/{len(videos)}] {video.name}: {len(scenes)} scenes")
-        index.replace_video(video.id, scenes)
+        duration = float(video.duration or ffmpeg.probe(video.media_path).duration)
+        expected_frames = max(1, int(duration / settings.visual_index_step))
+        print(
+            f"[{position}/{len(videos)}] {video.name}: "
+            f"около {expected_frames} кадров с шагом {settings.visual_index_step:.2f} с"
+        )
+        index.replace_video_source(
+            video.id,
+            video.media_path,
+            duration,
+            ffmpeg,
+            step=settings.visual_index_step,
+            max_width=settings.visual_index_max_width,
+            frames_dir=settings.thumbnails_dir / video.id,
+        )
     print(f"Visual index is ready: {settings.siglip_model}")
 
 

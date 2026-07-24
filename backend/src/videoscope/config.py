@@ -38,6 +38,19 @@ class AppSettings(BaseSettings):
     )
     internvideo_timeout: float = 180.0
     internvideo_top_candidates: int = 4
+    qwen_video_model: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "QWEN_VIDEO_MODEL",
+            "VIDEOSCOPE_QWEN_VIDEO_MODEL",
+        ),
+    )
+    qwen_video_top_candidates: int = 12
+    qwen_video_context_seconds: float = 4.0
+    qwen_video_min_clip_seconds: float = 7.0
+    qwen_video_max_clip_seconds: float = 12.0
+    qwen_video_frame_count: int = 12
+    qwen_video_fps: float = 2.0
     lighthouse_root: Path | None = Field(
         default=None,
         validation_alias=AliasChoices("LIGHTHOUSE_ROOT", "VIDEOSCOPE_LIGHTHOUSE_ROOT"),
@@ -69,10 +82,12 @@ class AppSettings(BaseSettings):
     siglip_model: str = "google/siglip2-base-patch16-224"
     siglip_quality_model: str = "google/siglip2-base-patch16-384"
     siglip_batch_size: int = 8
+    visual_index_step: float = 1.0
+    visual_index_max_width: int = 640
     semantic_text_min_score: float = 0.42
     visual_min_score: float = 0.18
-    temporal_refinement_candidates: int = 2
-    temporal_refinement_step: float = 1.5
+    temporal_refinement_candidates: int = 12
+    temporal_refinement_step: float = 0.75
 
     @property
     def glossary_path(self) -> Path:

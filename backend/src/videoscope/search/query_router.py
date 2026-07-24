@@ -104,8 +104,11 @@ class QueryRouter:
             explanation = "Запрос о сказанном: приоритет распознанной речи"
         elif has_action:
             intent = "action"
-            modalities = frozenset({"visual", "objects", "lighthouse"})
-            explanation = "Запрос о действии: плотный визуальный поиск с временным уточнением"
+            modalities = ALL_MODALITIES
+            explanation = (
+                "Запрос о действии: визуальное событие проверяется по кадрам, "
+                "речи и тексту в кадре"
+            )
         elif has_object:
             intent = "object"
             modalities = frozenset({"objects", "visual"})
@@ -150,4 +153,3 @@ class QueryRouter:
         elif intent == "mixed":
             weights.update(visual=1.25, speech=1.1, objects=1.0, lighthouse=0.82, ocr=0.85)
         return weights
-

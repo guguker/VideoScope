@@ -5,6 +5,7 @@ from dataclasses import replace
 
 
 MODALITY_WEIGHTS = {
+    "qwen_video": 1.45,
     "internvideo": 1.30,
     "lighthouse": 1.20,
     "visual": 1.05,
@@ -80,9 +81,10 @@ def _score(
     weights = modality_weights or MODALITY_WEIGHTS
     for hit in cluster:
         weight = weights.get(hit.modality, MODALITY_WEIGHTS.get(hit.modality, 0.75))
-        # Веса, заданные типом запроса, — априорные приоритеты, а не множители уверенности.
-        gain = 0.75 + 0.25 * max(0.0, min(2.0, weight))
-        weighted_sum += max(0.0, min(1.0, hit.score)) * gain
+        # Приоритет модальности не должен насыщать разные оценки до единицы.
+        confidence = max(0.0, min(1.0, hit.score))
+        priority = max(0.0, min(2.0, weight)) / 2.0
+        weighted_sum += confidence * 0.85 + priority * 0.15
     average = weighted_sum / len(cluster) if cluster else 0.0
     diversity_bonus = 0.075 * (len({hit.modality for hit in cluster}) - 1)
     corroboration_bonus = 0.015 * min(3, len(cluster) - 1)

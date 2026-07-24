@@ -12,6 +12,7 @@ from videoscope.providers.base import ProviderRegistry, ProviderState, StaticPro
 from videoscope.providers.lighthouse import LighthouseRetriever
 from videoscope.providers.internvideo import InternVideoReranker
 from videoscope.providers.paddle_ocr import PaddleOCRReader
+from videoscope.providers.qwen_video import QwenVideoReranker
 from videoscope.providers.roboflow import RoboflowDetector
 from videoscope.providers.scenes import SceneDetector
 from videoscope.providers.whisper import WhisperTranscriber
@@ -76,6 +77,19 @@ def build_runtime(settings: AppSettings, repository: Repository) -> Runtime:
         top_candidates=settings.internvideo_top_candidates,
         timeout=settings.internvideo_timeout,
     )
+    qwen_video = QwenVideoReranker(
+        model_name=settings.qwen_video_model,
+        repository=repository,
+        extractor=ffmpeg,
+        temp_dir=settings.temp_dir,
+        cache_dir=settings.cache_dir / "qwen-video",
+        top_candidates=settings.qwen_video_top_candidates,
+        context_seconds=settings.qwen_video_context_seconds,
+        min_clip_seconds=settings.qwen_video_min_clip_seconds,
+        max_clip_seconds=settings.qwen_video_max_clip_seconds,
+        frame_count=settings.qwen_video_frame_count,
+        video_fps=settings.qwen_video_fps,
+    )
 
     qdrant_ready = qdrant.status().state is ProviderState.READY
     vector_index = qdrant if qdrant_ready else EmptyVectorIndex()
@@ -84,7 +98,13 @@ def build_runtime(settings: AppSettings, repository: Repository) -> Runtime:
     object_provider = roboflow if roboflow.status().state is ProviderState.READY else None
     moment_provider = lighthouse if lighthouse.status().state is ProviderState.READY else None
     visual_provider = siglip if siglip.status().state is ProviderState.READY else None
-    candidate_reranker = internvideo if internvideo.status().state is ProviderState.READY else None
+    candidate_reranker = (
+        qwen_video
+        if qwen_video.status().state is ProviderState.READY
+        else internvideo
+        if internvideo.status().state is ProviderState.READY
+        else None
+    )
     temporal_refiner = (
         TemporalRefiner(
             repository=repository,
@@ -124,7 +144,18 @@ def build_runtime(settings: AppSettings, repository: Repository) -> Runtime:
         ffmpeg_binary or "ffmpeg executable is missing",
     )
     providers = ProviderRegistry(
-        [ffmpeg_status, scenes, whisper, ocr, roboflow, lighthouse, qdrant, siglip, internvideo]
+        [
+            ffmpeg_status,
+            scenes,
+            whisper,
+            ocr,
+            roboflow,
+            lighthouse,
+            qdrant,
+            siglip,
+            qwen_video,
+            internvideo,
+        ]
     )
     return Runtime(
         queue=queue,
