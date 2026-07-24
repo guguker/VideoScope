@@ -2,6 +2,8 @@
 
 This service implements the `/rerank` contract used by VideoScope. Run it in a separate CUDA 12.1 environment; the 8B model is not intended for the local Apple Silicon process.
 
+VideoScope prefers the local Qwen3.5 9B verifier when it is ready. This endpoint is an optional fallback for the best fused candidates; the main search pipeline works without either heavy reranker.
+
 ```bash
 python -m venv .venv
 .venv/bin/pip install -r requirements.txt

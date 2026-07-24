@@ -15,3 +15,4 @@ test-results/
 data/
 frontend/.vite/
 .pnpm-store/
+.codex-tmp/
