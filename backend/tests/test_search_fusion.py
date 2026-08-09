@@ -1,3 +1,5 @@
+import math
+
 from videoscope.search.fusion import EvidenceHit, calibrate_hits, fuse_hits
 
 
@@ -80,3 +82,35 @@ def test_action_weight_does_not_saturate_and_replace_rank_with_chronology() -> N
 
     assert results[0].start == 6800
     assert results[0].score < 1.0
+
+
+def test_calibration_drops_non_finite_or_invalid_evidence() -> None:
+    valid = EvidenceHit("v1", "valid", 0, 2, "visual", 0.2, "valid")
+    invalid = [
+        EvidenceHit("v1", "nan-score", 0, 2, "visual", math.nan, "invalid"),
+        EvidenceHit("v1", "inf-score", 0, 2, "visual", math.inf, "invalid"),
+        EvidenceHit("v1", "nan-start", math.nan, 2, "visual", 0.9, "invalid"),
+        EvidenceHit("v1", "inf-end", 0, math.inf, "visual", 0.9, "invalid"),
+        EvidenceHit("v1", "reversed", 2, 1, "visual", 0.9, "invalid"),
+        EvidenceHit("v1", "empty", 2, 2, "visual", 0.9, "invalid"),
+    ]
+
+    calibrated = calibrate_hits([*invalid, valid])
+
+    assert [hit.segment_id for hit in calibrated] == ["valid"]
+    assert math.isfinite(calibrated[0].score)
+
+
+def test_fusion_drops_invalid_evidence_even_without_calibration() -> None:
+    hits = [
+        EvidenceHit("v1", "nan-score", 0, 2, "visual", math.nan, "invalid"),
+        EvidenceHit("v1", "nan-time", math.nan, 2, "speech", 0.99, "invalid"),
+        EvidenceHit("v1", "reversed", 3, 1, "ocr", 0.99, "invalid"),
+        EvidenceHit("v1", "valid", 10, 12, "visual", 0.1, "valid"),
+    ]
+
+    results = fuse_hits(hits)
+
+    assert len(results) == 1
+    assert results[0].start == 10
+    assert [hit.segment_id for hit in results[0].evidence] == ["valid"]
