@@ -14,6 +14,13 @@ import { FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from '
 import type { SearchMode, SearchResult, VideoItem } from '../types'
 import { formatDuration, formatMomentRange } from '../lib/time'
 import { timelineMarker } from '../lib/timeline'
+import {
+  eventCardData,
+  hasQwenVerification,
+  resultSourceKeys,
+  type EventCardData,
+  type FactState,
+} from '../lib/searchPresentation'
 
 interface SearchWorkspaceProps {
   videos: VideoItem[]
@@ -64,6 +71,7 @@ const sourceLabels: Record<string, string> = {
   'lighthouse-corroborated': 'Lighthouse + кадр',
   'lighthouse-unconfirmed': 'Lighthouse без подтверждения',
   'siglip2-dense': 'SigLIP 2 · точный кадр',
+  'siglip2-temporal-event': 'SigLIP 2 · событие во времени',
   'lexical-exact': 'точное слово',
   'lexical-stem': 'форма слова',
   'lexical-transliteration': 'транслитерация',
@@ -91,6 +99,105 @@ function relevance(score: number): { label: string; level: string } {
   if (score >= 0.78) return { label: 'Высокая', level: 'high' }
   if (score >= 0.58) return { label: 'Средняя', level: 'medium' }
   return { label: 'Низкая', level: 'low' }
+}
+
+const factStateLabels: Record<FactState, string> = {
+  yes: 'да',
+  no: 'нет',
+  unknown: 'не доказано',
+}
+
+function scorePercent(score: number): string {
+  return `${Math.round(Math.max(0, Math.min(1, score)) * 100)}%`
+}
+
+function EventCard({ data }: { data: EventCardData }) {
+  return (
+    <section className="event-card" aria-label="Карточка спортивного события">
+      <header>
+        <strong>Карточка события</strong>
+        <span>{data.eventLabel}</span>
+      </header>
+      {data.facts.length > 0 && (
+        <div className="event-facts">
+          {data.facts.map((fact) => (
+            <div key={fact.id}>
+              <span>{fact.label}</span>
+              <strong className={`fact-${fact.state}`}>{factStateLabels[fact.state]}</strong>
+            </div>
+          ))}
+        </div>
+      )}
+      {data.possibleJersey && (
+        <div className="event-jersey">
+          <span>Возможный номер игрока</span>
+          <strong>№{data.possibleJersey}</strong>
+          <i>не подтверждён</i>
+        </div>
+      )}
+      {data.stageScores.length > 0 && (
+        <div className="event-stages">
+          <p>Оценки стадий <span>сходство, не вероятность</span></p>
+          <div>
+            {data.stageScores.map((stage) => (
+              <span key={stage.id} title={`${stage.label}: ${scorePercent(stage.score)}`}>
+                <i>{stage.label}</i>
+                <b>{scorePercent(stage.score)}</b>
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+    </section>
+  )
+}
+
+function SearchTrace({ result }: { result: SearchResult }) {
+  const sources = resultSourceKeys(result).map((source) => (
+    sourceLabels[source] || modalityLabels[source] || source
+  ))
+  const steps = [
+    {
+      id: 'route',
+      label: 'Маршрутизация',
+      detail: intentLabels[result.intent] || result.intent,
+    },
+    ...(sources.length > 0 ? [{
+      id: 'sources',
+      label: 'Источники',
+      detail: sources.join(' · '),
+    }] : []),
+    ...(result.refined ? [{
+      id: 'refinement',
+      label: 'Точное уточнение',
+      detail: formatMomentRange(result.start, result.end),
+    }] : []),
+    ...(hasQwenVerification(result) ? [{
+      id: 'qwen',
+      label: 'Qwen',
+      detail: 'проверка последовательности кадров',
+    }] : []),
+  ]
+
+  return (
+    <div className="search-route" role="status" aria-label="Фактически выполненные этапы поиска">
+      <div className="search-route-summary">
+        <Sparkles size={14} />
+        <span>{result.explanation}</span>
+      </div>
+      <ol className="search-trace">
+        {steps.map((step, index) => (
+          <li key={step.id}>
+            <b>{index + 1}</b>
+            <span>
+              <strong>{step.label}</strong>
+              <small>{step.detail}</small>
+            </span>
+          </li>
+        ))}
+      </ol>
+    </div>
+  )
 }
 
 function VideoPlayer({
@@ -207,6 +314,7 @@ function ResultRow({
   onAdd: () => void
 }) {
   const rank = relevance(result.score)
+  const event = active ? eventCardData(result) : null
   const handleKey = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key === 'Enter' || event.key === ' ') {
       event.preventDefault()
@@ -246,6 +354,7 @@ function ResultRow({
             ))}
           </span>
         </div>
+        {event && <EventCard data={event} />}
         {active && result.evidence.length > 0 && (
           <div className="result-evidence" aria-label="Причины совпадения">
             {result.evidence.slice(0, 3).map((evidence, index) => (
@@ -280,6 +389,7 @@ function ResultRow({
 
 export function SearchWorkspace(props: SearchWorkspaceProps) {
   const readyVideos = props.videos.filter((video) => video.status === 'ready')
+  const tracedResult = props.selectedResult || props.results[0] || null
   const [currentTime, setCurrentTime] = useState(0)
   useEffect(() => setCurrentTime(0), [props.selectedVideo?.id])
   const submit = (event: FormEvent) => {
@@ -358,13 +468,7 @@ export function SearchWorkspace(props: SearchWorkspaceProps) {
         </div>
       </form>
 
-      {props.hasSearched && props.results[0] && (
-        <div className="search-route" role="status">
-          <Sparkles size={14} />
-          <strong>{intentLabels[props.results[0].intent] || props.results[0].intent}</strong>
-          <span>{props.results[0].explanation}</span>
-        </div>
-      )}
+      {props.hasSearched && tracedResult && <SearchTrace result={tracedResult} />}
 
       <div className="workspace-body">
         {props.selectedVideo?.status === 'ready' && (

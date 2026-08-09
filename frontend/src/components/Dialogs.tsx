@@ -14,6 +14,7 @@ import { DragEvent, ReactNode, useEffect, useRef, useState } from 'react'
 import type { EvaluationPayload, EvaluationVariantName, ProviderStatus } from '../types'
 import { formatBytes } from '../lib/time'
 import { api } from '../lib/api'
+import { evaluationReportIsStale } from '../lib/evaluation'
 
 interface ModalProps {
   title: string
@@ -149,6 +150,7 @@ export function ProviderDialog({ providers, onClose }: { providers: ProviderStat
 
 const evaluationVariants: { id: EvaluationVariantName; label: string }[] = [
   { id: 'auto', label: 'Авто' },
+  { id: 'auto_lighthouse', label: 'Авто + Lighthouse' },
   { id: 'speech', label: 'Речь' },
   { id: 'visual', label: 'Кадр' },
   { id: 'visual_lighthouse', label: 'Кадр + Lighthouse' },
@@ -170,7 +172,8 @@ function decodeGlossary(value: string): Record<string, string[]> {
   return output
 }
 
-function percent(value: number): string {
+function percent(value: number | null): string {
+  if (value === null) return '—'
   return `${Math.round(value * 100)}%`
 }
 
@@ -182,6 +185,14 @@ export function QualityDialog({ onClose }: { onClose: () => void }) {
   const [running, setRunning] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [reportInvalidated, setReportInvalidated] = useState(false)
+  const reportIsStale = reportInvalidated || evaluationReportIsStale(payload)
+  const evaluationErrorCount = payload?.report?.variants.reduce(
+    (total, variant) => total + variant.error_count,
+    0,
+  ) ?? 0
+  const recallThreshold = payload?.report?.temporal_iou_threshold
+  const recallThresholdLabel = recallThreshold == null ? '' : ` ≥ ${percent(recallThreshold)} IoU`
 
   useEffect(() => {
     void Promise.all([api.evaluation(), api.glossary()])
@@ -198,7 +209,14 @@ export function QualityDialog({ onClose }: { onClose: () => void }) {
     setError(null)
     try {
       const report = await api.runEvaluation(selectedVariants)
-      setPayload((current) => ({ cases: current?.cases || [], report }))
+      setPayload((current) => ({
+        cases: current?.cases || [],
+        cases_revision: current?.cases_revision || report.cases_revision || '',
+        evaluation_revision: report.evaluation_revision || current?.evaluation_revision || '',
+        runtime_revision: report.runtime_revision || current?.runtime_revision || '',
+        report,
+      }))
+      setReportInvalidated(false)
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Ошибка оценки')
     } finally {
@@ -212,6 +230,16 @@ export function QualityDialog({ onClose }: { onClose: () => void }) {
     try {
       const result = await api.updateGlossary(decodeGlossary(glossary))
       setGlossary(encodeGlossary(result.entries))
+      setReportInvalidated(true)
+      try {
+        const evaluation = await api.evaluation()
+        setPayload(evaluation)
+        setReportInvalidated(false)
+      } catch (caught) {
+        setError(caught instanceof Error
+          ? `Словарь сохранён, но статус оценки не обновлён: ${caught.message}`
+          : 'Словарь сохранён, но статус оценки не обновлён')
+      }
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Ошибка сохранения')
     } finally {
@@ -244,7 +272,7 @@ export function QualityDialog({ onClose }: { onClose: () => void }) {
                 </label>
               ))}
             </div>
-            <button className="button button-primary" type="button" onClick={() => void run()} disabled={running || selectedVariants.length === 0} aria-label="Запустить оценку">
+            <button className="button button-primary" type="button" onClick={() => void run()} disabled={running || selectedVariants.length === 0 || !payload?.cases.length} aria-label="Запустить оценку">
               {running ? <LoaderCircle className="spin" size={16} /> : <Play size={16} />}
               Запустить
             </button>
@@ -253,18 +281,54 @@ export function QualityDialog({ onClose }: { onClose: () => void }) {
             <span>Контрольные запросы</span>
             <strong>{payload?.cases.length ?? 0}</strong>
           </div>
+          {payload && payload.cases.length === 0 && (
+            <div className="quality-warning" role="status">
+              <CircleAlert size={17} />
+              <div>
+                <strong>Контрольные сценарии не настроены</strong>
+                <span>Добавьте хотя бы один валидный кейс через API оценки.</span>
+              </div>
+            </div>
+          )}
+          {reportIsStale && (
+            <div className="quality-warning" role="status">
+              <CircleAlert size={17} />
+              <div>
+                <strong>Сохранённый прогон не покрывает актуальный набор</strong>
+                <span>Контрольные сценарии или методика изменились. Запустите оценку заново.</span>
+              </div>
+            </div>
+          )}
+          {evaluationErrorCount > 0 && (
+            <div className="quality-warning" role="status">
+              <CircleAlert size={17} />
+              <div>
+                <strong>Оценка выполнена не полностью</strong>
+                <span>
+                  Ошибки поиска: {evaluationErrorCount}. Метрики рассчитаны только по успешно выполненным сценариям.
+                </span>
+              </div>
+            </div>
+          )}
           {payload?.report?.variants.length ? (
             <div className="metrics-table-wrap">
               <table className="metrics-table">
-                <thead><tr><th>Вариант</th><th>Recall@1</th><th>Recall@3</th><th>IoU</th><th>Время</th></tr></thead>
+                <thead><tr><th>Вариант</th><th>Статус</th><th>{`Recall@1${recallThresholdLabel}`}</th><th>{`Recall@3${recallThresholdLabel}`}</th><th>IoU</th><th>Время</th></tr></thead>
                 <tbody>
                   {payload.report.variants.map((variant) => (
                     <tr key={variant.name}>
                       <td>{evaluationVariants.find((item) => item.id === variant.name)?.label || variant.name}</td>
+                      <td>
+                        {variant.status === 'complete'
+                          ? `Полный ${variant.successful_case_count}/${variant.total_case_count}`
+                          : variant.status === 'partial'
+                            ? `Частично ${variant.successful_case_count}/${variant.total_case_count}`
+                            : 'Сбой'}
+                      </td>
                       <td>{percent(variant.recall_at_1)}</td>
                       <td>{percent(variant.recall_at_3)}</td>
                       <td>{percent(variant.mean_temporal_iou)}</td>
-                      <td>{Math.round(variant.mean_latency_ms)} мс</td>
+                      <td>{variant.mean_latency_ms === null ? '—' : `${Math.round(variant.mean_latency_ms)} мс`}</td>
                     </tr>
                   ))}
                 </tbody>
