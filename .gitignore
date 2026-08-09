@@ -1,18 +1,38 @@
+# Operating system and local secrets
 .DS_Store
 .env
+.env.*
+!.env.example
+
+# Python
 .venv/
-.pytest_cache/
-.coverage
-coverage.xml
-htmlcov/
+.venv-ocr/
 __pycache__/
 *.py[cod]
 *.egg-info/
-node_modules/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage*
+coverage.xml
+htmlcov/
+
+# Frontend and package managers
+node_modules
 dist/
-playwright-report/
-test-results/
-data/
+*.tsbuildinfo
 frontend/.vite/
 .pnpm-store/
+
+# Test, browser and generated output
+*.log
+.playwright-cli/
+playwright-report/
+test-results/
+output/
+outputs/
+
+# Local application state and temporary agent work
+data/
+.artifact-work/
 .codex-tmp/
