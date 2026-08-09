@@ -2,13 +2,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 import logging
+import math
+from numbers import Real
 from pathlib import Path
 import re
 from typing import Protocol
 
 from videoscope.repository import Repository
 from videoscope.search.fusion import EvidenceHit, calibrate_hits, fuse_hits
-from videoscope.search.query_router import QueryPlan, QueryRouter
+from videoscope.search.query_router import QueryRouter
 from videoscope.search.text_matching import SearchLexicon, lexical_match
 from videoscope.search.text_matching import tokens as text_tokens
 
@@ -17,12 +19,75 @@ logger = logging.getLogger(__name__)
 
 _TRUSTED_ENTITY_MATCHES = {"exact", "stem", "transliteration"}
 
+
+class SearchDependencyError(RuntimeError):
+    """A dependency failed during strict, non-best-effort search."""
+
+
 SEARCH_MODALITIES = {
     "all": {"speech", "ocr", "objects", "visual", "lighthouse"},
     "speech": {"speech"},
     "visual": {"visual", "lighthouse", "objects"},
     "ocr": {"ocr"},
 }
+
+_EVIDENCE_DETAIL_BOOLEAN_KEYS = (
+    "matches_query",
+    "shot_attempt",
+    "ball_through_hoop",
+    "shooter_outside_arc",
+    "three_point_signal",
+    "shooter_jersey_confirmed",
+)
+_EVIDENCE_DETAIL_TEXT_KEYS = (
+    "event_type",
+    "possible_shooter_jersey",
+    "model_evidence",
+)
+_EVIDENCE_DETAIL_SCORE_KEYS = (
+    "raw_release_score",
+    "release_score",
+    "outcome_score",
+    "followup_score",
+    "core_score",
+    "plus_score",
+    "reset_score",
+    "miss_score",
+    "transition_score",
+    "contrast_score",
+)
+
+
+def _evidence_details(metadata: dict[str, object]) -> dict[str, object]:
+    details: dict[str, object] = {}
+    for key in _EVIDENCE_DETAIL_TEXT_KEYS:
+        if key not in metadata:
+            continue
+        value = metadata[key]
+        if value is None or isinstance(value, str):
+            details[key] = value
+    for key in _EVIDENCE_DETAIL_BOOLEAN_KEYS:
+        if key not in metadata:
+            continue
+        value = metadata[key]
+        if value is None or isinstance(value, bool):
+            details[key] = value
+    stage_order = metadata.get("stage_order")
+    if isinstance(stage_order, (list, tuple)) and all(
+        isinstance(stage, str) for stage in stage_order
+    ):
+        details["stage_order"] = list(stage_order)
+    for key in _EVIDENCE_DETAIL_SCORE_KEYS:
+        if key not in metadata:
+            continue
+        value = metadata[key]
+        if value is None:
+            details[key] = None
+        elif isinstance(value, Real) and not isinstance(value, bool):
+            score = float(value)
+            if math.isfinite(score):
+                details[key] = score
+    return details
 
 
 def _looks_like_named_entity(query: str) -> bool:
@@ -102,13 +167,33 @@ def refine_speech_hit(query: str, hit: EvidenceHit, *, context: float = 1.2) -> 
     raw_words = hit.metadata.get("words")
     if not isinstance(raw_words, list):
         return hit
-    words = [
-        word
-        for word in raw_words
-        if isinstance(word, dict)
-        and str(word.get("word") or "").strip()
-        and float(word.get("end") or 0) > float(word.get("start") or 0)
-    ]
+    words: list[dict[str, object]] = []
+    for raw_word in raw_words:
+        if not isinstance(raw_word, dict):
+            continue
+        word = raw_word.get("word")
+        raw_start = raw_word.get("start")
+        raw_end = raw_word.get("end")
+        if (
+            not isinstance(word, str)
+            or not word.strip()
+            or isinstance(raw_start, bool)
+            or isinstance(raw_end, bool)
+        ):
+            continue
+        try:
+            start = float(raw_start)
+            end = float(raw_end)
+        except (TypeError, ValueError):
+            continue
+        if (
+            not math.isfinite(start)
+            or not math.isfinite(end)
+            or start < 0
+            or end <= start
+        ):
+            continue
+        words.append({"word": word.strip(), "start": start, "end": end})
     if not words:
         return hit
 
@@ -189,6 +274,7 @@ class EvidenceView:
     end: float
     raw_score: float
     matched_terms: list[str]
+    details: dict[str, object]
 
 
 @dataclass(frozen=True, slots=True)
@@ -240,6 +326,7 @@ class SearchService:
         limit: int = 20,
         use_lighthouse: bool = True,
         mode: str = "all",
+        raise_on_provider_error: bool = False,
     ) -> list[SearchResultView]:
         normalized_query = query.strip()
         if not normalized_query:
@@ -252,20 +339,33 @@ class SearchService:
             mode=mode,
             requested_lighthouse=use_lighthouse,
         )
+        ready_videos = {
+            video.id: video
+            for video in self.repository.list_videos()
+            if video.status == "ready"
+        }
+        ready_video_ids = (
+            list(ready_videos)
+            if video_ids is None
+            else [video_id for video_id in video_ids if video_id in ready_videos]
+        )
         allowed_modalities = set(plan.modalities)
         named_entity_query = plan.intent == "entity"
         semantic_modalities = allowed_modalities & {"speech", "ocr", "objects"}
         query_variants = self.lexicon.expand(normalized_query) if self.lexicon else [normalized_query]
 
         hits: list[EvidenceHit] = []
-        if semantic_modalities:
+        if semantic_modalities and ready_video_ids:
             try:
                 semantic_hits = self.vector_index.search(
                     normalized_query,
-                    video_ids=video_ids,
+                    video_ids=ready_video_ids,
                     modalities=semantic_modalities,
                     limit=max(limit * 3, 30),
                 )
+                semantic_hits = [
+                    hit for hit in semantic_hits if hit.video_id in ready_videos
+                ]
                 semantic_threshold = max(self.semantic_text_min_score, 0.62) if named_entity_query else self.semantic_text_min_score
                 hybrid_hits = [
                     refine_speech_hit(normalized_query, _hybridize(normalized_query, hit))
@@ -278,15 +378,22 @@ class SearchService:
                         if hit.metadata.get("lexical_strategy") in _TRUSTED_ENTITY_MATCHES
                     ]
                 hits.extend(hit for hit in hybrid_hits if hit.score >= semantic_threshold)
-            except Exception:
+            except Exception as error:
                 logger.exception("Semantic text search failed")
+                if raise_on_provider_error:
+                    raise SearchDependencyError("Semantic text search failed") from error
 
-        for segment, score in self.repository.search_segments_lexical(
-            normalized_query,
-            video_ids=video_ids,
-            limit=max(limit * 2, 20),
-            query_variants=query_variants,
-        ):
+        lexical_matches = (
+            self.repository.search_segments_lexical(
+                normalized_query,
+                video_ids=ready_video_ids,
+                limit=max(limit * 2, 20),
+                query_variants=query_variants,
+            )
+            if ready_video_ids
+            else []
+        )
+        for segment, score in lexical_matches:
             if segment.modality not in allowed_modalities:
                 continue
             matched_variant, match = max(
@@ -316,38 +423,64 @@ class SearchService:
                 )
             hits.append(refine_speech_hit(matched_variant, lexical_hit))
 
-        selected_video_ids = video_ids or [video.id for video in self.repository.list_videos()]
-        if "visual" in allowed_modalities and self.visual_search is not None:
+        if (
+            "visual" in allowed_modalities
+            and self.visual_search is not None
+            and ready_video_ids
+        ):
             try:
                 visual_hits = self.visual_search.search(
                     normalized_query,
-                    video_ids=video_ids,
+                    video_ids=ready_video_ids,
                     limit=max(limit * 2, 20),
                 )
-                visual_hits = [hit for hit in visual_hits if hit.score >= self.visual_min_score]
+                visual_hits = [
+                    hit
+                    for hit in visual_hits
+                    if hit.video_id in ready_videos
+                    and hit.score >= self.visual_min_score
+                ]
                 if plan.refine_temporally and self.temporal_refiner is not None:
-                    visual_hits = self.temporal_refiner.refine(normalized_query, visual_hits)
+                    refine = self.temporal_refiner.refine
+                    if raise_on_provider_error:
+                        refine_strict = getattr(
+                            self.temporal_refiner,
+                            "refine_strict",
+                            None,
+                        )
+                        if callable(refine_strict):
+                            refine = refine_strict
+                    visual_hits = refine(normalized_query, visual_hits)
                 hits.extend(visual_hits)
-            except Exception:
+            except Exception as error:
                 logger.exception("SigLIP visual search failed")
+                if raise_on_provider_error:
+                    raise SearchDependencyError("Visual search failed") from error
 
         if (
             "lighthouse" in allowed_modalities
             and plan.use_lighthouse
             and self.moment_search is not None
-            and selected_video_ids
+            and ready_video_ids
         ):
             try:
                 lighthouse_hits = self.moment_search.search(
                     normalized_query,
-                    selected_video_ids,
+                    ready_video_ids,
                     limit=max(limit * 2, 20),
                 )
-                viable = [hit for hit in lighthouse_hits if hit.score >= self.visual_min_score]
+                viable = [
+                    hit
+                    for hit in lighthouse_hits
+                    if hit.video_id in ready_videos
+                    and hit.score >= self.visual_min_score
+                ]
                 support = [hit for hit in hits if hit.modality in {"visual", "objects"}]
                 hits.extend(corroborate_lighthouse_hits(viable, support))
-            except Exception:
+            except Exception as error:
                 logger.exception("Lighthouse search failed")
+                if raise_on_provider_error:
+                    raise SearchDependencyError("Temporal search failed") from error
 
         deduplicated: dict[tuple[str, str], EvidenceHit] = {}
         for hit in hits:
@@ -355,7 +488,7 @@ class SearchService:
             if key not in deduplicated or hit.score > deduplicated[key].score:
                 deduplicated[key] = hit
 
-        videos = {video.id: video for video in self.repository.list_videos()}
+        videos = ready_videos
         scene_segments: dict[str, list[object]] = {}
         for segment in self.repository.list_segments():
             if segment.modality == "scene" and segment.thumbnail_path:
@@ -364,9 +497,20 @@ class SearchService:
         fused = fuse_hits(calibrated, limit=limit, modality_weights=plan.modality_weights)
         if self.candidate_reranker is not None and plan.intent in {"action", "mixed"}:
             try:
-                fused = self.candidate_reranker.rerank(normalized_query, fused)  # type: ignore[assignment, arg-type]
-            except Exception:
+                rerank = self.candidate_reranker.rerank
+                if raise_on_provider_error:
+                    rerank_strict = getattr(
+                        self.candidate_reranker,
+                        "rerank_strict",
+                        None,
+                    )
+                    if callable(rerank_strict):
+                        rerank = rerank_strict
+                fused = rerank(normalized_query, fused)  # type: ignore[assignment, arg-type]
+            except Exception as error:
                 logger.exception("Candidate video reranking failed")
+                if raise_on_provider_error:
+                    raise SearchDependencyError("Candidate reranking failed") from error
         output: list[SearchResultView] = []
         for index, result in enumerate(fused):
             video = videos.get(result.video_id)
@@ -416,6 +560,7 @@ class SearchService:
                             end=hit.end,
                             raw_score=float(hit.metadata.get("raw_score", hit.score)),
                             matched_terms=[str(value) for value in hit.metadata.get("matched_terms", [])],
+                            details=_evidence_details(hit.metadata),
                         )
                         for hit in result.evidence[:5]
                     ],
@@ -426,3 +571,96 @@ class SearchService:
                 )
             )
         return output
+
+    def search_for_evaluation(
+        self,
+        query: str,
+        *,
+        video_ids: list[str] | None = None,
+        limit: int = 20,
+        use_lighthouse: bool = True,
+        mode: str = "all",
+    ) -> list[SearchResultView]:
+        """Run search fail-closed so infrastructure outages cannot look like misses."""
+        plan = self.query_router.route(
+            query.strip(),
+            mode=mode,
+            requested_lighthouse=use_lighthouse,
+        )
+        semantic_modalities = set(plan.modalities) & {"speech", "ocr", "objects"}
+        if semantic_modalities and not getattr(self.vector_index, "available", True):
+            raise SearchDependencyError("Semantic search is unavailable")
+        if "visual" in plan.modalities and self.visual_search is None:
+            raise SearchDependencyError("Visual search is unavailable")
+        if plan.use_lighthouse and "lighthouse" in plan.modalities and self.moment_search is None:
+            raise SearchDependencyError("Temporal search is unavailable")
+
+        ready_video_ids = [
+            video.id
+            for video in self.repository.list_videos()
+            if video.status == "ready"
+        ]
+        ready_video_id_set = set(ready_video_ids)
+        selected_ready_ids = (
+            ready_video_ids
+            if video_ids is None
+            else [
+                video_id
+                for video_id in dict.fromkeys(video_ids)
+                if video_id in ready_video_id_set
+            ]
+        )
+        if "visual" in plan.modalities and self.visual_search is not None:
+            self._require_current_artifacts(
+                self.visual_search,
+                "index_is_current",
+                selected_ready_ids,
+                "Visual index",
+            )
+        if (
+            plan.use_lighthouse
+            and "lighthouse" in plan.modalities
+            and self.moment_search is not None
+        ):
+            self._require_current_artifacts(
+                self.moment_search,
+                "cache_is_current",
+                selected_ready_ids,
+                "Temporal cache",
+            )
+        return self.search(
+            query,
+            video_ids=video_ids,
+            limit=limit,
+            use_lighthouse=use_lighthouse,
+            mode=mode,
+            raise_on_provider_error=True,
+        )
+
+    @staticmethod
+    def _require_current_artifacts(
+        provider: object,
+        method_name: str,
+        video_ids: list[str],
+        dependency_name: str,
+    ) -> None:
+        readiness_check = getattr(provider, method_name, None)
+        if not callable(readiness_check) or not video_ids:
+            return
+        try:
+            missing = [
+                video_id
+                for video_id in video_ids
+                if not readiness_check(video_id)
+            ]
+        except Exception as error:
+            raise SearchDependencyError(
+                f"{dependency_name} readiness check failed"
+            ) from error
+        if missing:
+            preview = ", ".join(missing[:3])
+            suffix = "" if len(missing) <= 3 else f" (+{len(missing) - 3} more)"
+            raise SearchDependencyError(
+                f"{dependency_name} is missing or stale for selected ready videos: "
+                f"{preview}{suffix}"
+            )

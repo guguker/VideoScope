@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
-import re
+import logging
+import math
+from numbers import Real
 import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -11,8 +13,16 @@ from typing import Any
 from videoscope.search.text_matching import lexical_match
 
 
+logger = logging.getLogger(__name__)
+SEGMENT_MODALITIES = frozenset({"scene", "speech", "ocr", "objects"})
+
+
 def _now() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _reject_non_finite_json(value: str) -> None:
+    raise ValueError(f"non-finite JSON value: {value}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -209,9 +219,26 @@ class Repository:
         metadata: dict[str, Any] | None = None,
         thumbnail_path: str | None = None,
     ) -> SegmentRecord:
-        if end <= start:
-            raise ValueError("segment interval must be positive")
-        payload = json.dumps(metadata or {}, ensure_ascii=False, separators=(",", ":"))
+        record = self._validated_segment(
+            segment_id=segment_id,
+            video_id=video_id,
+            start=start,
+            end=end,
+            modality=modality,
+            text=text,
+            confidence=confidence,
+            metadata={} if metadata is None else metadata,
+            thumbnail_path=thumbnail_path,
+        )
+        try:
+            payload = json.dumps(
+                record.metadata,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+        except (TypeError, ValueError) as error:
+            raise ValueError("segment metadata must be finite JSON") from error
         with self._connect() as connection:
             connection.execute(
                 """
@@ -221,26 +248,76 @@ class Repository:
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    segment_id,
-                    video_id,
-                    start,
-                    end,
-                    modality,
-                    text,
-                    confidence,
+                    record.id,
+                    record.video_id,
+                    record.start,
+                    record.end,
+                    record.modality,
+                    record.text,
+                    record.confidence,
                     payload,
-                    thumbnail_path,
+                    record.thumbnail_path,
                 ),
             )
+        return record
+
+    @staticmethod
+    def _validated_segment(
+        *,
+        segment_id: object,
+        video_id: object,
+        start: object,
+        end: object,
+        modality: object,
+        text: object,
+        confidence: object,
+        metadata: object,
+        thumbnail_path: object,
+    ) -> SegmentRecord:
+        if type(segment_id) is not str or not segment_id:
+            raise ValueError("segment id must not be empty")
+        if type(video_id) is not str or not video_id:
+            raise ValueError("segment video id must not be empty")
+        if (
+            isinstance(start, bool)
+            or isinstance(end, bool)
+            or not isinstance(start, Real)
+            or not isinstance(end, Real)
+        ):
+            raise ValueError("segment interval must be numeric")
+        resolved_start = float(start)
+        resolved_end = float(end)
+        if (
+            not math.isfinite(resolved_start)
+            or not math.isfinite(resolved_end)
+            or resolved_start < 0
+            or resolved_end <= resolved_start
+        ):
+            raise ValueError("segment interval must be finite, non-negative and ordered")
+        if modality not in SEGMENT_MODALITIES:
+            raise ValueError("unsupported segment modality")
+        if type(text) is not str:
+            raise ValueError("segment text must be a string")
+        if (
+            isinstance(confidence, bool)
+            or not isinstance(confidence, Real)
+            or not math.isfinite(resolved_confidence := float(confidence))
+            or not 0 <= resolved_confidence <= 1
+        ):
+            raise ValueError("segment confidence must be finite and between zero and one")
+        if not isinstance(metadata, dict):
+            raise ValueError("segment metadata must be an object")
+        if thumbnail_path is not None and type(thumbnail_path) is not str:
+            raise ValueError("segment thumbnail path must be a string")
         return SegmentRecord(
             id=segment_id,
             video_id=video_id,
-            start=start,
-            end=end,
+            start=resolved_start,
+            end=resolved_end,
             modality=modality,
             text=text,
-            confidence=confidence,
-            metadata=metadata or {},
+            confidence=resolved_confidence,
+            metadata=dict(metadata),
             thumbnail_path=thumbnail_path,
         )
 
@@ -253,20 +330,29 @@ class Repository:
         query += " ORDER BY video_id, start, end"
         with self._connect() as connection:
             rows = connection.execute(query, parameters).fetchall()
-        return [
-            SegmentRecord(
-                id=row["id"],
-                video_id=row["video_id"],
-                start=row["start"],
-                end=row["end"],
-                modality=row["modality"],
-                text=row["text"],
-                confidence=row["confidence"],
-                metadata=json.loads(row["metadata_json"]),
-                thumbnail_path=row["thumbnail_path"],
-            )
-            for row in rows
-        ]
+        segments: list[SegmentRecord] = []
+        for row in rows:
+            try:
+                metadata = json.loads(
+                    row["metadata_json"],
+                    parse_constant=_reject_non_finite_json,
+                )
+                segments.append(
+                    self._validated_segment(
+                        segment_id=row["id"],
+                        video_id=row["video_id"],
+                        start=row["start"],
+                        end=row["end"],
+                        modality=row["modality"],
+                        text=row["text"],
+                        confidence=row["confidence"],
+                        metadata=metadata,
+                        thumbnail_path=row["thumbnail_path"],
+                    )
+                )
+            except (TypeError, ValueError, json.JSONDecodeError):
+                logger.warning("Ignoring invalid persisted segment %s", row["id"])
+        return segments
 
     def clear_segments(self, video_id: str, *, modality: str | None = None) -> None:
         with self._connect() as connection:

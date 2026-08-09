@@ -52,6 +52,18 @@ class TemporalRefiner:
         self.max_candidate_seconds = max(2.0, max_candidate_seconds)
 
     def refine(self, query: str, hits: list[EvidenceHit]) -> list[EvidenceHit]:
+        return self._refine(query, hits, raise_on_error=False)
+
+    def refine_strict(self, query: str, hits: list[EvidenceHit]) -> list[EvidenceHit]:
+        return self._refine(query, hits, raise_on_error=True)
+
+    def _refine(
+        self,
+        query: str,
+        hits: list[EvidenceHit],
+        *,
+        raise_on_error: bool,
+    ) -> list[EvidenceHit]:
         if not hits or self.top_candidates <= 0:
             return hits
         selected_ids = {
@@ -69,6 +81,8 @@ class TemporalRefiner:
                 try:
                     output.append(self._refine_hit(query, hit, workspace / str(index)))
                 except Exception:
+                    if raise_on_error:
+                        raise
                     output.append(hit)
         return output
 

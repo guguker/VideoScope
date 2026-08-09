@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from dataclasses import replace
+import math
 
 
 MODALITY_WEIGHTS = {
@@ -38,6 +39,19 @@ class FusedResult:
     evidence: list[EvidenceHit]
 
 
+def _is_valid_hit(hit: EvidenceHit) -> bool:
+    try:
+        return (
+            math.isfinite(hit.score)
+            and math.isfinite(hit.start)
+            and math.isfinite(hit.end)
+            and hit.start >= 0
+            and hit.end > hit.start
+        )
+    except TypeError:
+        return False
+
+
 def _belongs_to_cluster(hit: EvidenceHit, cluster: list[EvidenceHit], tolerance: float) -> bool:
     cluster_start = min(item.start for item in cluster)
     cluster_end = max(item.end for item in cluster)
@@ -48,6 +62,8 @@ def calibrate_hits(hits: list[EvidenceHit], *, rank_blend: float = 0.16) -> list
     """Объединяет несопоставимые оценки моделей с учётом ранга внутри каждой модальности."""
     grouped: dict[str, list[EvidenceHit]] = {}
     for hit in hits:
+        if not _is_valid_hit(hit):
+            continue
         grouped.setdefault(hit.modality, []).append(hit)
 
     calibrated: list[EvidenceHit] = []
@@ -100,7 +116,8 @@ def fuse_hits(
     modality_weights: dict[str, float] | None = None,
 ) -> list[FusedResult]:
     clusters: list[list[EvidenceHit]] = []
-    for hit in sorted(hits, key=lambda item: (item.video_id, item.start, item.end)):
+    valid_hits = [hit for hit in hits if _is_valid_hit(hit)]
+    for hit in sorted(valid_hits, key=lambda item: (item.video_id, item.start, item.end)):
         matching = next(
             (
                 cluster

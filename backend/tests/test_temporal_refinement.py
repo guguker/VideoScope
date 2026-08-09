@@ -92,3 +92,21 @@ def test_refiner_only_expands_configured_number_of_candidates(tmp_path) -> None:
 
     assert refined[0].metadata["temporal_refinement"] is True
     assert "temporal_refinement" not in refined[1].metadata
+
+
+def test_refine_strict_surfaces_candidate_failure(tmp_path) -> None:
+    class FailingExtractor(FakeExtractor):
+        def extract_frames(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
+            raise RuntimeError("frame extraction failed")
+
+    hit = EvidenceHit("video-1", "scene-1", 10, 20, "visual", 0.72, "query")
+    refiner = TemporalRefiner(
+        repository=_repository(tmp_path),
+        extractor=FailingExtractor(),
+        scorer=FakeScorer([0.9]),
+        temp_dir=tmp_path / "frames",
+    )
+
+    assert refiner.refine("query", [hit]) == [hit]
+    with pytest.raises(RuntimeError, match="frame extraction failed"):
+        refiner.refine_strict("query", [hit])
