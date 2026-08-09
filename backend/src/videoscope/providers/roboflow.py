@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import base64
+import json
+import math
 import os
 from pathlib import Path
+import re
 
 from videoscope.providers.base import ProviderState, ProviderStatus
 from videoscope.providers.types import ObjectTag
@@ -13,6 +17,13 @@ LOCAL_MODELS = {
     "rfdetr-medium": "RFDETRMedium",
     "rfdetr-large": "RFDETRLarge",
 }
+_HOSTED_MODEL_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+_MAX_HOSTED_IMAGE_BYTES = 20 * 1024 * 1024
+_MAX_HOSTED_RESPONSE_BYTES = 10 * 1024 * 1024
+
+
+def _reject_non_finite_json(value: str) -> None:
+    raise ValueError(f"non-finite Roboflow JSON: {value}")
 
 
 class RoboflowDetector:
@@ -76,15 +87,12 @@ class RoboflowDetector:
                 "Задайте ROBOFLOW_MODEL_ID",
                 optional=True,
             )
-        try:
-            import inference_sdk  # noqa: F401
-            import supervision  # noqa: F401
-        except ImportError:
+        if _HOSTED_MODEL_ID_RE.fullmatch(self.model_id) is None:
             return ProviderStatus(
                 self.id,
                 "Roboflow",
-                ProviderState.UNAVAILABLE,
-                "inference-sdk or supervision is not installed",
+                ProviderState.NEEDS_CONFIGURATION,
+                "Идентификатор облачной модели должен иметь вид project/version",
                 optional=True,
             )
         destination = "local server" if self.api_url.startswith("http://127.0.0.1") else "Roboflow API"
@@ -110,9 +118,9 @@ class RoboflowDetector:
             return self._backend
         if not self.api_key or not self.model_id:
             raise RuntimeError("Roboflow is not configured")
-        from inference_sdk import InferenceHTTPClient
+        import httpx
 
-        client = InferenceHTTPClient(api_url=self.api_url, api_key=self.api_key)
+        client = httpx.Client(timeout=60.0, follow_redirects=False)
         self._backend = ("hosted", client)
         return self._backend
 
@@ -121,34 +129,83 @@ class RoboflowDetector:
         if backend == "local":
             return self._detect_local(detector, image)
 
-        import supervision as sv
-
-        response = detector.infer(str(image), model_id=self.model_id)
+        if _HOSTED_MODEL_ID_RE.fullmatch(str(self.model_id)) is None:
+            raise RuntimeError("Roboflow model id is invalid")
+        try:
+            image_size = image.stat().st_size
+        except OSError as error:
+            raise RuntimeError("Roboflow frame cannot be read") from error
+        if image_size <= 0 or image_size > _MAX_HOSTED_IMAGE_BYTES:
+            raise RuntimeError("Roboflow frame size is invalid")
+        encoded = base64.b64encode(image.read_bytes()).decode("ascii")
+        result = detector.post(
+            f"{self.api_url.rstrip('/')}/{self.model_id}",
+            params={"api_key": self.api_key},
+            content=encoded,
+            headers={"content-type": "text/plain; charset=us-ascii"},
+        )
+        declared_size = result.headers.get("content-length")
+        if declared_size is not None:
+            try:
+                if int(declared_size) > _MAX_HOSTED_RESPONSE_BYTES:
+                    raise RuntimeError("Roboflow response is too large")
+            except ValueError as error:
+                raise RuntimeError("Roboflow response size is invalid") from error
+        result.raise_for_status()
+        if len(result.content) > _MAX_HOSTED_RESPONSE_BYTES:
+            raise RuntimeError("Roboflow response is too large")
+        try:
+            response = json.loads(
+                result.content,
+                parse_constant=_reject_non_finite_json,
+            )
+        except (UnicodeError, ValueError, TypeError) as error:
+            raise RuntimeError("Roboflow response is invalid") from error
         if isinstance(response, list):
             response = response[0] if response else {}
         if not isinstance(response, dict):
             return []
-
-        # Supervision проверяет структуру ответа Roboflow и выполняет NMS с учётом классов.
-        detections = sv.Detections.from_inference(response).with_nms(threshold=0.5)
         predictions = response.get("predictions") or []
+        if not isinstance(predictions, list):
+            return []
         tags: list[ObjectTag] = []
-        for index in range(len(detections)):
-            prediction = predictions[index] if index < len(predictions) else {}
-            confidence = float(detections.confidence[index]) if detections.confidence is not None else 0.0
-            if confidence < self.minimum_confidence:
+        for prediction in predictions[:1_000]:
+            if not isinstance(prediction, dict):
                 continue
-            label = str(prediction.get("class") or f"class-{detections.class_id[index]}")
+            try:
+                confidence = float(prediction["confidence"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if (
+                not math.isfinite(confidence)
+                or not 0 <= confidence <= 1
+                or confidence < self.minimum_confidence
+            ):
+                continue
+            label = str(prediction.get("class") or "unknown")[:120]
+            metadata: dict[str, float | None] = {}
+            valid_box = True
+            for name in ("x", "y", "width", "height"):
+                value = prediction.get(name)
+                if value is None:
+                    metadata[name] = None
+                    continue
+                try:
+                    resolved = float(value)
+                except (TypeError, ValueError):
+                    valid_box = False
+                    break
+                if not math.isfinite(resolved):
+                    valid_box = False
+                    break
+                metadata[name] = resolved
+            if not valid_box:
+                continue
             tags.append(
                 ObjectTag(
                     label=label,
                     confidence=confidence,
-                    metadata={
-                        "x": prediction.get("x"),
-                        "y": prediction.get("y"),
-                        "width": prediction.get("width"),
-                        "height": prediction.get("height"),
-                    },
+                    metadata=metadata,
                 )
             )
         return tags

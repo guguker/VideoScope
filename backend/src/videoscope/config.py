@@ -1,25 +1,38 @@
 from __future__ import annotations
 
+from ipaddress import ip_address
 from pathlib import Path
+from typing import Self
+from urllib.parse import urlsplit
 
-from pydantic import AliasChoices, Field
+from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from videoscope.model_manifest import (
+    SIGLIP_224_MODEL,
+    TEXT_EMBEDDING_DIMENSIONS,
+    TEXT_EMBEDDING_MODEL,
+    WHISPER_MODEL,
+)
 
 
 class AppSettings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
         env_prefix="VIDEOSCOPE_",
+        env_ignore_empty=True,
+        populate_by_name=True,
         extra="ignore",
     )
 
     data_dir: Path = Path("data")
-    max_upload_bytes: int = 12 * 1024 * 1024 * 1024
-    host: str = "127.0.0.1"
-    port: int = 8765
-    search_limit: int = 30
-    max_scene_seconds: float = 30.0
-    scene_threshold: float = 3.0
+    max_upload_bytes: int = Field(default=12 * 1024 * 1024 * 1024, gt=0)
+    host: str = Field(default="127.0.0.1", min_length=1)
+    port: int = Field(default=8765, ge=1, le=65_535)
+    max_scene_seconds: float = Field(default=30.0, gt=0)
+    scene_threshold: float = Field(default=3.0, gt=0)
+    ocr_worker_python: Path = Path(".venv-ocr/bin/python")
+    ocr_worker_script: Path = Path("scripts/paddle-ocr-worker.py")
     roboflow_api_key: str | None = Field(
         default=None,
         validation_alias=AliasChoices("ROBOFLOW_API_KEY", "VIDEOSCOPE_ROBOFLOW_API_KEY"),
@@ -34,10 +47,11 @@ class AppSettings(BaseSettings):
     )
     internvideo_api_key: str | None = Field(
         default=None,
+        min_length=32,
         validation_alias=AliasChoices("INTERNVIDEO_API_KEY", "VIDEOSCOPE_INTERNVIDEO_API_KEY"),
     )
-    internvideo_timeout: float = 180.0
-    internvideo_top_candidates: int = 4
+    internvideo_timeout: float = Field(default=180.0, gt=0)
+    internvideo_top_candidates: int = Field(default=4, ge=1, le=4)
     qwen_video_model: str | None = Field(
         default=None,
         validation_alias=AliasChoices(
@@ -45,12 +59,12 @@ class AppSettings(BaseSettings):
             "VIDEOSCOPE_QWEN_VIDEO_MODEL",
         ),
     )
-    qwen_video_top_candidates: int = 12
-    qwen_video_context_seconds: float = 4.0
-    qwen_video_min_clip_seconds: float = 7.0
-    qwen_video_max_clip_seconds: float = 12.0
-    qwen_video_frame_count: int = 12
-    qwen_video_fps: float = 2.0
+    qwen_video_top_candidates: int = Field(default=12, ge=1, le=50)
+    qwen_video_context_seconds: float = Field(default=4.0, ge=0)
+    qwen_video_min_clip_seconds: float = Field(default=7.0, gt=0)
+    qwen_video_max_clip_seconds: float = Field(default=12.0, gt=0)
+    qwen_video_frame_count: int = Field(default=12, ge=1, le=120)
+    qwen_video_fps: float = Field(default=2.0, gt=0)
     lighthouse_root: Path | None = Field(
         default=None,
         validation_alias=AliasChoices("LIGHTHOUSE_ROOT", "VIDEOSCOPE_LIGHTHOUSE_ROOT"),
@@ -60,7 +74,7 @@ class AppSettings(BaseSettings):
         validation_alias=AliasChoices("LIGHTHOUSE_CHECKPOINT", "VIDEOSCOPE_LIGHTHOUSE_CHECKPOINT"),
     )
     whisper_model: str = Field(
-        default="mlx-community/whisper-large-v3-turbo",
+        default=WHISPER_MODEL,
         validation_alias=AliasChoices("WHISPER_MODEL", "VIDEOSCOPE_WHISPER_MODEL"),
     )
     whisper_language: str = Field(
@@ -77,17 +91,62 @@ class AppSettings(BaseSettings):
             "VIDEOSCOPE_WHISPER_INITIAL_PROMPT",
         ),
     )
-    text_embedding_model: str = "sentence-transformers/paraphrase-multilingual-mpnet-base-v2"
-    text_embedding_dimensions: int = 768
-    siglip_model: str = "google/siglip2-base-patch16-224"
-    siglip_quality_model: str = "google/siglip2-base-patch16-384"
-    siglip_batch_size: int = 8
-    visual_index_step: float = 1.0
-    visual_index_max_width: int = 640
-    semantic_text_min_score: float = 0.42
-    visual_min_score: float = 0.18
-    temporal_refinement_candidates: int = 12
-    temporal_refinement_step: float = 0.75
+    text_embedding_model: str = TEXT_EMBEDDING_MODEL
+    text_embedding_dimensions: int = Field(default=TEXT_EMBEDDING_DIMENSIONS, gt=0)
+    siglip_model: str = SIGLIP_224_MODEL
+    siglip_batch_size: int = Field(default=8, ge=1, le=256)
+    visual_index_step: float = Field(default=1.0, gt=0)
+    visual_index_max_width: int = Field(default=640, ge=64)
+    semantic_text_min_score: float = Field(default=0.42, ge=0, le=1)
+    visual_min_score: float = Field(default=0.18, ge=0, le=1)
+    temporal_refinement_candidates: int = Field(default=12, ge=1, le=100)
+    temporal_refinement_step: float = Field(default=0.75, gt=0)
+
+    @field_validator("host")
+    @classmethod
+    def validate_loopback_host(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized == "localhost":
+            return normalized
+        try:
+            address = ip_address(normalized)
+        except ValueError as error:
+            raise ValueError("host must be a loopback address") from error
+        if not address.is_loopback or address.version != 4:
+            raise ValueError("host must be localhost or an IPv4 loopback address")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_qwen_clip_bounds(self) -> Self:
+        if (
+            self.text_embedding_model == TEXT_EMBEDDING_MODEL
+            and self.text_embedding_dimensions != TEXT_EMBEDDING_DIMENSIONS
+        ):
+            raise ValueError(
+                f"the default text embedding model requires {TEXT_EMBEDDING_DIMENSIONS} dimensions"
+            )
+        if self.qwen_video_max_clip_seconds < self.qwen_video_min_clip_seconds:
+            raise ValueError(
+                "qwen_video_max_clip_seconds must be greater than or equal to "
+                "qwen_video_min_clip_seconds"
+            )
+        if self.internvideo_endpoint:
+            if not self.internvideo_api_key:
+                raise ValueError("internvideo_api_key is required when internvideo_endpoint is set")
+            parsed = urlsplit(self.internvideo_endpoint)
+            if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+                raise ValueError("internvideo_endpoint must be an absolute HTTP(S) URL")
+            if parsed.scheme == "http":
+                hostname = parsed.hostname.casefold()
+                is_loopback = hostname == "localhost"
+                if not is_loopback:
+                    try:
+                        is_loopback = ip_address(hostname).is_loopback
+                    except ValueError:
+                        is_loopback = False
+                if not is_loopback:
+                    raise ValueError("remote internvideo_endpoint must use HTTPS")
+        return self
 
     @property
     def glossary_path(self) -> Path:

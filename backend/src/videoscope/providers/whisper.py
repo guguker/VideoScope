@@ -17,11 +17,25 @@ class WhisperTranscriber:
         language: str = "auto",
         initial_prompt: str | None = None,
         glossary_path: Path | None = None,
+        model_revision: str | None = None,
     ) -> None:
         self.model = model
         self.language = language
         self.initial_prompt = initial_prompt
         self.glossary_path = Path(glossary_path) if glossary_path else None
+        self.model_revision = model_revision
+
+    def _model_reference(self) -> str:
+        model_path = Path(self.model).expanduser()
+        if model_path.exists() or self.model_revision is None:
+            return str(model_path) if model_path.exists() else self.model
+        from huggingface_hub import snapshot_download
+
+        return snapshot_download(
+            self.model,
+            revision=self.model_revision,
+            local_files_only=True,
+        )
 
     def _resolved_prompt(self) -> str | None:
         parts = [self.initial_prompt.strip()] if self.initial_prompt else []
@@ -51,6 +65,16 @@ class WhisperTranscriber:
                 ProviderState.UNAVAILABLE,
                 "mlx-whisper не установлен",
             )
+        if self.model_revision is not None:
+            try:
+                self._model_reference()
+            except Exception:
+                return ProviderStatus(
+                    self.id,
+                    "Whisper MLX",
+                    ProviderState.NEEDS_CONFIGURATION,
+                    "Закреплённая ревизия Whisper ещё не загружена",
+                )
         return ProviderStatus(
             self.id,
             "Whisper MLX",
@@ -62,7 +86,7 @@ class WhisperTranscriber:
         import mlx_whisper
 
         options: dict[str, object] = {
-            "path_or_hf_repo": self.model,
+            "path_or_hf_repo": self._model_reference(),
             "word_timestamps": True,
             "verbose": False,
             "temperature": 0.0,
@@ -78,26 +102,56 @@ class WhisperTranscriber:
         detected_language = str(result.get("language") or self.language)
         segments: list[TimedText] = []
         for raw in result.get("segments") or []:
-            text = str(raw.get("text") or "").strip()
-            start = float(raw.get("start") or 0.0)
-            end = float(raw.get("end") or start)
-            if not text or end <= start:
+            if not isinstance(raw, dict):
                 continue
-            average_log_probability = float(raw.get("avg_logprob") or 0.0)
-            confidence = max(0.0, min(1.0, math.exp(average_log_probability)))
+            try:
+                text = str(raw.get("text") or "").strip()
+                start = float(raw.get("start") or 0.0)
+                end = float(raw.get("end") or start)
+                average_log_probability = float(raw.get("avg_logprob") or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if (
+                not text
+                or not all(
+                    math.isfinite(value)
+                    for value in (start, end, average_log_probability)
+                )
+                or start < 0
+                or end <= start
+            ):
+                continue
+            confidence = max(
+                0.0,
+                min(1.0, math.exp(min(0.0, average_log_probability))),
+            )
             words = []
             for word in raw.get("words") or []:
-                word_text = str(word.get("word") or "").strip()
-                word_start = float(word.get("start") or start)
-                word_end = float(word.get("end") or word_start)
-                if not word_text or word_end <= word_start:
+                if not isinstance(word, dict):
+                    continue
+                try:
+                    word_text = str(word.get("word") or "").strip()
+                    word_start = float(word.get("start") or start)
+                    word_end = float(word.get("end") or word_start)
+                    probability = float(word.get("probability") or confidence)
+                except (TypeError, ValueError):
+                    continue
+                if (
+                    not word_text
+                    or not all(
+                        math.isfinite(value)
+                        for value in (word_start, word_end, probability)
+                    )
+                    or word_start < 0
+                    or word_end <= word_start
+                ):
                     continue
                 words.append(
                     {
                         "word": word_text,
                         "start": word_start,
                         "end": word_end,
-                        "probability": max(0.0, min(1.0, float(word.get("probability") or confidence))),
+                        "probability": max(0.0, min(1.0, probability)),
                     }
                 )
             segments.append(

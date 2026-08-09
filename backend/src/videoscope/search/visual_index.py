@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import json
 import math
+import os
 from pathlib import Path
 import re
+import tempfile
 from typing import Any, Protocol
 
 import numpy as np
 
 from videoscope.providers.base import ProviderState, ProviderStatus
+from videoscope.model_manifest import model_identity
 from videoscope.repository import SegmentRecord
 from videoscope.search.fusion import EvidenceHit
 from videoscope.search.sports_events import (
@@ -20,6 +23,7 @@ from videoscope.search.sports_events import (
     rank_made_two_point_windows,
     rank_temporal_event_windows,
 )
+from videoscope.storage import atomic_write_json, atomic_write_text
 
 
 class DenseFrameExtractor(Protocol):
@@ -101,9 +105,17 @@ class SiglipVisualIndex:
 
     id = "siglip2"
 
-    def __init__(self, path: Path, *, model_name: str, batch_size: int = 8) -> None:
+    def __init__(
+        self,
+        path: Path,
+        *,
+        model_name: str,
+        model_revision: str | None = None,
+        batch_size: int = 8,
+    ) -> None:
         self.path = Path(path)
         self.model_name = model_name
+        self.model_revision = model_revision
         self.batch_size = max(1, batch_size)
         self._model = None
         self._processor = None
@@ -111,7 +123,11 @@ class SiglipVisualIndex:
         self._logit_scale = 1.0
         self._logit_bias = 0.0
 
-    def status(self) -> ProviderStatus:
+    @property
+    def model_identity(self) -> str:
+        return model_identity(self.model_name, self.model_revision)
+
+    def status(self, *, check_index: bool = True) -> ProviderStatus:
         try:
             import torch  # noqa: F401
             import transformers  # noqa: F401
@@ -127,8 +143,16 @@ class SiglipVisualIndex:
             try:
                 from huggingface_hub import try_to_load_from_cache
 
-                config = try_to_load_from_cache(self.model_name, "config.json")
-                weights = try_to_load_from_cache(self.model_name, "model.safetensors")
+                config = try_to_load_from_cache(
+                    self.model_name,
+                    "config.json",
+                    revision=self.model_revision,
+                )
+                weights = try_to_load_from_cache(
+                    self.model_name,
+                    "model.safetensors",
+                    revision=self.model_revision,
+                )
             except Exception:
                 config = None
                 weights = None
@@ -139,12 +163,34 @@ class SiglipVisualIndex:
                     ProviderState.NEEDS_CONFIGURATION,
                     f"Модель не загружена: {self.model_name}",
                 )
+        if check_index and self._has_incompatible_indexes():
+            return ProviderStatus(
+                self.id,
+                "SigLIP 2",
+                ProviderState.NEEDS_CONFIGURATION,
+                "Визуальный индекс создан другой ревизией модели; выполните make index-visual",
+            )
         return ProviderStatus(
             self.id,
             "SigLIP 2",
             ProviderState.READY,
             f"Многоязычный визуальный поиск: {self.model_name}",
         )
+
+    def _has_incompatible_indexes(self) -> bool:
+        if not self.path.is_dir():
+            return False
+        for video_path in self.path.iterdir():
+            if not video_path.is_dir() or not (video_path / "vectors.npy").is_file():
+                continue
+            model_path = video_path / "model.txt"
+            try:
+                stored_identity = model_path.read_text(encoding="utf-8")
+            except OSError:
+                return True
+            if stored_identity != self.model_identity:
+                return True
+        return False
 
     @staticmethod
     def _pooled(output: object):  # type: ignore[no-untyped-def]
@@ -163,8 +209,13 @@ class SiglipVisualIndex:
         from transformers import AutoModel, AutoProcessor
 
         self._device = "mps" if torch.backends.mps.is_available() else "cpu"
-        self._processor = AutoProcessor.from_pretrained(self.model_name)
-        self._model = AutoModel.from_pretrained(self.model_name)
+        load_options = (
+            {"revision": self.model_revision}
+            if self.model_revision is not None
+            else {}
+        )
+        self._processor = AutoProcessor.from_pretrained(self.model_name, **load_options)
+        self._model = AutoModel.from_pretrained(self.model_name, **load_options)
         self._model.eval().to(self._device)
         self._logit_scale = math.exp(float(self._model.logit_scale.detach().cpu().item()))
         self._logit_bias = float(self._model.logit_bias.detach().cpu().item())
@@ -226,6 +277,127 @@ class SiglipVisualIndex:
         target = self.path / video_id
         return target / "vectors.npy", target / "metadata.json"
 
+    def _load_video_index(
+        self,
+        video_id: str,
+        *,
+        memory_map: bool = False,
+    ) -> tuple[np.ndarray, list[dict[str, Any]]] | None:
+        if (
+            not video_id
+            or video_id in {".", ".."}
+            or Path(video_id).name != video_id
+        ):
+            return None
+        vectors_path, metadata_path = self._video_paths(video_id)
+        model_path = vectors_path.parent / "model.txt"
+        if not vectors_path.is_file() or not metadata_path.is_file():
+            return None
+        try:
+            if model_path.read_text(encoding="utf-8") != self.model_identity:
+                return None
+            vectors = np.load(
+                vectors_path,
+                allow_pickle=False,
+                mmap_mode="r" if memory_map else None,
+            )
+            raw_metadata: object = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except (EOFError, OSError, UnicodeError, ValueError, TypeError):
+            return None
+        if not isinstance(raw_metadata, list):
+            return None
+        metadata: list[dict[str, Any]] = []
+        try:
+            for raw_item in raw_metadata:
+                if not isinstance(raw_item, dict):
+                    raise ValueError("invalid visual metadata")
+                start = float(raw_item["start"])
+                end = float(raw_item["end"])
+                segment_id = raw_item["segment_id"]
+                thumbnail_path = raw_item.get("thumbnail_path")
+                if (
+                    type(segment_id) is not str
+                    or not segment_id
+                    or not math.isfinite(start)
+                    or not math.isfinite(end)
+                    or start < 0
+                    or end <= start
+                    or (thumbnail_path is not None and type(thumbnail_path) is not str)
+                ):
+                    raise ValueError("invalid visual metadata")
+                metadata.append(
+                    {
+                        "segment_id": segment_id,
+                        "start": start,
+                        "end": end,
+                        "thumbnail_path": thumbnail_path,
+                    }
+                )
+        except (KeyError, TypeError, ValueError):
+            return None
+        try:
+            vectors_are_valid = (
+                vectors.ndim == 2
+                and vectors.shape[0] > 0
+                and vectors.shape[1] > 0
+                and vectors.shape[0] == len(metadata)
+                and bool(np.all(np.isfinite(vectors)))
+            )
+        except (TypeError, ValueError):
+            return None
+        if not vectors_are_valid:
+            return None
+        try:
+            if model_path.read_text(encoding="utf-8") != self.model_identity:
+                return None
+        except (OSError, UnicodeError):
+            return None
+        return vectors, metadata
+
+    def index_is_current(self, video_id: str) -> bool:
+        """Return whether a complete index for this video matches this model revision."""
+        return self._load_video_index(video_id, memory_map=True) is not None
+
+    @staticmethod
+    def _atomic_save_vectors(path: Path, vectors: np.ndarray) -> None:
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            dir=path.parent,
+        )
+        temporary = Path(temporary_name)
+        try:
+            with os.fdopen(descriptor, "wb") as handle:
+                np.save(handle, vectors, allow_pickle=False)
+                handle.flush()
+                os.fsync(handle.fileno())
+            temporary.replace(path)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    def _persist_video_index(
+        self,
+        vectors_path: Path,
+        vectors: np.ndarray,
+        metadata: list[dict[str, object]],
+    ) -> None:
+        vectors_path.parent.mkdir(parents=True, exist_ok=True)
+        model_path = vectors_path.parent / "model.txt"
+        resolved_vectors = vectors.astype(np.float32, copy=False)
+        if (
+            resolved_vectors.ndim != 2
+            or resolved_vectors.shape[0] != len(metadata)
+            or not np.all(np.isfinite(resolved_vectors))
+        ):
+            raise ValueError("SigLIP index vectors do not match finite metadata rows")
+
+        # The identity marker is the commit record: an interrupted multi-file
+        # replacement must never make mixed old/new files look current.
+        model_path.unlink(missing_ok=True)
+        self._atomic_save_vectors(vectors_path, resolved_vectors)
+        atomic_write_json(vectors_path.parent / "metadata.json", metadata)
+        atomic_write_text(model_path, self.model_identity)
+
     def replace_video(self, video_id: str, segments: list[SegmentRecord]) -> None:
         scenes = [
             segment
@@ -236,7 +408,6 @@ class SiglipVisualIndex:
         ]
         vectors_path, metadata_path = self._video_paths(video_id)
         model_path = vectors_path.parent / "model.txt"
-        vectors_path.parent.mkdir(parents=True, exist_ok=True)
         if not scenes:
             vectors_path.unlink(missing_ok=True)
             metadata_path.unlink(missing_ok=True)
@@ -244,7 +415,6 @@ class SiglipVisualIndex:
             return
 
         vectors = self._image_vectors([Path(segment.thumbnail_path or "") for segment in scenes])
-        np.save(vectors_path, vectors.astype(np.float32, copy=False), allow_pickle=False)
         metadata = [
             {
                 "segment_id": segment.id,
@@ -254,8 +424,7 @@ class SiglipVisualIndex:
             }
             for segment in scenes
         ]
-        metadata_path.write_text(json.dumps(metadata, ensure_ascii=False), encoding="utf-8")
-        model_path.write_text(self.model_name, encoding="utf-8")
+        self._persist_video_index(vectors_path, vectors, metadata)
 
     def replace_video_source(
         self,
@@ -269,8 +438,12 @@ class SiglipVisualIndex:
         frames_dir: Path | None = None,
     ) -> None:
         """Строит равномерный индекс, чтобы короткие действия не терялись между сценами."""
-        if duration <= 0:
+        duration = float(duration)
+        step = float(step)
+        if not math.isfinite(duration) or duration <= 0:
             raise ValueError("video duration must be positive")
+        if not math.isfinite(step) or step <= 0:
+            raise ValueError("visual index step must be positive")
         step = max(0.25, step)
         target = self.path / video_id
         resolved_frames_dir = Path(frames_dir) if frames_dir else target / "frames"
@@ -284,15 +457,14 @@ class SiglipVisualIndex:
         )
         paths = [Path(getattr(frame, "path")) for frame in frames]
         timestamps = [float(getattr(frame, "timestamp")) for frame in frames]
+        if any(not math.isfinite(timestamp) or timestamp < 0 for timestamp in timestamps):
+            raise ValueError("visual frame timestamps must be finite and non-negative")
         if not paths:
             self.replace_video(video_id, [])
             return
 
-        vectors_path, metadata_path = self._video_paths(video_id)
-        model_path = vectors_path.parent / "model.txt"
-        vectors_path.parent.mkdir(parents=True, exist_ok=True)
+        vectors_path, _ = self._video_paths(video_id)
         vectors = self._image_vectors(paths)
-        np.save(vectors_path, vectors.astype(np.float32, copy=False), allow_pickle=False)
         metadata = [
             {
                 "segment_id": f"dense-{index:06d}",
@@ -302,11 +474,7 @@ class SiglipVisualIndex:
             }
             for index, (timestamp, path) in enumerate(zip(timestamps, paths, strict=True))
         ]
-        metadata_path.write_text(
-            json.dumps(metadata, ensure_ascii=False),
-            encoding="utf-8",
-        )
-        model_path.write_text(self.model_name, encoding="utf-8")
+        self._persist_video_index(vectors_path, vectors, metadata)
 
     def _probability(self, similarity: float) -> float:
         logit = similarity * self._logit_scale + self._logit_bias
@@ -318,6 +486,8 @@ class SiglipVisualIndex:
     @staticmethod
     def _rank_score(similarity: float) -> float:
         """Преобразует близость SigLIP в шкалу ранжирования, не выдавая её за вероятность."""
+        if not math.isfinite(similarity):
+            raise ValueError("SigLIP returned a non-finite similarity")
         return max(0.0, min(1.0, (similarity + 1.0) / 2.0))
 
     def search(
@@ -351,36 +521,29 @@ class SiglipVisualIndex:
             }
         else:
             query_vectors = self._text_vectors(query)
+        encoded_queries = (
+            list(event_stage_vectors.values())
+            if event_stage_vectors is not None
+            else [query_vectors]
+        )
+        if any(
+            vector is None or not np.all(np.isfinite(vector))
+            for vector in encoded_queries
+        ):
+            raise RuntimeError("SigLIP returned non-finite query vectors")
         candidates: list[EvidenceHit] = []
         selected = video_ids or [path.name for path in self.path.iterdir() if path.is_dir()]
         for video_id in selected:
-            vectors_path, metadata_path = self._video_paths(video_id)
-            model_path = vectors_path.parent / "model.txt"
-            if (
-                not vectors_path.is_file()
-                or not metadata_path.is_file()
-                or (
-                    model_path.is_file()
-                    and model_path.read_text(encoding="utf-8") != self.model_name
-                )
-                or (
-                    not model_path.is_file()
-                    and self.model_name != "google/siglip2-base-patch16-224"
-                )
-            ):
+            loaded_index = self._load_video_index(video_id)
+            if loaded_index is None:
                 continue
-            vectors = np.load(vectors_path, allow_pickle=False)
-            metadata: list[dict[str, Any]] = json.loads(metadata_path.read_text(encoding="utf-8"))
+            vectors, metadata = loaded_index
             expected_dimensions = (
                 event_stage_vectors["release"].shape[1]
                 if event_stage_vectors is not None
                 else query_vectors.shape[1]  # type: ignore[union-attr]
             )
-            if (
-                vectors.ndim != 2
-                or vectors.shape[0] != len(metadata)
-                or vectors.shape[1] != expected_dimensions
-            ):
+            if vectors.shape[1] != expected_dimensions:
                 continue
             if event_stage_vectors is not None:
                 assert event_specification is not None
@@ -577,12 +740,24 @@ class SiglipVisualIndex:
             for index in np.argsort(similarities)[::-1][:limit]:
                 item = metadata[int(index)]
                 raw_similarity = float(similarities[int(index)])
+                try:
+                    item_start = float(item["start"])
+                    item_end = float(item["end"])
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if (
+                    not math.isfinite(raw_similarity)
+                    or not math.isfinite(item_start)
+                    or not math.isfinite(item_end)
+                    or item_end <= item_start
+                ):
+                    continue
                 candidates.append(
                     EvidenceHit(
                         video_id=video_id,
                         segment_id=f"visual:{item['segment_id']}",
-                        start=float(item["start"]),
-                        end=float(item["end"]),
+                        start=item_start,
+                        end=item_end,
                         modality="visual",
                         score=self._rank_score(raw_similarity),
                         text=query,

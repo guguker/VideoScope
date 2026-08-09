@@ -1,8 +1,11 @@
 import sys
 import types
+from hashlib import sha256
+import json
 from pathlib import Path
 
 import pytest
+import torch
 
 from videoscope.providers.base import ProviderState
 from videoscope.providers.lighthouse import LighthouseRetriever
@@ -35,12 +38,28 @@ def test_whisper_transcriber_maps_mlx_segments(monkeypatch, tmp_path) -> None:
 
     module.transcribe = transcribe  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "mlx_whisper", module)
+    snapshot = tmp_path / "whisper-snapshot"
+    snapshot.mkdir()
+    revision = "a" * 40
+    import huggingface_hub
+
+    monkeypatch.setattr(
+        huggingface_hub,
+        "snapshot_download",
+        lambda model, **kwargs: (
+            str(snapshot)
+            if model == "test-model"
+            and kwargs == {"revision": revision, "local_files_only": True}
+            else pytest.fail("unexpected snapshot request")
+        ),
+    )
     glossary = tmp_path / "glossary.json"
     glossary.write_text('{"Мозгов":["Mozgov"]}', encoding="utf-8")
     provider = WhisperTranscriber(
         "test-model",
         initial_prompt="Точная русская речь.",
         glossary_path=glossary,
+        model_revision=revision,
     )
 
     segments = provider.transcribe(tmp_path / "video.mp4")
@@ -54,7 +73,43 @@ def test_whisper_transcriber_maps_mlx_segments(monkeypatch, tmp_path) -> None:
     ]
     assert "Мозгов" in str(captured["initial_prompt"])
     assert "Mozgov" in str(captured["initial_prompt"])
+    assert captured["path_or_hf_repo"] == str(snapshot)
     assert 0 < segments[0].confidence < 1
+
+
+def test_whisper_drops_non_finite_segments_and_words(monkeypatch, tmp_path) -> None:
+    module = types.ModuleType("mlx_whisper")
+    module.transcribe = lambda *_args, **_kwargs: {  # type: ignore[attr-defined]
+        "language": "en",
+        "segments": [
+            {"start": float("nan"), "end": 2.0, "text": "bad"},
+            {"start": -1.0, "end": 2.0, "text": "bad"},
+            {
+                "start": 1.0,
+                "end": 3.0,
+                "text": "valid",
+                "avg_logprob": -0.2,
+                "words": [
+                    {
+                        "word": "bad",
+                        "start": 1.0,
+                        "end": float("inf"),
+                        "probability": float("nan"),
+                    }
+                ],
+            },
+        ],
+    }
+    monkeypatch.setitem(sys.modules, "mlx_whisper", module)
+    model = tmp_path / "model"
+    model.mkdir()
+    provider = WhisperTranscriber(str(model))
+
+    segments = provider.transcribe(tmp_path / "video.mp4")
+
+    assert len(segments) == 1
+    assert segments[0].start == 1.0
+    assert segments[0].metadata.get("words") is None
 
 
 def test_paddle_reader_parses_current_result_shape(monkeypatch, tmp_path) -> None:
@@ -86,6 +141,51 @@ def test_paddle_reader_parses_current_result_shape(monkeypatch, tmp_path) -> Non
     }
 
 
+def test_paddle_reader_uses_isolated_worker_protocol(monkeypatch, tmp_path) -> None:
+    python = tmp_path / "python"
+    worker = tmp_path / "worker.py"
+    image = tmp_path / "frame.jpg"
+    for path in (python, worker, image):
+        path.write_bytes(b"fixture")
+    writes: list[str] = []
+
+    class FakeInput:
+        def write(self, value: str) -> None:
+            writes.append(value)
+
+        def flush(self) -> None:
+            pass
+
+    class FakeOutput:
+        def readline(self) -> str:
+            return '{"ok":true,"items":[[" SCORE 90 ",0.96],["bad","NaN"]]}\n'
+
+    class FakeProcess:
+        stdin = FakeInput()
+        stdout = FakeOutput()
+
+        def poll(self):  # type: ignore[no-untyped-def]
+            return None
+
+    monkeypatch.setattr(
+        "videoscope.providers.paddle_ocr.subprocess.run",
+        lambda *_args, **_kwargs: types.SimpleNamespace(returncode=0),
+    )
+    monkeypatch.setattr(
+        "videoscope.providers.paddle_ocr.subprocess.Popen",
+        lambda *_args, **_kwargs: FakeProcess(),
+    )
+    reader = PaddleOCRReader(
+        minimum_confidence=0.5,
+        worker_python=python,
+        worker_script=worker,
+    )
+
+    assert reader.status().state is ProviderState.READY
+    assert reader.read(image) == [("SCORE 90", 0.96)]
+    assert json.loads(writes[0]) == {"path": str(image)}
+
+
 def test_roboflow_requires_explicit_configuration() -> None:
     provider = RoboflowDetector(api_key=None, model_id=None)
 
@@ -94,47 +194,43 @@ def test_roboflow_requires_explicit_configuration() -> None:
         provider.detect(Path("frame.jpg"))
 
 
-def test_roboflow_detector_uses_sdk_and_supervision(monkeypatch, tmp_path) -> None:
+def test_roboflow_detector_uses_bounded_http_contract(monkeypatch, tmp_path) -> None:
     response = {
         "predictions": [
-            {"class": "basketball", "x": 4, "y": 5, "width": 6, "height": 7},
-            {"class": "noise"},
+            {
+                "class": "basketball",
+                "confidence": 0.91,
+                "x": 4,
+                "y": 5,
+                "width": 6,
+                "height": 7,
+            },
+            {"class": "noise", "confidence": 0.1},
         ]
     }
 
-    class FakeClient:
-        def __init__(self, **_kwargs) -> None:  # type: ignore[no-untyped-def]
+    class FakeResponse:
+        headers = {"content-length": "512"}
+        content = json.dumps(response).encode("utf-8")
+
+        def raise_for_status(self) -> None:
             pass
 
-        def infer(self, _image: str, *, model_id: str):  # type: ignore[no-untyped-def]
-            assert model_id == "basketball/1"
-            return response
+    class FakeClient:
+        def post(self, url: str, **kwargs):  # type: ignore[no-untyped-def]
+            assert url == "https://serverless.roboflow.com/basketball/1"
+            assert kwargs["params"] == {"api_key": "secret"}
+            assert kwargs["content"] == "aW1hZ2U="
+            return FakeResponse()
 
-    class FakeDetections:
-        confidence = [0.91, 0.1]
-        class_id = [1, 2]
+    import httpx
 
-        @classmethod
-        def from_inference(cls, payload):  # type: ignore[no-untyped-def]
-            assert payload is response
-            return cls()
-
-        def with_nms(self, *, threshold: float):
-            assert threshold == 0.5
-            return self
-
-        def __len__(self) -> int:
-            return 2
-
-    sdk = types.ModuleType("inference_sdk")
-    sdk.InferenceHTTPClient = FakeClient  # type: ignore[attr-defined]
-    supervision = types.ModuleType("supervision")
-    supervision.Detections = FakeDetections  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "inference_sdk", sdk)
-    monkeypatch.setitem(sys.modules, "supervision", supervision)
+    monkeypatch.setattr(httpx, "Client", lambda **_kwargs: FakeClient())
     provider = RoboflowDetector(api_key="secret", model_id="basketball/1")
+    image = tmp_path / "frame.jpg"
+    image.write_bytes(b"image")
 
-    tags = provider.detect(tmp_path / "frame.jpg")
+    tags = provider.detect(image)
 
     assert provider.status().state is ProviderState.READY
     assert [(tag.label, tag.confidence) for tag in tags] == [("basketball", 0.91)]
@@ -193,7 +289,12 @@ def test_lighthouse_prepares_windows_and_restores_global_timestamps(monkeypatch,
             assert kwargs["feature_name"] == "clip"
 
         def encode_video(self, path: str):
-            return {"path": path}
+            assert path.endswith(".mp4")
+            return {
+                "video_feats": torch.ones((1, 2, 4), dtype=torch.float32),
+                "video_mask": torch.ones((1, 2), dtype=torch.float32),
+                "audio_feats": None,
+            }
 
         def predict(self, query: str, _features):  # type: ignore[no-untyped-def]
             assert query == "player shoots"
@@ -206,8 +307,6 @@ def test_lighthouse_prepares_windows_and_restores_global_timestamps(monkeypatch,
     monkeypatch.setitem(sys.modules, "lighthouse", lighthouse_package)
     monkeypatch.setitem(sys.modules, "lighthouse.models", lighthouse_models)
 
-    torch = types.ModuleType("torch")
-
     def save(payload, path) -> None:  # type: ignore[no-untyped-def]
         saved[str(path)] = payload
         Path(path).write_bytes(b"cache")
@@ -215,9 +314,8 @@ def test_lighthouse_prepares_windows_and_restores_global_timestamps(monkeypatch,
     def load(path, **_kwargs):  # type: ignore[no-untyped-def]
         return saved[str(path)]
 
-    torch.save = save  # type: ignore[attr-defined]
-    torch.load = load  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "torch", torch)
+    monkeypatch.setattr(torch, "save", save)
+    monkeypatch.setattr(torch, "load", load)
 
     class FakeFFmpeg:
         def export_clip(self, _source: Path, destination: Path, _start: float, _end: float) -> None:
@@ -225,10 +323,12 @@ def test_lighthouse_prepares_windows_and_restores_global_timestamps(monkeypatch,
 
     retriever = LighthouseRetriever(
         checkpoint=checkpoint,
+        checkpoint_sha256=sha256(checkpoint.read_bytes()).hexdigest(),
         cache_dir=tmp_path / "cache",
         ffmpeg=FakeFFmpeg(),  # type: ignore[arg-type]
     )
 
+    assert retriever.cache_is_current("video-1") is False
     retriever.prepare("video-1", tmp_path / "source.mp4", 154.0)
     hits = retriever.search("player shoots", ["video-1"])
 
@@ -236,3 +336,100 @@ def test_lighthouse_prepares_windows_and_restores_global_timestamps(monkeypatch,
     assert len(saved) == 2
     assert [hit.start for hit in hits] == [1.0, 151.0]
     assert all(hit.modality == "lighthouse" for hit in hits)
+
+    manifest = tmp_path / "cache" / "lighthouse" / "video-1" / "manifest.json"
+    assert json.loads(manifest.read_text(encoding="utf-8")) == retriever.cache_identity
+    assert retriever.cache_is_current("video-1") is True
+    manifest.write_text('{"schema_version":0}', encoding="utf-8")
+    assert retriever.cache_is_current("video-1") is False
+    assert retriever.search("player shoots", ["video-1"]) == []
+
+    stale_window = manifest.parent / "window-9999.pt"
+    stale_window.write_bytes(b"stale")
+    retriever.prepare("video-1", tmp_path / "source.mp4", 3.0)
+    assert not stale_window.exists()
+    assert retriever.cache_is_current("video-1") is True
+    for cache_path in manifest.parent.glob("window-*.pt"):
+        cache_path.unlink()
+    assert retriever.cache_is_current("video-1") is False
+
+
+def test_lighthouse_readiness_rejects_corrupt_or_invalid_cache_windows(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    class FakePredictor:
+        pass
+
+    class FakeFFmpeg:
+        pass
+
+    retriever = LighthouseRetriever(
+        checkpoint=None,
+        cache_dir=tmp_path / "cache",
+        ffmpeg=FakeFFmpeg(),  # type: ignore[arg-type]
+    )
+    monkeypatch.setattr(
+        retriever,
+        "_predictor_class",
+        lambda: (FakePredictor, "test predictor"),
+    )
+    target_dir = tmp_path / "cache" / "lighthouse" / "video-1"
+    target_dir.mkdir(parents=True)
+    manifest = target_dir / "manifest.json"
+    manifest.write_text(json.dumps(retriever.cache_identity), encoding="utf-8")
+    features = {
+        "video_feats": torch.ones((1, 2, 4), dtype=torch.float32),
+        "video_mask": torch.ones((1, 2), dtype=torch.float32),
+        "audio_feats": None,
+    }
+    first = target_dir / "window-0000.pt"
+    second = target_dir / "window-0001.pt"
+    torch.save({"offset": 0.0, "end": 10.0, "features": features}, first)
+    torch.save({"offset": 10.0, "end": 20.0, "features": features}, second)
+
+    assert retriever.cache_is_current("video-1") is True
+
+    second.write_bytes(b"truncated torch cache")
+    assert retriever.cache_is_current("video-1") is False
+
+    torch.save({"offset": 5.0, "end": 20.0, "features": features}, second)
+    assert retriever.cache_is_current("video-1") is False
+
+    invalid_features = {
+        **features,
+        "video_feats": torch.tensor([[[float("nan"), 1.0, 2.0, 3.0]]]),
+        "video_mask": torch.ones((1, 1), dtype=torch.float32),
+    }
+    torch.save(
+        {"offset": 10.0, "end": 20.0, "features": invalid_features},
+        second,
+    )
+    assert retriever.cache_is_current("video-1") is False
+
+
+def test_lighthouse_rejects_checkpoint_outside_sha256_allowlist(monkeypatch, tmp_path) -> None:
+    checkpoint = tmp_path / "model.ckpt"
+    checkpoint.write_bytes(b"untrusted pickle")
+    predictor_loaded = False
+
+    class FakeFFmpeg:
+        pass
+
+    retriever = LighthouseRetriever(
+        checkpoint=checkpoint,
+        cache_dir=tmp_path / "cache",
+        ffmpeg=FakeFFmpeg(),  # type: ignore[arg-type]
+    )
+
+    def predictor_class():  # type: ignore[no-untyped-def]
+        nonlocal predictor_loaded
+        predictor_loaded = True
+        raise AssertionError("untrusted checkpoint reached pickle loader")
+
+    monkeypatch.setattr(retriever, "_predictor_class", predictor_class)
+
+    assert retriever.status().state is ProviderState.NEEDS_CONFIGURATION
+    with pytest.raises(RuntimeError, match="checksum"):
+        retriever._load()
+    assert predictor_loaded is False

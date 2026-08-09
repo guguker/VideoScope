@@ -1,8 +1,11 @@
 import json
+import sys
+import types
 
 import numpy as np
 import pytest
 
+import videoscope.search.visual_index as visual_index_module
 from videoscope.media.ffmpeg import SampledFrame
 from videoscope.repository import SegmentRecord
 from videoscope.search.sports_events import classify_basketball_event_query
@@ -42,6 +45,8 @@ def test_visual_index_persists_frames_and_returns_closest_scene(tmp_path, monkey
     )
     monkeypatch.setattr(index, "_text_vector", lambda _query: np.array([0.1, 0.9], dtype=np.float32))
 
+    assert index.index_is_current("video-1") is False
+
     index.replace_video("video-1", segments)
     hits = index.search("right", video_ids=["video-1"], limit=2)
 
@@ -51,6 +56,44 @@ def test_visual_index_persists_frames_and_returns_closest_scene(tmp_path, monkey
     metadata = json.loads((tmp_path / "index" / "video-1" / "metadata.json").read_text())
     assert len(metadata) == 2
     assert (tmp_path / "index" / "video-1" / "model.txt").read_text() == "test"
+    assert index.index_is_current("video-1") is True
+
+
+def test_visual_index_readiness_rejects_stale_or_malformed_artifacts(tmp_path) -> None:
+    index = SiglipVisualIndex(tmp_path / "index", model_name="current")
+    video_dir = tmp_path / "index" / "video-1"
+    video_dir.mkdir(parents=True)
+    np.save(
+        video_dir / "vectors.npy",
+        np.array([[1.0, 0.0]], dtype=np.float32),
+        allow_pickle=False,
+    )
+    metadata_path = video_dir / "metadata.json"
+    metadata_path.write_text(
+        '[{"segment_id":"scene","start":0,"end":1,"thumbnail_path":null}]',
+        encoding="utf-8",
+    )
+    model_path = video_dir / "model.txt"
+    model_path.write_text("stale", encoding="utf-8")
+
+    assert index.index_is_current("video-1") is False
+
+    model_path.write_text("current", encoding="utf-8")
+    assert index.index_is_current("video-1") is True
+
+    metadata_path.write_text('{"not":"a-list"}', encoding="utf-8")
+    assert index.index_is_current("video-1") is False
+
+    metadata_path.write_text(
+        '[{"segment_id":"scene","start":0,"end":1,"thumbnail_path":null}]',
+        encoding="utf-8",
+    )
+    np.save(
+        video_dir / "vectors.npy",
+        np.array([["not", "numeric"]]),
+        allow_pickle=False,
+    )
+    assert index.index_is_current("video-1") is False
 
 
 def test_visual_index_ignores_vectors_from_another_model(tmp_path, monkeypatch) -> None:
@@ -60,6 +103,78 @@ def test_visual_index_ignores_vectors_from_another_model(tmp_path, monkeypatch) 
     first.replace_video("video-1", segments)
 
     second = SiglipVisualIndex(tmp_path / "index", model_name="second")
+    monkeypatch.setattr(second, "_text_vector", lambda _query: np.array([1.0], dtype=np.float32))
+
+    assert second.search("query", video_ids=["video-1"]) == []
+
+
+def test_visual_index_invalidates_marker_before_partial_replacement(tmp_path, monkeypatch) -> None:
+    index = SiglipVisualIndex(tmp_path / "index", model_name="test")
+    segments = [scene(tmp_path, "scene", 0, np.array([1.0], dtype=np.float32))]
+    monkeypatch.setattr(
+        index,
+        "_image_vectors",
+        lambda _paths: np.array([[1.0]], dtype=np.float32),
+    )
+    index.replace_video("video-1", segments)
+
+    monkeypatch.setattr(
+        visual_index_module,
+        "atomic_write_json",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("disk full")),
+    )
+    with pytest.raises(OSError, match="disk full"):
+        index.replace_video("video-1", segments)
+
+    video_dir = tmp_path / "index" / "video-1"
+    assert not (video_dir / "model.txt").exists()
+    monkeypatch.setattr(
+        index,
+        "_text_vectors",
+        lambda _query: np.array([[1.0]], dtype=np.float32),
+    )
+    assert index.search("query", video_ids=["video-1"]) == []
+
+
+def test_visual_index_requires_identity_marker_even_for_default_model(tmp_path, monkeypatch) -> None:
+    index = SiglipVisualIndex(
+        tmp_path / "index",
+        model_name="google/siglip2-base-patch16-224",
+    )
+    video_dir = tmp_path / "index" / "video-1"
+    video_dir.mkdir(parents=True)
+    np.save(video_dir / "vectors.npy", np.array([[1.0]], dtype=np.float32))
+    (video_dir / "metadata.json").write_text(
+        '[{"segment_id":"scene","start":0,"end":1,"thumbnail_path":null}]',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        index,
+        "_text_vectors",
+        lambda _query: np.array([[1.0]], dtype=np.float32),
+    )
+
+    assert index.search("query", video_ids=["video-1"]) == []
+
+
+def test_visual_index_revision_is_part_of_persisted_identity(tmp_path, monkeypatch) -> None:
+    first = SiglipVisualIndex(
+        tmp_path / "index",
+        model_name="organization/model",
+        model_revision="a" * 40,
+    )
+    segments = [scene(tmp_path, "scene", 0, np.array([1.0], dtype=np.float32))]
+    monkeypatch.setattr(first, "_image_vectors", lambda _paths: np.array([[1.0]], dtype=np.float32))
+    first.replace_video("video-1", segments)
+
+    model_file = tmp_path / "index" / "video-1" / "model.txt"
+    assert model_file.read_text(encoding="utf-8") == "organization/model@" + "a" * 40
+
+    second = SiglipVisualIndex(
+        tmp_path / "index",
+        model_name="organization/model",
+        model_revision="b" * 40,
+    )
     monkeypatch.setattr(second, "_text_vector", lambda _query: np.array([1.0], dtype=np.float32))
 
     assert second.search("query", video_ids=["video-1"]) == []
@@ -76,6 +191,40 @@ def test_visual_probability_is_stable_for_large_logits(tmp_path) -> None:
     assert index._rank_score(0) == pytest.approx(0.5)
     assert index._rank_score(1) == pytest.approx(1)
     assert index._rank_score(0.12) > index._rank_score(0.08)
+    with pytest.raises(ValueError, match="non-finite"):
+        index._rank_score(float("nan"))
+
+
+def test_visual_index_drops_corrupt_non_finite_vectors(tmp_path, monkeypatch) -> None:
+    index = SiglipVisualIndex(tmp_path / "index", model_name="test")
+    video_dir = tmp_path / "index" / "video-1"
+    video_dir.mkdir(parents=True)
+    np.save(
+        video_dir / "vectors.npy",
+        np.array([[float("nan"), 0.0]], dtype=np.float32),
+        allow_pickle=False,
+    )
+    (video_dir / "metadata.json").write_text(
+        json.dumps(
+            [
+                {
+                    "segment_id": "corrupt",
+                    "start": 1.0,
+                    "end": 2.0,
+                    "thumbnail_path": None,
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (video_dir / "model.txt").write_text("test", encoding="utf-8")
+    monkeypatch.setattr(
+        index,
+        "_text_vectors",
+        lambda _query: np.array([[1.0, 0.0]], dtype=np.float32),
+    )
+
+    assert index.search("query", video_ids=["video-1"]) == []
 
 
 def test_visual_search_before_indexing_returns_empty(tmp_path, monkeypatch) -> None:
@@ -83,6 +232,62 @@ def test_visual_search_before_indexing_returns_empty(tmp_path, monkeypatch) -> N
     monkeypatch.setattr(index, "_text_vector", lambda _query: np.array([1.0], dtype=np.float32))
 
     assert index.search("query") == []
+
+
+def test_visual_index_checks_the_configured_model_revision(tmp_path, monkeypatch) -> None:
+    revision = "b" * 40
+    calls: list[tuple[str, str, str | None]] = []
+    import huggingface_hub
+
+    monkeypatch.setitem(sys.modules, "torch", types.ModuleType("torch"))
+    monkeypatch.setitem(sys.modules, "transformers", types.ModuleType("transformers"))
+
+    def cached(model: str, filename: str, *, revision: str | None = None) -> str:
+        calls.append((model, filename, revision))
+        return str(tmp_path / filename)
+
+    monkeypatch.setattr(huggingface_hub, "try_to_load_from_cache", cached)
+    index = SiglipVisualIndex(
+        tmp_path / "index",
+        model_name="organization/model",
+        model_revision=revision,
+    )
+
+    assert index.status().state.value == "ready"
+    assert calls == [
+        ("organization/model", "config.json", revision),
+        ("organization/model", "model.safetensors", revision),
+    ]
+
+
+def test_visual_index_reports_legacy_vectors_as_requiring_reindex(tmp_path, monkeypatch) -> None:
+    revision = "b" * 40
+    video_dir = tmp_path / "index" / "video-1"
+    video_dir.mkdir(parents=True)
+    (video_dir / "vectors.npy").write_bytes(b"legacy")
+    (video_dir / "metadata.json").write_text("[]", encoding="utf-8")
+    (video_dir / "model.txt").write_text("organization/model", encoding="utf-8")
+
+    monkeypatch.setitem(sys.modules, "torch", types.ModuleType("torch"))
+    monkeypatch.setitem(sys.modules, "transformers", types.ModuleType("transformers"))
+    import huggingface_hub
+
+    monkeypatch.setattr(
+        huggingface_hub,
+        "try_to_load_from_cache",
+        lambda *_args, **_kwargs: str(tmp_path / "cached"),
+    )
+    index = SiglipVisualIndex(
+        tmp_path / "index",
+        model_name="organization/model",
+        model_revision=revision,
+    )
+
+    status = index.status()
+
+    assert status.state.value == "needs_configuration"
+    assert "index-visual" in status.detail
+    assert index.status(check_index=False).state.value == "ready"
 
 
 def test_basketball_three_pointer_query_gets_english_temporal_prompts() -> None:
@@ -288,3 +493,5 @@ def test_made_basketball_search_exposes_candidate_stage_evidence(
     assert hits[0].metadata["release_cue"] == release_cue
     assert hits[0].metadata["outcome_cue"] == "ball_through_hoop"
     assert hits[0].metadata["stage_order"] == stage_order
+    if event_type == "made_free_throw":
+        assert 0 <= hits[0].metadata["reset_score"] <= 1

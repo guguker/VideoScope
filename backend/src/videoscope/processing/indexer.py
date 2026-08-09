@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Protocol
 from uuid import uuid4
@@ -8,6 +9,9 @@ from videoscope.media.ffmpeg import FFmpeg
 from videoscope.providers.scenes import SceneDetector, normalize_scenes
 from videoscope.providers.types import ObjectTag, TimedText
 from videoscope.repository import Repository, SegmentRecord
+
+
+logger = logging.getLogger(__name__)
 
 
 def merge_timed_text(
@@ -281,6 +285,8 @@ class Indexer:
                     self.moment_retriever.prepare(video_id, source, probe.duration)
                 except Exception as error:
                     warnings.append(f"lighthouse: {error}")
+            if warnings:
+                logger.warning("Optional indexing stages failed for %s: %s", video_id, "; ".join(warnings))
             self.repository.update_video(
                 video_id,
                 status="ready",
@@ -289,6 +295,7 @@ class Indexer:
                 error="; ".join(warnings) or None,
             )
         except Exception as error:
+            logger.exception("Video processing failed for %s", video_id)
             self.repository.update_video(
                 video_id,
                 status="failed",

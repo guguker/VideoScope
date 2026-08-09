@@ -3,11 +3,12 @@ from __future__ import annotations
 from uuid import uuid4
 
 from videoscope.config import AppSettings
+from videoscope.model_manifest import model_revision
 from videoscope.processing.indexer import merge_timed_text
 from videoscope.providers.base import ProviderState
 from videoscope.providers.whisper import WhisperTranscriber
 from videoscope.repository import Repository
-from videoscope.search.embeddings import SemanticEmbedding
+from videoscope.search.embeddings import create_semantic_embedding
 from videoscope.search.vector_index import QdrantVectorIndex
 
 
@@ -21,16 +22,18 @@ def main() -> None:
         settings.whisper_language,
         settings.whisper_initial_prompt,
         settings.glossary_path,
+        model_revision=model_revision(settings.whisper_model),
     )
     if whisper.status().state is not ProviderState.READY:
         raise SystemExit(whisper.status().detail)
 
-    embedding = SemanticEmbedding(
+    embedding = create_semantic_embedding(
         model_name=settings.text_embedding_model,
         dimensions=settings.text_embedding_dimensions,
         cache_dir=settings.models_dir / "fastembed",
     )
     vector_index = QdrantVectorIndex(settings.qdrant_dir / "text", embedding=embedding)
+    vector_index.invalidate()
     videos = [video for video in repository.list_videos() if video.status == "ready"]
     for position, video in enumerate(videos, start=1):
         print(f"[{position}/{len(videos)}] {video.name}: transcribing")
@@ -49,8 +52,8 @@ def main() -> None:
                 confidence=item.confidence,
                 metadata=item.metadata,
             )
-        vector_index.replace_video(video.id, repository.list_segments(video.id))
         print(f"[{position}/{len(videos)}] {video.name}: {len(items)} speech windows")
+    vector_index.rebuild_repository(repository)
     print("Speech index and word timestamps are ready.")
 
 

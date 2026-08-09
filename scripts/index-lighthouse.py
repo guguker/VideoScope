@@ -1,0 +1,38 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from videoscope.config import AppSettings
+from videoscope.media.ffmpeg import FFmpeg
+from videoscope.providers.base import ProviderState
+from videoscope.providers.lighthouse import LighthouseRetriever
+from videoscope.repository import Repository
+
+
+def main() -> None:
+    settings = AppSettings()
+    settings.ensure_directories()
+    repository = Repository(settings.database_path)
+    repository.initialize()
+    ffmpeg = FFmpeg()
+    retriever = LighthouseRetriever(
+        checkpoint=settings.lighthouse_checkpoint,
+        cache_dir=settings.cache_dir,
+        ffmpeg=ffmpeg,
+        source_root=settings.lighthouse_root,
+    )
+    status = retriever.status()
+    if status.state is not ProviderState.READY:
+        raise SystemExit(status.detail)
+
+    videos = [video for video in repository.list_videos() if video.status == "ready"]
+    for position, video in enumerate(videos, start=1):
+        source = Path(video.media_path)
+        duration = float(video.duration or ffmpeg.probe(source).duration)
+        print(f"[{position}/{len(videos)}] {video.name}: Lighthouse cache")
+        retriever.prepare(video.id, source, duration)
+    print("Lighthouse cache is ready.")
+
+
+if __name__ == "__main__":
+    main()
