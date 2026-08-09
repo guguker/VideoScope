@@ -46,7 +46,7 @@ vision = [
   "open-clip-torch>=2.31,<4",
 ]
 video = [
-  "mlx-vlm==0.6.7",
+  "mlx-vlm==0.6.10",
 ]
 
 [project.scripts]
