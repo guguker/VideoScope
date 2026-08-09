@@ -1,0 +1,84 @@
+{
+  "model": "mlx-community/Qwen3.5-9B-MLX-4bit",
+  "query": "игрок забивает трехочковый",
+  "event_accuracy": 0.5,
+  "jersey_accuracy": 0.0,
+  "cases": [
+    {
+      "case_id": "made-15",
+      "expected_match": true,
+      "expected_jersey": "15",
+      "event_passed": false,
+      "jersey_passed": false,
+      "elapsed_seconds": 15.254,
+      "judgement": {
+        "matches_query": false,
+        "confidence": 0.95,
+        "event_start": null,
+        "event_end": null,
+        "shot_attempt": true,
+        "made": false,
+        "three_point": false,
+        "shooter_jersey": null,
+        "evidence": "The video shows a player in a blue jersey (number 15) attempting a shot. The ball is seen going through the hoop, but there is no clear evidence that it was a three-point shot or that it was made. The player's position and the angle of the shot suggest it might be a two-point shot."
+      }
+    },
+    {
+      "case_id": "made-9",
+      "expected_match": true,
+      "expected_jersey": "9",
+      "event_passed": false,
+      "jersey_passed": false,
+      "elapsed_seconds": 9.518,
+      "judgement": {
+        "matches_query": false,
+        "confidence": 0.95,
+        "event_start": null,
+        "event_end": null,
+        "shot_attempt": null,
+        "made": null,
+        "three_point": null,
+        "shooter_jersey": null,
+        "evidence": "The provided frames show a basketball game, but no clear sequence of a player shooting a three-point shot and the ball going into the basket is visible. Frame 5 shows a player in a white jersey attempting a shot, but it's not clear if it's a three-point attempt or if the shot is made. Frame 6 shows the scoreboard, but no specific shot information is provided. Frame 7 shows players celebrating, which could imply a successful shot, but it's not clear if it was a three-point shot. Therefore, there is no definitive evidence of a player making a three-point shot."
+      }
+    },
+    {
+      "case_id": "free-throw",
+      "expected_match": false,
+      "expected_jersey": null,
+      "event_passed": true,
+      "jersey_passed": null,
+      "elapsed_seconds": 7.495,
+      "judgement": {
+        "matches_query": false,
+        "confidence": 0.95,
+        "event_start": null,
+        "event_end": null,
+        "shot_attempt": true,
+        "made": false,
+        "three_point": false,
+        "shooter_jersey": "15",
+        "evidence": "Игрок в форме 15 делает бросок, но нет подтверждения попадания мяча в кольцо или подтверждения трехочкового броска."
+      }
+    },
+    {
+      "case_id": "advert",
+      "expected_match": false,
+      "expected_jersey": null,
+      "event_passed": true,
+      "jersey_passed": null,
+      "elapsed_seconds": 8.053,
+      "judgement": {
+        "matches_query": false,
+        "confidence": 1.0,
+        "event_start": null,
+        "event_end": null,
+        "shot_attempt": null,
+        "made": null,
+        "three_point": null,
+        "shooter_jersey": null,
+        "evidence": "The video frames show a basketball being shot into a hoop, but there is no evidence of a three-point shot being made. The ball is shown entering the hoop, but the distance from the shooter is not visible, and there is no indication that it was a three-point shot."
+      }
+    }
+  ]
+}
