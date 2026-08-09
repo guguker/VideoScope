@@ -7,7 +7,7 @@ from uuid import uuid4
 from videoscope.config import AppSettings
 from videoscope.providers.roboflow import RoboflowDetector
 from videoscope.repository import Repository
-from videoscope.search.embeddings import SemanticEmbedding
+from videoscope.search.embeddings import create_semantic_embedding
 from videoscope.search.vector_index import QdrantVectorIndex
 
 
@@ -20,7 +20,9 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     settings = AppSettings()
+    settings.ensure_directories()
     repository = Repository(settings.database_path)
+    repository.initialize()
     detector = RoboflowDetector(
         api_key=settings.roboflow_api_key,
         model_id=settings.roboflow_model_id,
@@ -29,10 +31,21 @@ def main() -> None:
     if detector.status().state.value != "ready":
         raise RuntimeError(detector.status().detail)
 
-    videos = repository.list_videos()
+    all_ready_videos = [
+        video for video in repository.list_videos() if video.status == "ready"
+    ]
+    videos = all_ready_videos
     if args.video_ids:
         selected = set(args.video_ids)
         videos = [video for video in videos if video.id in selected]
+
+    embedding = create_semantic_embedding(
+        model_name=settings.text_embedding_model,
+        dimensions=settings.text_embedding_dimensions,
+        cache_dir=settings.models_dir / "fastembed",
+    )
+    vector_index = QdrantVectorIndex(settings.qdrant_dir / "text", embedding=embedding)
+    vector_index.invalidate()
 
     for video in videos:
         scenes = [
@@ -73,14 +86,7 @@ def main() -> None:
                 thumbnail_path=scene.thumbnail_path,
             )
 
-    embedding = SemanticEmbedding(
-        model_name=settings.text_embedding_model,
-        dimensions=settings.text_embedding_dimensions,
-        cache_dir=settings.models_dir / "fastembed",
-    )
-    vector_index = QdrantVectorIndex(settings.qdrant_dir / "text", embedding=embedding)
-    for video in videos:
-        vector_index.replace_video(video.id, repository.list_segments(video.id))
+    vector_index.rebuild_repository(repository)
     print("Object index is ready.", flush=True)
 
 

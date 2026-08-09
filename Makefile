@@ -1,16 +1,24 @@
-.PHONY: install install-ml install-video models install-lighthouse index-objects index-visual index-visual-quality index-speech dev test test-backend test-frontend build demo
+.PHONY: install install-ml install-ocr install-video models models-ml models-video install-lighthouse index-objects index-visual index-visual-quality index-speech index-lighthouse dev test test-backend test-frontend build demo
 
 install:
 	./scripts/bootstrap.sh
 
 install-ml:
-	.venv/bin/python -m pip install -e 'backend[apple,ocr,roboflow,vision]'
+	UV_PROJECT_ENVIRONMENT="$(CURDIR)/.venv" .venv/bin/uv sync --project backend --locked --inexact --extra dev --extra apple --extra roboflow --extra vision
+
+install-ocr:
+	./scripts/install-ocr.sh
 
 install-video:
-	.venv/bin/python -m pip install -e 'backend[video]'
+	UV_PROJECT_ENVIRONMENT="$(CURDIR)/.venv" .venv/bin/uv sync --project backend --locked --inexact --extra dev --extra video
 
-models:
-	.venv/bin/python scripts/download-models.py
+models: models-ml models-video
+
+models-ml:
+	.venv/bin/python scripts/download-models.py --profile ml
+
+models-video:
+	.venv/bin/python scripts/download-models.py --profile video
 
 install-lighthouse:
 	./scripts/install-lighthouse.sh
@@ -26,6 +34,9 @@ index-visual-quality:
 
 index-speech:
 	.venv/bin/python scripts/index-speech.py
+
+index-lighthouse:
+	.venv/bin/python scripts/index-lighthouse.py
 
 dev:
 	./scripts/dev.sh

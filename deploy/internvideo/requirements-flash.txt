@@ -1,0 +1,3 @@
+# Install after requirements.txt so Torch is available to the build backend.
+flash-attn==2.6.3 \
+    --hash=sha256:5bfae9500ad8e7d2937ebccb4906f3bc464d1bf66eedd0e4adabd520811c7b52

@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 import re
 
+from videoscope.storage import atomic_write_json
+
 
 _CYRILLIC_TO_LATIN = {
     "а": "a",
@@ -214,13 +216,7 @@ class SearchLexicon:
             for term, aliases in entries.items()
             if term.strip()
         }
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self.path.with_suffix(f"{self.path.suffix}.tmp")
-        temporary.write_text(
-            json.dumps(normalized, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        temporary.replace(self.path)
+        atomic_write_json(self.path, normalized)
 
     def expand(self, query: str) -> list[str]:
         normalized_query = normalize_text(query)

@@ -6,14 +6,18 @@ build-backend = "hatchling.build"
 name = "videoscope-backend"
 version = "0.1.0"
 description = "Local multimodal video search and clip export backend"
-requires-python = ">=3.11,<3.13"
+requires-python = ">=3.12,<3.13"
 dependencies = [
   "fastapi>=0.115,<1",
   "uvicorn[standard]>=0.34,<1",
   "python-multipart>=0.0.20,<1",
+  "pydantic>=2.10,<3",
   "pydantic-settings>=2.7,<3",
+  "huggingface-hub>=0.28,<2",
   "qdrant-client[fastembed]>=1.13,<2",
+  "fastembed==0.8.0",
   "scenedetect[opencv]>=0.6.6,<0.7",
+  "opencv-python>=4.12.0.88,<5",
   "pillow>=11,<13",
   "numpy>=1.26,<3",
   "httpx>=0.28,<1",
@@ -24,18 +28,13 @@ dev = [
   "pytest>=8.3,<9",
   "pytest-asyncio>=0.25,<1",
   "pytest-cov>=6,<8",
+  "torch>=2.6,<3",
+  "uv==0.12.3",
 ]
 apple = [
   "mlx-whisper>=0.4,<1",
 ]
-ocr = [
-  "paddleocr>=3,<4",
-  "transformers>=5.8,<6",
-  "torch>=2.6,<3",
-  "torchvision>=0.21,<1",
-]
 roboflow = [
-  "inference-sdk>=0.40,<1",
   "rfdetr>=1.7.1,<1.8",
   "supervision>=0.27,<1",
 ]
@@ -47,7 +46,7 @@ vision = [
   "open-clip-torch>=2.31,<4",
 ]
 video = [
-  "mlx-vlm>=0.6.7,<0.7",
+  "mlx-vlm==0.6.7",
 ]
 
 [project.scripts]

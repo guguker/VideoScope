@@ -1,5 +1,8 @@
+from concurrent.futures import ThreadPoolExecutor
 import json
 from pathlib import Path
+from threading import Barrier, Lock
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -99,19 +102,26 @@ def make_reranker(
     extractor: RecordingMediaExtractor,
     *,
     model_name: str = "test-model",
+    model_revision: str | None = None,
     top_candidates: int = 12,
+    frame_count: int = 12,
+    max_tokens: int = 320,
+    video_fps: float = 2,
 ) -> QwenVideoReranker:
     return QwenVideoReranker(
         model_name=model_name,
+        model_revision=model_revision,
         repository=repository_with_video(tmp_path),
         extractor=extractor,
         temp_dir=tmp_path / "tmp",
         cache_dir=tmp_path / "cache",
         top_candidates=top_candidates,
+        frame_count=frame_count,
+        max_tokens=max_tokens,
         context_seconds=4,
         min_clip_seconds=7,
         max_clip_seconds=12,
-        video_fps=2,
+        video_fps=video_fps,
     )
 
 
@@ -129,6 +139,17 @@ def test_parser_accepts_independent_fact_only_json() -> None:
     assert result.shooter_outside_arc is False
     assert result.three_point_signal is None
     assert result.shooter_jersey == "15"
+
+
+@pytest.mark.parametrize("literal", ["NaN", "Infinity", "-Infinity"])
+def test_parser_rejects_non_finite_numeric_values(literal: str) -> None:
+    result = parse_qwen_judgement(
+        f'{{"confidence":{literal},"event_start":{literal},"event_end":{literal}}}'
+    )
+
+    assert result.confidence == 0.0
+    assert result.event_start is None
+    assert result.event_end is None
 
 
 @pytest.mark.parametrize(
@@ -229,13 +250,21 @@ def test_status_accepts_cached_model_with_sharded_weights(
     )
     import huggingface_hub
 
+    revision = "c" * 40
+    calls: list[dict[str, object]] = []
+
+    def snapshot_download(*_args, **kwargs):  # type: ignore[no-untyped-def]
+        calls.append(kwargs)
+        return str(snapshot)
+
     monkeypatch.setattr(
         huggingface_hub,
         "snapshot_download",
-        lambda *_args, **_kwargs: str(snapshot),
+        snapshot_download,
     )
     reranker = QwenVideoReranker(
         model_name="organization/sharded-model",
+        model_revision=revision,
         repository=repository_with_video(tmp_path),
         extractor=RecordingMediaExtractor(),
         temp_dir=tmp_path / "tmp",
@@ -243,6 +272,39 @@ def test_status_accepts_cached_model_with_sharded_weights(
     )
 
     assert reranker.status().state is ProviderState.READY
+    assert calls == [{"revision": revision, "local_files_only": True}]
+
+
+def test_model_is_loaded_once_when_first_requests_arrive_concurrently(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    reranker = make_reranker(tmp_path, RecordingMediaExtractor())
+    start = Barrier(3)
+    calls = 0
+    calls_lock = Lock()
+
+    def load(_model_name: str):  # type: ignore[no-untyped-def]
+        nonlocal calls
+        with calls_lock:
+            calls += 1
+            call_number = calls
+        time.sleep(0.05)
+        return f"model-{call_number}", f"processor-{call_number}"
+
+    monkeypatch.setitem(__import__("sys").modules, "mlx_vlm", SimpleNamespace(load=load))
+
+    def first_request():  # type: ignore[no-untyped-def]
+        start.wait()
+        return reranker._load()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(first_request) for _ in range(2)]
+        start.wait()
+        results = [future.result(timeout=2) for future in futures]
+
+    assert calls == 1
+    assert results == [("model-1", "processor-1"), ("model-1", "processor-1")]
 
 
 def test_native_video_judge_disables_thinking_and_uses_two_fps(
@@ -360,6 +422,30 @@ def test_other_action_query_keeps_generic_storyboard_flow(
 
     assert extractor.frame_intervals == [(6, 15)]
     assert extractor.clip_intervals == []
+
+
+def test_generic_storyboard_ignores_event_interval_outside_clip(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    extractor = RecordingMediaExtractor()
+    reranker = make_reranker(tmp_path, extractor)
+    monkeypatch.setattr(
+        reranker,
+        "_judge_storyboard",
+        lambda _storyboard, _query: QwenVideoJudgement(
+            matches_query=True,
+            confidence=0.8,
+            event_start=100.0,
+            event_end=101.0,
+        ),
+    )
+    original = candidate("dunk", 10, 11, 0.65)
+
+    reranked = reranker.rerank("игрок выполняет данк", [original])
+
+    assert (reranked[0].start, reranked[0].end) == (original.start, original.end)
+    assert reranked[0].evidence[0].end > reranked[0].evidence[0].start
 
 
 def test_persistent_cache_avoids_second_export_and_model_call(
@@ -506,6 +592,91 @@ def test_cache_key_changes_with_model_name(tmp_path: Path, monkeypatch) -> None:
 
     assert model_b_calls == 1
     assert len(list((tmp_path / "cache").glob("*.json"))) == 2
+
+
+def test_cache_key_changes_with_model_revision(tmp_path: Path) -> None:
+    extractor = RecordingMediaExtractor()
+    first = make_reranker(
+        tmp_path,
+        extractor,
+        model_name="organization/model",
+        model_revision="a" * 40,
+    )
+    second = QwenVideoReranker(
+        model_name="organization/model",
+        model_revision="b" * 40,
+        repository=first.repository,
+        extractor=extractor,
+        temp_dir=tmp_path / "tmp-second",
+        cache_dir=tmp_path / "cache",
+    )
+    parameters = {
+        "video_id": "video-1",
+        "interval": (1.0, 4.0),
+        "prompt_version": "prompt-v1",
+    }
+
+    first_key = first._cache_key(**parameters)
+    second_key = second._cache_key(**parameters)
+
+    assert first_key["model"] == "organization/model@" + "a" * 40
+    assert second_key["model"] == "organization/model@" + "b" * 40
+    assert first._cache_path(first_key) != second._cache_path(second_key)
+
+
+def test_cache_key_includes_versioned_inference_config(tmp_path: Path) -> None:
+    extractor = RecordingMediaExtractor()
+    first = make_reranker(tmp_path, extractor)
+
+    def configured(**kwargs):  # type: ignore[no-untyped-def]
+        return QwenVideoReranker(
+            model_name="test-model",
+            repository=first.repository,
+            extractor=extractor,
+            temp_dir=tmp_path / "tmp",
+            cache_dir=tmp_path / "cache",
+            context_seconds=4,
+            min_clip_seconds=7,
+            max_clip_seconds=12,
+            **kwargs,
+        )
+
+    variants = [
+        first,
+        configured(frame_count=8),
+        configured(max_tokens=256),
+        configured(video_fps=1),
+    ]
+    parameters = {
+        "video_id": "video-1",
+        "interval": (1.0, 4.0),
+        "prompt_version": "prompt-v1",
+    }
+
+    keys = [reranker._cache_key(**parameters) for reranker in variants]
+
+    assert keys[0]["inference_config"] == {
+        "input_schema": "qwen-video-input-v1",
+        "frame_count": 12,
+        "max_tokens": 320,
+        "video_fps": 2,
+    }
+    assert len({reranker._cache_path(key) for reranker, key in zip(variants, keys)}) == 4
+
+
+def test_rerank_strict_surfaces_candidate_failure(tmp_path: Path, monkeypatch) -> None:
+    extractor = RecordingMediaExtractor()
+    reranker = make_reranker(tmp_path, extractor)
+    item = candidate("dunk", 10, 16, 0.7)
+    monkeypatch.setattr(
+        reranker,
+        "_judge_storyboard",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("Qwen inference failed")),
+    )
+
+    assert reranker.rerank("игрок выполняет данк", [item]) == [item]
+    with pytest.raises(RuntimeError, match="Qwen inference failed"):
+        reranker.rerank_strict("игрок выполняет данк", [item])
 
 
 def test_conservative_scoring_keeps_inconclusive_and_unverified_candidates(

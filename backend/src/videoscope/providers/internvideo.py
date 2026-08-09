@@ -6,6 +6,8 @@ from pathlib import Path
 import tempfile
 from typing import Protocol
 
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
 from videoscope.media.ffmpeg import SampledFrame
 from videoscope.providers.base import ProviderState, ProviderStatus
 from videoscope.repository import Repository
@@ -27,6 +29,25 @@ class FrameExtractor(Protocol):
 
 class HTTPClient(Protocol):
     def post(self, url: str, *, json: object, headers: dict[str, str], timeout: float): ...  # type: ignore[no-untyped-def]
+
+
+class _ContractModel(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        strict=True,
+        str_strip_whitespace=True,
+        allow_inf_nan=False,
+    )
+
+
+class _ScorePayload(_ContractModel):
+    id: str = Field(min_length=1, max_length=160)
+    score: float = Field(ge=0, le=1)
+    reason: str = Field(min_length=1, max_length=300)
+
+
+class _RerankResponse(_ContractModel):
+    scores: list[_ScorePayload] = Field(max_length=4)
 
 
 class InternVideoReranker:
@@ -53,8 +74,8 @@ class InternVideoReranker:
         self.repository = repository
         self.extractor = extractor
         self.temp_dir = Path(temp_dir)
-        self.top_candidates = max(1, top_candidates)
-        self.frame_count = max(2, frame_count)
+        self.top_candidates = min(4, max(1, top_candidates))
+        self.frame_count = min(8, max(2, frame_count))
         self.timeout = timeout
         self.client = client
 
@@ -86,6 +107,26 @@ class InternVideoReranker:
     @staticmethod
     def _candidate_id(candidate: FusedResult) -> str:
         return f"{candidate.video_id}:{candidate.start:.3f}:{candidate.end:.3f}"
+
+    @staticmethod
+    def _validate_response(
+        payload: object,
+        *,
+        requested_ids: list[str],
+    ) -> dict[str, tuple[float, str]]:
+        try:
+            response = _RerankResponse.model_validate(payload)
+        except ValidationError as error:
+            raise ValueError("InternVideo response contract violation") from error
+
+        response_ids = [item.id for item in response.scores]
+        if (
+            len(response_ids) != len(set(response_ids))
+            or set(response_ids) != set(requested_ids)
+            or len(response_ids) != len(requested_ids)
+        ):
+            raise ValueError("InternVideo response contract violation")
+        return {item.id: (item.score, item.reason) for item in response.scores}
 
     def rerank(self, query: str, candidates: list[FusedResult]) -> list[FusedResult]:
         if not self.endpoint or not candidates:
@@ -144,16 +185,11 @@ class InternVideoReranker:
                 timeout=self.timeout,
             )
             response.raise_for_status()
-            response_payload = response.json()
-
-        scores = {
-            str(item.get("id")): (
-                max(0.0, min(1.0, float(item.get("score") or 0.0))),
-                str(item.get("reason") or "InternVideo 2.5 confirms the moment"),
+            scores = self._validate_response(
+                response.json(),
+                requested_ids=[str(item["id"]) for item in payload_candidates],
             )
-            for item in response_payload.get("scores", [])
-            if isinstance(item, dict) and item.get("id")
-        }
+
         output: list[FusedResult] = []
         for candidate in candidates:
             resolved = scores.get(self._candidate_id(candidate))

@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
 import math
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+
+from videoscope.model_manifest import LIGHTHOUSE_CHECKPOINT_SHA256
 
 
 class QDDETRPredictor:
@@ -25,9 +29,21 @@ class QDDETRPredictor:
         *,
         device: str = "cpu",
         feature_name: str = "clip",
+        checkpoint_sha256: str = LIGHTHOUSE_CHECKPOINT_SHA256,
     ) -> None:
         if feature_name != "clip":
             raise ValueError("VideoScope's Lighthouse adapter supports feature_name='clip' only")
+
+        checkpoint_file = Path(checkpoint_path)
+        digest = hashlib.sha256()
+        try:
+            with checkpoint_file.open("rb") as source:
+                for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                    digest.update(chunk)
+        except OSError as error:
+            raise RuntimeError("Lighthouse checkpoint cannot be read") from error
+        if not hmac.compare_digest(digest.hexdigest(), checkpoint_sha256):
+            raise RuntimeError("Lighthouse checkpoint checksum mismatch")
 
         import clip
         import torch

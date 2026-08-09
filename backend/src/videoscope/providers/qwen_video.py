@@ -5,6 +5,7 @@ import hashlib
 import importlib.util
 import json
 import logging
+import math
 from pathlib import Path
 import re
 import tempfile
@@ -12,9 +13,11 @@ from threading import Lock
 from typing import Protocol
 
 from videoscope.media.ffmpeg import SampledFrame
+from videoscope.model_manifest import model_identity
 from videoscope.providers.base import ProviderState, ProviderStatus
 from videoscope.repository import Repository
 from videoscope.search.fusion import EvidenceHit, FusedResult
+from videoscope.storage import atomic_write_json
 
 
 logger = logging.getLogger(__name__)
@@ -22,6 +25,7 @@ logger = logging.getLogger(__name__)
 MADE_BASKET_PROMPT_VERSION = "made-basket-facts-v3"
 LEGACY_MADE_THREE_PROMPT_VERSION = "made-three-facts-v2"
 GENERIC_PROMPT_VERSION = "generic-storyboard-v2"
+QWEN_INPUT_SCHEMA_VERSION = "qwen-video-input-v1"
 
 
 class FrameExtractor(Protocol):
@@ -77,9 +81,10 @@ def _optional_float(value: object) -> float | None:
     if isinstance(value, bool) or value is None:
         return None
     try:
-        return float(value)
+        resolved = float(value)
     except (TypeError, ValueError):
         return None
+    return resolved if math.isfinite(resolved) else None
 
 
 def _normalize_jersey(value: object) -> str | None:
@@ -208,6 +213,7 @@ class QwenVideoReranker:
         self,
         *,
         model_name: str | None,
+        model_revision: str | None = None,
         repository: Repository,
         extractor: FrameExtractor,
         temp_dir: Path,
@@ -221,6 +227,7 @@ class QwenVideoReranker:
         max_tokens: int = 320,
     ) -> None:
         self.model_name = model_name.strip() if model_name else None
+        self.model_revision = model_revision
         self.repository = repository
         self.extractor = extractor
         self.temp_dir = Path(temp_dir)
@@ -241,11 +248,16 @@ class QwenVideoReranker:
         self.max_tokens = max(64, max_tokens)
         self._model = None
         self._processor = None
+        self._load_lock = Lock()
         self._lock = Lock()
 
     @property
     def display_model_name(self) -> str:
         return self.model_name or "mlx-community/Qwen3.5-9B-MLX-4bit"
+
+    @property
+    def model_identity(self) -> str:
+        return model_identity(self.display_model_name, self.model_revision)
 
     def status(self) -> ProviderStatus:
         if not self.model_name:
@@ -271,7 +283,11 @@ class QwenVideoReranker:
                 from huggingface_hub import snapshot_download
 
                 snapshot = Path(
-                    snapshot_download(self.model_name, local_files_only=True)
+                    snapshot_download(
+                        self.model_name,
+                        revision=self.model_revision,
+                        local_files_only=True,
+                    )
                 )
                 config = snapshot / "config.json"
                 weights = next(snapshot.glob("*.safetensors"), None)
@@ -297,12 +313,28 @@ class QwenVideoReranker:
     def _load(self):  # type: ignore[no-untyped-def]
         if self._model is not None and self._processor is not None:
             return self._model, self._processor
-        if not self.model_name:
-            raise RuntimeError("QWEN_VIDEO_MODEL is not configured")
-        from mlx_vlm import load
+        with self._load_lock:
+            if self._model is not None and self._processor is not None:
+                return self._model, self._processor
+            if not self.model_name:
+                raise RuntimeError("QWEN_VIDEO_MODEL is not configured")
+            from mlx_vlm import load
 
-        self._model, self._processor = load(self.model_name)
-        return self._model, self._processor
+            model_reference = self.model_name
+            if (
+                self.model_revision is not None
+                and not Path(self.model_name).expanduser().exists()
+            ):
+                from huggingface_hub import snapshot_download
+
+                model_reference = snapshot_download(
+                    self.model_name,
+                    revision=self.model_revision,
+                    local_files_only=True,
+                )
+            model, processor = load(model_reference)
+            self._model, self._processor = model, processor
+            return model, processor
 
     @staticmethod
     def _fact_prompt() -> str:
@@ -480,10 +512,16 @@ class QwenVideoReranker:
         prompt_version: str,
     ) -> dict[str, object]:
         return {
-            "model": self.display_model_name,
+            "model": self.model_identity,
             "video_id": video_id,
             "interval": [round(interval[0], 3), round(interval[1], 3)],
             "prompt_version": prompt_version,
+            "inference_config": {
+                "input_schema": QWEN_INPUT_SCHEMA_VERSION,
+                "frame_count": self.frame_count,
+                "max_tokens": self.max_tokens,
+                "video_fps": self.video_fps,
+            },
         }
 
     def _cache_path(self, key: dict[str, object]) -> Path:
@@ -522,16 +560,11 @@ class QwenVideoReranker:
     ) -> None:
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         path = self._cache_path(key)
-        temporary = path.with_suffix(".tmp")
         payload = {
             "key": key,
             "judgement": asdict(judgement),
         }
-        temporary.write_text(
-            json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2),
-            encoding="utf-8",
-        )
-        temporary.replace(path)
+        atomic_write_json(path, payload, sort_keys=True)
 
     @staticmethod
     def resolve_match(
@@ -613,6 +646,22 @@ class QwenVideoReranker:
         return verification_rank, candidate.score
 
     def rerank(self, query: str, candidates: list[FusedResult]) -> list[FusedResult]:
+        return self._rerank(query, candidates, raise_on_error=False)
+
+    def rerank_strict(
+        self,
+        query: str,
+        candidates: list[FusedResult],
+    ) -> list[FusedResult]:
+        return self._rerank(query, candidates, raise_on_error=True)
+
+    def _rerank(
+        self,
+        query: str,
+        candidates: list[FusedResult],
+        *,
+        raise_on_error: bool,
+    ) -> list[FusedResult]:
         if not self.model_name or not candidates:
             return candidates
         selected_ids = {
@@ -706,6 +755,8 @@ class QwenVideoReranker:
                         self._save_cached(cache_key, judgement)
                     judgement = self.resolve_match(query, candidate, judgement)
                 except Exception:
+                    if raise_on_error:
+                        raise
                     logger.exception(
                         "Qwen не смог проверить кандидата %s",
                         self._candidate_id(candidate),
@@ -720,15 +771,11 @@ class QwenVideoReranker:
                     and judgement.matches_query is True
                     and judgement.event_start is not None
                     and judgement.event_end is not None
+                    and 0 <= judgement.event_start < judgement.event_end
+                    and judgement.event_end <= clip_end - clip_start
                 ):
-                    start = max(
-                        clip_start,
-                        min(clip_end, clip_start + judgement.event_start),
-                    )
-                    end = max(
-                        start,
-                        min(clip_end, clip_start + judgement.event_end),
-                    )
+                    start = clip_start + judgement.event_start
+                    end = clip_start + judgement.event_end
 
                 evidence_text = (
                     "Qwen: попадание подтверждено"
@@ -749,7 +796,7 @@ class QwenVideoReranker:
                     text=evidence_text,
                     metadata={
                         "source": "qwen-video-verifier",
-                        "model": self.display_model_name,
+                        "model": self.model_identity,
                         "prompt_version": prompt_version,
                         "cache_hit": cached,
                         "matches_query": judgement.matches_query,

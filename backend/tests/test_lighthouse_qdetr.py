@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import types
 from pathlib import Path
+from hashlib import sha256
 
 import numpy as np
 import pytest
@@ -65,9 +66,17 @@ def predictor(monkeypatch, tmp_path: Path) -> QDDETRPredictor:
     monkeypatch.setitem(sys.modules, "clip", fake_clip)
 
     model = FakeQDModel()
-    import lighthouse.common.qd_detr as qd_detr
-
-    monkeypatch.setattr(qd_detr, "build_model", lambda _options: (model, None))
+    lighthouse = types.ModuleType("lighthouse")
+    lighthouse.__path__ = []  # type: ignore[attr-defined]
+    common = types.ModuleType("lighthouse.common")
+    common.__path__ = []  # type: ignore[attr-defined]
+    qd_detr = types.ModuleType("lighthouse.common.qd_detr")
+    qd_detr.build_model = lambda _options: (model, None)  # type: ignore[attr-defined]
+    lighthouse.common = common  # type: ignore[attr-defined]
+    common.qd_detr = qd_detr  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "lighthouse", lighthouse)
+    monkeypatch.setitem(sys.modules, "lighthouse.common", common)
+    monkeypatch.setitem(sys.modules, "lighthouse.common.qd_detr", qd_detr)
     options = types.SimpleNamespace(clip_length=2.0, device="old")
     monkeypatch.setattr(
         torch,
@@ -75,7 +84,12 @@ def predictor(monkeypatch, tmp_path: Path) -> QDDETRPredictor:
         lambda *_args, **_kwargs: {"opt": options, "model": {"weight": 1}},
     )
 
-    instance = QDDETRPredictor(str(tmp_path / "model.ckpt"))
+    checkpoint = tmp_path / "model.ckpt"
+    checkpoint.write_bytes(b"test checkpoint")
+    instance = QDDETRPredictor(
+        str(checkpoint),
+        checkpoint_sha256=sha256(checkpoint.read_bytes()).hexdigest(),
+    )
     assert options.device == "cpu"
     assert model.loaded == {"weight": 1}
     return instance
@@ -150,3 +164,16 @@ def test_clip_encoding_video_features_and_prediction(predictor, monkeypatch) -> 
 def test_rejects_non_clip_lighthouse_features(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="feature_name='clip'"):
         QDDETRPredictor(str(tmp_path / "model.ckpt"), feature_name="clip_slowfast")
+
+
+def test_rejects_checkpoint_before_torch_load(monkeypatch, tmp_path: Path) -> None:
+    checkpoint = tmp_path / "model.ckpt"
+    checkpoint.write_bytes(b"untrusted pickle")
+    monkeypatch.setattr(
+        torch,
+        "load",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("pickle load")),
+    )
+
+    with pytest.raises(RuntimeError, match="checksum"):
+        QDDETRPredictor(str(checkpoint))

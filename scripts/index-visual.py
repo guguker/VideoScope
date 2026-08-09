@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from videoscope.config import AppSettings
 from videoscope.media.ffmpeg import FFmpeg
+from videoscope.model_manifest import model_revision
 from videoscope.providers.base import ProviderState
 from videoscope.repository import Repository
 from videoscope.search.visual_index import SiglipVisualIndex
@@ -16,9 +17,10 @@ def main() -> None:
     index = SiglipVisualIndex(
         settings.visual_index_dir,
         model_name=settings.siglip_model,
+        model_revision=model_revision(settings.siglip_model),
         batch_size=settings.siglip_batch_size,
     )
-    status = index.status()
+    status = index.status(check_index=False)
     if status.state is not ProviderState.READY:
         raise SystemExit(status.detail)
 

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import logging
 import shutil
 from dataclasses import dataclass
 
 from videoscope.clips import ClipService
 from videoscope.config import AppSettings
 from videoscope.media.ffmpeg import FFmpeg
+from videoscope.model_manifest import model_revision
 from videoscope.processing.indexer import Indexer
 from videoscope.processing.queue import ThreadedProcessingQueue
 from videoscope.providers.base import ProviderRegistry, ProviderState, StaticProvider
@@ -20,9 +22,12 @@ from videoscope.repository import Repository
 from videoscope.search.service import SearchService
 from videoscope.search.text_matching import SearchLexicon
 from videoscope.search.temporal_refinement import TemporalRefiner
-from videoscope.search.embeddings import SemanticEmbedding
+from videoscope.search.embeddings import create_semantic_embedding
 from videoscope.search.vector_index import EmptyVectorIndex, QdrantVectorIndex
 from videoscope.search.visual_index import SiglipVisualIndex
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -44,8 +49,12 @@ def build_runtime(settings: AppSettings, repository: Repository) -> Runtime:
         settings.whisper_language,
         settings.whisper_initial_prompt,
         settings.glossary_path,
+        model_revision=model_revision(settings.whisper_model),
     )
-    ocr = PaddleOCRReader()
+    ocr = PaddleOCRReader(
+        worker_python=settings.ocr_worker_python,
+        worker_script=settings.ocr_worker_script,
+    )
     roboflow = RoboflowDetector(
         api_key=settings.roboflow_api_key,
         model_id=settings.roboflow_model_id,
@@ -57,7 +66,7 @@ def build_runtime(settings: AppSettings, repository: Repository) -> Runtime:
         ffmpeg=ffmpeg,
         source_root=settings.lighthouse_root,
     )
-    text_embedding = SemanticEmbedding(
+    text_embedding = create_semantic_embedding(
         model_name=settings.text_embedding_model,
         dimensions=settings.text_embedding_dimensions,
         cache_dir=settings.models_dir / "fastembed",
@@ -66,6 +75,7 @@ def build_runtime(settings: AppSettings, repository: Repository) -> Runtime:
     siglip = SiglipVisualIndex(
         settings.visual_index_dir,
         model_name=settings.siglip_model,
+        model_revision=model_revision(settings.siglip_model),
         batch_size=settings.siglip_batch_size,
     )
     internvideo = InternVideoReranker(
@@ -79,6 +89,7 @@ def build_runtime(settings: AppSettings, repository: Repository) -> Runtime:
     )
     qwen_video = QwenVideoReranker(
         model_name=settings.qwen_video_model,
+        model_revision=model_revision(settings.qwen_video_model),
         repository=repository,
         extractor=ffmpeg,
         temp_dir=settings.temp_dir,
@@ -91,7 +102,14 @@ def build_runtime(settings: AppSettings, repository: Repository) -> Runtime:
         video_fps=settings.qwen_video_fps,
     )
 
-    qdrant_ready = qdrant.status().state is ProviderState.READY
+    qdrant_ready = qdrant.status(check_index=False).state is ProviderState.READY
+    if qdrant_ready and qdrant.needs_rebuild():
+        try:
+            qdrant.rebuild_repository(repository)
+        except Exception:
+            logger.exception("Could not rebuild the pinned text index")
+            qdrant_ready = False
+    qdrant_ready = qdrant_ready and qdrant.status().state is ProviderState.READY
     vector_index = qdrant if qdrant_ready else EmptyVectorIndex()
     speech_provider = whisper if whisper.status().state is ProviderState.READY else None
     ocr_provider = ocr if ocr.status().state is ProviderState.READY else None
@@ -141,7 +159,7 @@ def build_runtime(settings: AppSettings, repository: Repository) -> Runtime:
         "ffmpeg",
         "FFmpeg",
         ProviderState.READY if ffmpeg_binary else ProviderState.UNAVAILABLE,
-        ffmpeg_binary or "ffmpeg executable is missing",
+        "ffmpeg executable is available" if ffmpeg_binary else "ffmpeg executable is missing",
     )
     providers = ProviderRegistry(
         [

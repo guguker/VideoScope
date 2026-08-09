@@ -14,7 +14,7 @@ CLIP_COMMIT="d05afc436d78f1c48dc0dbf8e5980a9d471f35f6"
 MODEL_DIR="data/models/lighthouse"
 CHECKPOINT="$MODEL_DIR/clip_qd_detr_qvhighlight.ckpt"
 CHECKPOINT_URL="https://zenodo.org/records/13960580/files/clip_qd_detr_qvhighlight.ckpt?download=1"
-CHECKPOINT_MD5="909ab9d5002e2812298b71b099b1068d"
+CHECKPOINT_SHA256="42798d352dde089a835cb4995eb9c8084a2e97337166abbbb09c12856aec2c55"
 
 has_commit() {
   .venv/bin/python - "$1" "$2" <<'PY'
@@ -46,9 +46,9 @@ fi
 .venv/bin/python -m pip install "easydict>=1.13,<2"
 
 mkdir -p "$MODEL_DIR"
-if [[ ! -f "$CHECKPOINT" ]] || [[ "$(md5 -q "$CHECKPOINT")" != "$CHECKPOINT_MD5" ]]; then
+if [[ ! -f "$CHECKPOINT" ]] || [[ "$(shasum -a 256 "$CHECKPOINT" | awk '{print $1}')" != "$CHECKPOINT_SHA256" ]]; then
   curl --fail --location --retry 3 --output "$CHECKPOINT.part" "$CHECKPOINT_URL"
-  if [[ "$(md5 -q "$CHECKPOINT.part")" != "$CHECKPOINT_MD5" ]]; then
+  if [[ "$(shasum -a 256 "$CHECKPOINT.part" | awk '{print $1}')" != "$CHECKPOINT_SHA256" ]]; then
     echo "Lighthouse checkpoint checksum mismatch." >&2
     exit 1
   fi
