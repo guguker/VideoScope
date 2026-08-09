@@ -2,81 +2,73 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from dataclasses import asdict
+import logging
 import mimetypes
 from pathlib import Path
+import re
 from typing import Protocol
+from urllib.parse import quote
 from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException, UploadFile, status
+from fastapi import FastAPI, HTTPException, Request, Response, status
 from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel, Field
+from starlette.datastructures import UploadFile as StarletteUploadFile
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
+from videoscope.api_models import (
+    EvaluationCasesRequest,
+    EvaluationCasesResponse,
+    EvaluationPayloadResponse,
+    EvaluationReportResponse,
+    EvaluationRunRequest,
+    ErrorResponse,
+    ExportRequest,
+    ExportResponse,
+    GlossaryRequest,
+    GlossaryResponse,
+    HealthResponse,
+    ProviderResponse,
+    ReindexResponse,
+    RenameVideoRequest,
+    SearchRequest,
+    SearchResultResponse,
+    VIDEO_ID_PATTERN,
+    VideoResponse,
+)
 from videoscope.clips import ClipSelection, ClipService
 from videoscope.config import AppSettings
-from videoscope.evaluation import EvaluationCase, EvaluationService, EvaluationStore
+from videoscope.evaluation import (
+    EvaluationCase,
+    EvaluationDataError,
+    EvaluationService,
+    EvaluationStore,
+    evaluation_provider_snapshot,
+    evaluation_revision,
+    evaluation_runtime_revision,
+    validate_evaluation_video_references,
+)
 from videoscope.media.ffmpeg import FFmpeg
 from videoscope.media.uploads import UploadRejected, validate_upload
 from videoscope.providers.base import ProviderRegistry, ProviderState, StaticProvider
-from videoscope.repository import Repository
+from videoscope.repository import Repository, VideoRecord
 from videoscope.search.service import SearchService
 from videoscope.search.text_matching import SearchLexicon
 from videoscope.search.vector_index import MemoryVectorIndex
-from videoscope.security import RateLimit, SlidingWindowLimiter
+from videoscope.security import RequestBodyLimitMiddleware, RateLimit, SlidingWindowLimiter
 
 
 UPLOAD_CHUNK_SIZE = 1024 * 1024
+UPLOAD_BODY_OVERHEAD_BYTES = 64 * 1024
+VIDEO_ID_RE = re.compile(VIDEO_ID_PATTERN)
+BINARY_FILE_SCHEMA = {"schema": {"type": "string", "format": "binary"}}
+logger = logging.getLogger(__name__)
 
 
 class ProcessingQueue(Protocol):
     def submit(self, video_id: str) -> None: ...
 
     def close(self) -> None: ...
-
-
-class SearchRequest(BaseModel):
-    query: str = Field(min_length=1, max_length=500)
-    video_ids: list[str] | None = Field(default=None, max_length=100)
-    limit: int = Field(default=20, ge=1, le=50)
-    use_lighthouse: bool = True
-    mode: str = Field(default="all", pattern="^(all|speech|visual|ocr)$")
-
-
-class RenameVideoRequest(BaseModel):
-    name: str = Field(min_length=1, max_length=160)
-
-
-class GlossaryRequest(BaseModel):
-    entries: dict[str, list[str]]
-
-
-class EvaluationCaseRequest(BaseModel):
-    id: str = Field(min_length=1, max_length=100)
-    query: str = Field(min_length=1, max_length=500)
-    video_id: str = Field(min_length=1, max_length=64)
-    start: float = Field(ge=0)
-    end: float = Field(gt=0)
-    mode: str = Field(default="all", pattern="^(all|speech|visual|ocr)$")
-    label_source: str = Field(default="gold", pattern="^(gold|silver)$")
-    notes: str = Field(default="", max_length=500)
-
-
-class EvaluationCasesRequest(BaseModel):
-    cases: list[EvaluationCaseRequest] = Field(max_length=200)
-
-
-class EvaluationRunRequest(BaseModel):
-    variants: list[str] = Field(default=["auto"], min_length=1, max_length=6)
-
-
-class ClipSelectionRequest(BaseModel):
-    video_id: str = Field(min_length=1, max_length=64)
-    start: float = Field(ge=0)
-    end: float = Field(gt=0)
-
-
-class ExportRequest(BaseModel):
-    name: str = Field(default="videoscope-export", min_length=1, max_length=120)
-    selections: list[ClipSelectionRequest] = Field(min_length=1, max_length=30)
 
 
 def create_app(
@@ -128,6 +120,27 @@ def create_app(
         docs_url="/api/docs",
         openapi_url="/api/openapi.json",
         lifespan=lifespan,
+        responses={
+            403: {"model": ErrorResponse, "description": "Request origin or host is not trusted"},
+            429: {"model": ErrorResponse, "description": "Rate limit exceeded"},
+        },
+    )
+    allowed_hosts = {"127.0.0.1", "localhost", resolved_settings.host}
+    if processing_queue is not None:
+        allowed_hosts.add("testserver")
+    if ":" in resolved_settings.host:
+        # Starlette currently parses a bracketed IPv6 Host header to this token.
+        allowed_hosts.add("[")
+    app.add_middleware(
+        TrustedHostMiddleware,
+        allowed_hosts=sorted(allowed_hosts),
+        www_redirect=False,
+    )
+    app.add_middleware(
+        RequestBodyLimitMiddleware,
+        max_body_bytes=(
+            resolved_settings.max_upload_bytes + UPLOAD_BODY_OVERHEAD_BYTES
+        ),
     )
     app.state.settings = resolved_settings
     app.state.repository = resolved_repository
@@ -140,7 +153,17 @@ def create_app(
         resolved_settings.evaluation_cases_path,
         resolved_settings.evaluation_report_path,
     )
-    evaluation_service = EvaluationService(resolved_search, evaluation_store)
+    evaluation_providers = evaluation_provider_snapshot(resolved_providers)
+    evaluation_service = EvaluationService(
+        resolved_search,
+        evaluation_store,
+        repository=resolved_repository,
+        runtime_revision=lambda: evaluation_runtime_revision(
+            resolved_search,
+            evaluation_providers,
+            resolved_settings,
+        ),
+    )
     app.state.evaluation_service = evaluation_service
     app.state.clip_service = resolved_clips
     app.state.provider_registry = resolved_providers
@@ -151,18 +174,36 @@ def create_app(
         "http://localhost:5173",
     }
 
-    def video_payload(record: object) -> dict[str, object]:
-        payload = asdict(record)  # type: ignore[arg-type]
-        payload.pop("media_path", None)
-        video_id = str(payload["id"])
-        payload["media_url"] = f"/api/videos/{video_id}/media"
-        payload["thumbnail_url"] = (
-            f"/api/thumbnails/{video_id}/{Path(str(payload['thumbnail_path'])).name}"
-            if payload.get("thumbnail_path")
-            else None
-        )
-        payload.pop("thumbnail_path", None)
-        return payload
+    def public_video_error(record: VideoRecord) -> str | None:
+        if not record.error:
+            return None
+        if record.status == "failed":
+            return "Не удалось обработать видео. Подробности записаны в журнале сервера."
+        return "Некоторые необязательные этапы индексации завершились с предупреждением."
+
+    def video_payload(record: VideoRecord) -> dict[str, object]:
+        return {
+            "id": record.id,
+            "original_name": record.original_name,
+            "display_name": record.display_name,
+            "size_bytes": record.size_bytes,
+            "status": record.status,
+            "progress": record.progress,
+            "stage": record.stage,
+            "duration": record.duration,
+            "width": record.width,
+            "height": record.height,
+            "fps": record.fps,
+            "error": public_video_error(record),
+            "created_at": record.created_at,
+            "updated_at": record.updated_at,
+            "media_url": f"/api/videos/{record.id}/media",
+            "thumbnail_url": (
+                f"/api/thumbnails/{record.id}/{Path(record.thumbnail_path).name}"
+                if record.thumbnail_path
+                else None
+            ),
+        }
 
     @app.middleware("http")
     async def security_headers(request, call_next):  # type: ignore[no-untyped-def]
@@ -190,22 +231,22 @@ def create_app(
         response.headers["Referrer-Policy"] = "no-referrer"
         return response
 
-    @app.get("/api/health")
+    @app.get("/api/health", response_model=HealthResponse)
     def health() -> dict[str, str]:
         return {"status": "ok", "service": "videoscope"}
 
-    @app.get("/api/videos")
+    @app.get("/api/videos", response_model=list[VideoResponse])
     def list_videos() -> list[dict[str, object]]:
         return [video_payload(record) for record in resolved_repository.list_videos()]
 
-    @app.get("/api/videos/{video_id}")
+    @app.get("/api/videos/{video_id}", response_model=VideoResponse)
     def get_video(video_id: str) -> dict[str, object]:
         record = resolved_repository.get_video(video_id)
         if record is None:
             raise HTTPException(status_code=404, detail="Video not found")
         return video_payload(record)
 
-    @app.patch("/api/videos/{video_id}")
+    @app.patch("/api/videos/{video_id}", response_model=VideoResponse)
     def rename_video(video_id: str, request: RenameVideoRequest) -> dict[str, object]:
         record = resolved_repository.get_video(video_id)
         if record is None:
@@ -216,8 +257,52 @@ def create_app(
         updated = resolved_repository.update_video(video_id, display_name=name)
         return video_payload(updated)
 
-    @app.post("/api/videos", status_code=status.HTTP_202_ACCEPTED)
-    async def upload_video(file: UploadFile) -> dict[str, object]:
+    @app.post(
+        "/api/videos",
+        status_code=status.HTTP_202_ACCEPTED,
+        response_model=VideoResponse,
+        responses={
+            413: {"model": ErrorResponse, "description": "Upload body or file is too large"},
+            415: {"model": ErrorResponse, "description": "Unsupported video extension"},
+            422: {"model": ErrorResponse, "description": "Multipart upload must contain one file"},
+        },
+        openapi_extra={
+            "requestBody": {
+                "required": True,
+                "content": {
+                    "multipart/form-data": {
+                        "schema": {
+                            "type": "object",
+                            "required": ["file"],
+                            "properties": {
+                                "file": {"type": "string", "format": "binary"}
+                            },
+                        }
+                    }
+                },
+            }
+        },
+    )
+    async def upload_video(request: Request) -> dict[str, object]:
+        try:
+            form = await request.form(max_files=1, max_fields=0)
+        except StarletteHTTPException as error:
+            raise HTTPException(
+                status_code=422,
+                detail="Upload must contain exactly one file field",
+            ) from error
+        items = form.multi_items()
+        if (
+            len(items) != 1
+            or items[0][0] != "file"
+            or not isinstance(items[0][1], StarletteUploadFile)
+        ):
+            await form.close()
+            raise HTTPException(
+                status_code=422,
+                detail="Upload must contain exactly one file field",
+            )
+        file = items[0][1]
         filename = file.filename or ""
         try:
             preliminary = validate_upload(filename, 1, max_bytes=resolved_settings.max_upload_bytes)
@@ -247,7 +332,7 @@ def create_app(
             destination.unlink(missing_ok=True)
             raise HTTPException(status_code=415, detail=str(error)) from error
         finally:
-            await file.close()
+            await form.close()
 
         record = resolved_repository.create_video(
             video_id=video_id,
@@ -259,34 +344,58 @@ def create_app(
         resolved_queue.submit(video_id)
         return video_payload(record)
 
-    @app.get("/api/videos/{video_id}/media")
+    @app.get(
+        "/api/videos/{video_id}/media",
+        response_class=FileResponse,
+        responses={
+            200: {
+                "description": "Original video bytes",
+                "content": {"application/octet-stream": BINARY_FILE_SCHEMA},
+            },
+            404: {"description": "Video or media file not found"},
+        },
+    )
     def video_media(video_id: str) -> FileResponse:
         record = resolved_repository.get_video(video_id)
         if record is None:
             raise HTTPException(status_code=404, detail="Video not found")
-        path = Path(record.media_path)
-        if not path.is_file() or path.parent.resolve() != resolved_settings.media_dir.resolve():
+        media_root = resolved_settings.media_dir.resolve()
+        path = Path(record.media_path).resolve()
+        if not path.is_file() or path.parent != media_root:
             raise HTTPException(status_code=404, detail="Media not found")
         media_type = mimetypes.guess_type(record.original_name)[0] or "application/octet-stream"
         return FileResponse(path, media_type=media_type)
 
-    @app.get("/api/thumbnails/{video_id}/{filename}")
+    @app.get(
+        "/api/thumbnails/{video_id}/{filename}",
+        response_class=FileResponse,
+        responses={
+            200: {
+                "description": "JPEG thumbnail bytes",
+                "content": {"image/jpeg": BINARY_FILE_SCHEMA},
+            },
+            404: {"description": "Thumbnail not found"},
+        },
+    )
     def thumbnail(video_id: str, filename: str) -> FileResponse:
-        if Path(filename).name != filename:
+        if not VIDEO_ID_RE.fullmatch(video_id) or Path(filename).name != filename:
             raise HTTPException(status_code=404, detail="Thumbnail not found")
-        path = resolved_settings.thumbnails_dir / video_id / filename
-        expected_parent = (resolved_settings.thumbnails_dir / video_id).resolve()
-        if not path.is_file() or path.parent.resolve() != expected_parent:
+        thumbnails_root = resolved_settings.thumbnails_dir.resolve()
+        expected_parent = (thumbnails_root / video_id).resolve()
+        try:
+            expected_parent.relative_to(thumbnails_root)
+        except ValueError as error:
+            raise HTTPException(status_code=404, detail="Thumbnail not found") from error
+        path = (expected_parent / filename).resolve()
+        if not path.is_file() or path.parent != expected_parent:
             raise HTTPException(status_code=404, detail="Thumbnail not found")
         return FileResponse(path, media_type="image/jpeg")
 
-    @app.get("/api/videos/{video_id}/segments")
-    def video_segments(video_id: str) -> list[dict[str, object]]:
-        if resolved_repository.get_video(video_id) is None:
-            raise HTTPException(status_code=404, detail="Video not found")
-        return [asdict(segment) for segment in resolved_repository.list_segments(video_id)]
-
-    @app.post("/api/videos/{video_id}/reindex", status_code=status.HTTP_202_ACCEPTED)
+    @app.post(
+        "/api/videos/{video_id}/reindex",
+        status_code=status.HTTP_202_ACCEPTED,
+        response_model=ReindexResponse,
+    )
     def reindex_video(video_id: str) -> dict[str, str]:
         if resolved_repository.get_video(video_id) is None:
             raise HTTPException(status_code=404, detail="Video not found")
@@ -294,7 +403,7 @@ def create_app(
         resolved_queue.submit(video_id)
         return {"status": "queued", "video_id": video_id}
 
-    @app.post("/api/search")
+    @app.post("/api/search", response_model=list[SearchResultResponse])
     def search(request: SearchRequest) -> list[dict[str, object]]:
         try:
             results = resolved_search.search(
@@ -308,11 +417,11 @@ def create_app(
             raise HTTPException(status_code=422, detail=str(error)) from error
         return [asdict(result) for result in results]
 
-    @app.get("/api/search/glossary")
+    @app.get("/api/search/glossary", response_model=GlossaryResponse)
     def get_search_glossary() -> dict[str, object]:
         return {"entries": resolved_lexicon.read()}
 
-    @app.put("/api/search/glossary")
+    @app.put("/api/search/glossary", response_model=GlossaryResponse)
     def update_search_glossary(request: GlossaryRequest) -> dict[str, object]:
         if len(request.entries) > 500:
             raise HTTPException(status_code=422, detail="Glossary is too large")
@@ -326,35 +435,66 @@ def create_app(
         resolved_lexicon.replace(request.entries)
         return {"entries": resolved_lexicon.read()}
 
-    @app.get("/api/evaluation")
+    @app.get("/api/evaluation", response_model=EvaluationPayloadResponse)
     def get_evaluation() -> dict[str, object]:
-        return {
-            "cases": [asdict(case) for case in evaluation_store.read_cases()],
-            "report": evaluation_store.read_report(),
-        }
+        try:
+            cases = evaluation_store.read_cases()
+            runtime_revision = evaluation_service.current_runtime_revision()
+            return {
+                "cases": [asdict(case) for case in cases],
+                "runtime_revision": runtime_revision,
+                "evaluation_revision": evaluation_revision(cases, runtime_revision),
+                "report": evaluation_store.read_report(),
+            }
+        except EvaluationDataError as error:
+            logger.exception("Persisted evaluation cases are invalid")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Evaluation data is invalid",
+            ) from error
 
-    @app.put("/api/evaluation/cases")
+    @app.put("/api/evaluation/cases", response_model=EvaluationCasesResponse)
     def update_evaluation_cases(request: EvaluationCasesRequest) -> dict[str, object]:
         cases = [EvaluationCase(**item.model_dump()) for item in request.cases]
         try:
+            validate_evaluation_video_references(cases, resolved_repository)
             evaluation_store.replace_cases(cases)
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
-        return {"cases": [asdict(case) for case in evaluation_store.read_cases()]}
+        persisted_cases = evaluation_store.read_cases()
+        runtime_revision = evaluation_service.current_runtime_revision()
+        return {
+            "cases": [asdict(case) for case in persisted_cases],
+            "runtime_revision": runtime_revision,
+            "evaluation_revision": evaluation_revision(
+                persisted_cases,
+                runtime_revision,
+            ),
+        }
 
-    @app.post("/api/evaluation/run")
+    @app.post("/api/evaluation/run", response_model=EvaluationReportResponse)
     def run_evaluation(request: EvaluationRunRequest) -> dict[str, object]:
         try:
-            return asdict(evaluation_service.run(request.variants))
+            return asdict(evaluation_service.run(list(request.variants)))
+        except EvaluationDataError as error:
+            logger.exception("Persisted evaluation cases are invalid")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Evaluation data is invalid",
+            ) from error
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
 
-    @app.get("/api/providers")
+    @app.get("/api/providers", response_model=list[ProviderResponse])
     def providers() -> list[dict[str, object]]:
         return [asdict(provider) for provider in resolved_providers.statuses()]
 
-    @app.post("/api/exports", status_code=status.HTTP_201_CREATED)
-    def export_clips(request: ExportRequest) -> dict[str, object]:
+    @app.post(
+        "/api/exports",
+        status_code=status.HTTP_201_CREATED,
+        response_model=ExportResponse,
+    )
+    def export_clips(request: ExportRequest, response: Response) -> dict[str, object]:
         try:
             exported = resolved_clips.export(
                 request.name,
@@ -369,19 +509,32 @@ def create_app(
             )
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
+        location = f"/api/exports/{quote(exported.name, safe='')}"
+        response.headers["Location"] = location
         return {
             "name": exported.name,
             "duration": exported.duration,
             "created_at": exported.created_at,
-            "url": f"/api/exports/{exported.name}",
+            "url": location,
         }
 
-    @app.get("/api/exports/{filename}")
+    @app.get(
+        "/api/exports/{filename}",
+        response_class=FileResponse,
+        responses={
+            200: {
+                "description": "Exported MP4 bytes",
+                "content": {"video/mp4": BINARY_FILE_SCHEMA},
+            },
+            404: {"description": "Export not found"},
+        },
+    )
     def exported_clip(filename: str) -> FileResponse:
         if Path(filename).name != filename or Path(filename).suffix.lower() != ".mp4":
             raise HTTPException(status_code=404, detail="Export not found")
-        path = resolved_settings.clips_dir / filename
-        if not path.is_file() or path.parent.resolve() != resolved_settings.clips_dir.resolve():
+        clips_root = resolved_settings.clips_dir.resolve()
+        path = (clips_root / filename).resolve()
+        if not path.is_file() or path.parent != clips_root:
             raise HTTPException(status_code=404, detail="Export not found")
         return FileResponse(path, media_type="video/mp4", filename=filename)
 
