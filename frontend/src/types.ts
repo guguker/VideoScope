@@ -4,7 +4,6 @@ export interface VideoItem {
   id: string
   original_name: string
   display_name: string | null
-  stored_name: string
   size_bytes: number
   status: VideoStatus
   progress: number
@@ -40,6 +39,7 @@ export interface SearchEvidence {
   end: number
   raw_score: number
   matched_terms: string[]
+  details: Record<string, unknown>
 }
 
 export interface SearchResult {
@@ -99,23 +99,35 @@ export interface CaseEvaluation {
 
 export interface EvaluationVariant {
   name: string
-  case_count: number
-  recall_at_1: number
-  recall_at_3: number
-  recall_at_5: number
-  mrr: number
-  mean_temporal_iou: number
-  mean_latency_ms: number
+  total_case_count: number
+  successful_case_count: number
+  error_count: number
+  status: 'complete' | 'partial' | 'failed'
+  recall_at_1: number | null
+  recall_at_3: number | null
+  recall_at_5: number | null
+  mrr: number | null
+  mean_temporal_iou: number | null
+  mean_latency_ms: number | null
   cases: CaseEvaluation[]
 }
 
 export interface EvaluationReport {
   generated_at: string
+  schema_version: number | null
+  methodology_version: number | null
+  evaluation_revision: string | null
+  runtime_revision: string | null
+  cases_revision: string | null
+  temporal_iou_threshold: number | null
   variants: EvaluationVariant[]
 }
 
 export interface EvaluationPayload {
   cases: EvaluationCase[]
+  cases_revision: string
+  evaluation_revision: string
+  runtime_revision: string
   report: EvaluationReport | null
 }
 
