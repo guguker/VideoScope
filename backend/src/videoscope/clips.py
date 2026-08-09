@@ -4,10 +4,14 @@ import re
 import unicodedata
 from dataclasses import dataclass
 from datetime import UTC, datetime
+import os
 from pathlib import Path
 
 from videoscope.media.ffmpeg import FFmpeg
 from videoscope.repository import Repository
+
+
+MAX_EXPORT_STEM_BYTES = 180
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,7 +34,26 @@ def _safe_export_name(name: str) -> str:
     normalized = re.sub(r"\s+", "_", normalized)
     normalized = re.sub(r"[^\w.-]", "_", normalized, flags=re.UNICODE)
     normalized = re.sub(r"_+", "_", normalized).strip("._")
-    return (normalized[:100] or "videoscope-export") + ".mp4"
+    normalized = normalized or "videoscope-export"
+    while len(normalized.encode("utf-8")) > MAX_EXPORT_STEM_BYTES:
+        normalized = normalized[:-1]
+    return normalized + ".mp4"
+
+
+def _reserve_export_path(clips_dir: Path, output_name: str) -> Path:
+    clips_dir.mkdir(parents=True, exist_ok=True)
+    requested = clips_dir / output_name
+    stem = requested.stem
+    suffix = 1
+    while True:
+        candidate = requested if suffix == 1 else clips_dir / f"{stem}-{suffix}.mp4"
+        try:
+            descriptor = os.open(candidate, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            suffix += 1
+            continue
+        os.close(descriptor)
+        return candidate
 
 
 class ClipService:
@@ -64,20 +87,16 @@ class ClipService:
             resolved.append((Path(video.media_path), start, end))
             total_duration += end - start
 
-        output_name = _safe_export_name(name)
-        destination = self.clips_dir / output_name
-        if destination.exists():
-            stem = destination.stem
-            suffix = 2
-            while destination.exists():
-                destination = self.clips_dir / f"{stem}-{suffix}.mp4"
-                suffix += 1
-            output_name = destination.name
-        self.ffmpeg.export_montage(resolved, destination, self.temp_dir)
+        destination = _reserve_export_path(self.clips_dir, _safe_export_name(name))
+        output_name = destination.name
+        try:
+            self.ffmpeg.export_montage(resolved, destination, self.temp_dir)
+        except Exception:
+            destination.unlink(missing_ok=True)
+            raise
         return ExportedClip(
             name=output_name,
             path=destination,
             duration=total_duration,
             created_at=datetime.now(UTC).isoformat(),
         )
-
