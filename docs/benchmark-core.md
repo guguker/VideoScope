@@ -25,21 +25,40 @@ benchmark schema to SQLite records.
 
 ## Frozen profiles and search adapter
 
-The approved versioned profiles are:
+The approved v1 profiles are a cumulative product ablation followed by one
+mutually exclusive reranker fork:
 
-1. `lexical_qdrant`
-2. `dense_siglip`
-3. `temporal_refinement`
-4. `lighthouse`
-5. `qwen_verification`
-6. `internvideo`
+| Profile | Exact search plan | Required capabilities |
+| --- | --- | --- |
+| `lexical_qdrant` | lexical plus semantic speech/OCR/object search | text vectors |
+| `dense_siglip` | previous plan plus dense SigLIP visual search | previous plus dense visual index |
+| `temporal_refinement` | previous plan plus temporal refinement | previous plus temporal refiner |
+| `lighthouse` | previous plan plus Lighthouse | previous plus Lighthouse |
+| `qwen_verification` | Lighthouse plan, then Qwen over the top 12 base candidates | Lighthouse base plus Qwen |
+| `internvideo` | Lighthouse plan, then InternVideo over the top 4 base candidates | Lighthouse base plus InternVideo |
 
-`BenchmarkSearchAdapter` is the explicit boundary to product search. A concrete
-adapter must snapshot exact model/index/config identities, report each required
-capability state, call the fail-closed evaluation search path, and translate
-local results back to portable asset aliases. Missing, failed, stale,
-not-configured, incomplete, or exceptional dependencies become infrastructure
-errors; they are never scored as model misses.
+Qwen and InternVideo are never chained. Every profile has result limit 20. Text
+weights remain fixed in every profile (`speech=1.0`, `ocr=0.88`,
+`objects=0.92`); dense visual has weight `1.08`, and Lighthouse has weight
+`0.78` when present. The `all_candidates` trigger means unconditional reranking
+of every candidate inside the frozen reranker cap: 12 for Qwen and 4 for
+InternVideo, not all 20 final result slots. Modalities, weights, refinement
+flags, reranker trigger/candidate limit, and result limit are part of canonical
+`EvaluationSearchPlan` JSON and its SHA-256 identity. Provider input, frame, and
+token settings remain part of the pinned runtime/model identity. Input tuple
+order cannot change the plan identity.
+
+`BenchmarkSearchAdapter` is a session factory, not a stateless collection of
+callbacks. After local assets are resolved, the runner calls exactly one
+`open_session(profile, resolved_assets)`. That session must pin the assets and
+exact model/index/config generations for the whole run, then expose
+`identities`, `capability_state`, `search`, and `close`. A future concrete
+adapter must call the fail-closed evaluation boundary and translate local hits
+back to portable aliases inside `search` or its bounded iterable. Missing,
+failed, stale, not-configured, incomplete, invalid, or exceptional dependencies
+become infrastructure errors; they are never scored as model misses. Session
+close is mandatory even after an error, and a close failure prevents
+publication.
 
 ## Safe foundation CLI
 
@@ -102,23 +121,49 @@ The runner handles cases with zero, one, or several relevant intervals and
 optional hard negatives. Quality metrics use only completed positive cases as
 the Recall/MRR/IoU denominator. Zero-interval cases contribute to the explicit
 negative false-positive metric. Result-level false positives, hard-negative
-hits, latency, and domain/modality/label-quality/split-group slices are recorded
-separately.
+hits, per-case latency, and domain/modality/label-quality/split-group slices are
+recorded separately.
 
 Each complete case persists at most the profile result limit of ranked portable
 evidence: rank, asset alias, interval, and normalized score. It never persists a
 local video id, media path, or provider exception. Provider iterables are read
 only through `limit + 1`, exact duplicate hits are rejected, and failed outcomes
-contain no partial evidence. `audit_run_manifest` recomputes per-case and
-aggregate metrics from the frozen dataset and ranked evidence.
+contain no partial evidence. `audit_run_manifest` requires the exact current
+profile, search-plan, and methodology identities, then recomputes per-case and
+aggregate quality metrics from the frozen dataset, ranked evidence, and
+persisted per-case latency. It does not claim to validate future process
+measurements.
 
-The finished `BenchmarkRunManifest` includes dataset revision, code SHA,
-model/index/config identities, hardware, cold/warm mode, metrics, outcomes, and
-ranked evidence. `BenchmarkRunRegistry` publishes it atomically in an immutable
-run directory and refuses duplicate run ids.
+Run schema v2 includes dataset revision, code SHA, model/index/config
+identities, hardware, cold/warm mode, outcomes, ranked evidence, and explicit
+run start/finish/manifest timestamps. `run_status` is derived from outcomes as
+`complete`, `partial`, `failed`, or `cancelled`.
 
-This increment measures retrieval latency and records the hardware identity, but
-it does **not** yet sample peak memory or index/storage growth. Those system
+`quality_metrics` contains the outcome-recomputable aggregates. The existing
+`mean_latency_ms` compatibility aggregate remains there because it is exactly
+recomputed from persisted complete-case latency. `system_metrics` is a separate
+namespace for a future managed measurement protocol; metric names cannot
+overlap the two namespaces. `measurement_status` is `not_measured`, `complete`,
+or `failed`, and measured runs require their own start/finish timestamps inside
+the run interval. Foundation runs use the explicit `not-measured@1` sentinel,
+contain no system metrics or measurement timestamps, and therefore do not
+pretend that process-tree memory or storage was measured.
+
+`BenchmarkRunRegistry` publishes v2 atomically in an immutable run directory
+and refuses duplicate run ids. The loader still accepts the exact strict v1
+JSON shape. It represents that value in memory as v2 with the
+`legacy-unmeasured@1` sentinel and conservative equal start/finish/creation
+timestamps; reads and registry rebuilds never rewrite the immutable v1 bytes.
+All new writes are v2. Legacy runs lack the frozen search-plan and measurement
+contract, so they cannot pass the current audit or promotion comparison.
+
+The search timer starts immediately before `session.search` and stops only
+after bounded `limit + 1` materialization and portable hit translation. Asset
+binding, capability preflight, identity capture, scoring, audit work, registry
+I/O, and session open/close are outside that boundary. Capability/binding
+failures therefore have zero search latency rather than a misleading preflight
+duration. This increment records retrieval latency and the hardware identity,
+but it does **not** yet sample peak memory or index/storage growth. Those system
 metrics require a concrete local runner adapter with explicit measurement
 boundaries (process tree, cache policy, and before/after artifact roots). They
 remain a follow-up alongside the concrete search adapter/run command and must be
@@ -129,8 +174,12 @@ added before claiming the full latency/memory/storage benchmark promised by
 
 `PromotionPolicy` is immutable and declares a minimum completed-case count, an
 infrastructure-error policy, and per-metric direction, allowed regression, and
-absolute threshold. Comparison is allowed only for the same dataset revision,
-methodology, hardware, cold/warm mode, and case identities. For comparable runs,
+absolute threshold. A guardrail may address either quality or system metrics.
+Comparison is allowed only for the same dataset revision, methodology,
+hardware, cold/warm mode, case identities, measurement protocol, and
+measurement status. Failed measurements, legacy measurement contracts, and
+cancelled/failed runs are incomparable. Search-plan identities may differ: that
+declared difference is the ablation being compared. For comparable runs,
 machine-readable output includes every declared gate and sorts checks
 deterministically; incomparable results may omit guardrail checks.
 

@@ -1,8 +1,10 @@
 # Зависимости VideoScope
 
 VideoScope разделяет базовое приложение и ресурсоёмкие ML-провайдеры. Базовый и
-vision-профили используют `.venv`, OCR — `.venv-ocr`, а Qwen — `.venv-qwen`.
-Системными зависимостями остаются Python 3.12, Node.js 22, pnpm 11, FFmpeg и FFprobe.
+vision-профили используют `.venv`, OCR — `.venv-ocr`, Qwen — `.venv-qwen`, а
+Lighthouse — `.venv-lighthouse`. Основному приложению нужен Python 3.12;
+Lighthouse отдельно закреплён на Python 3.11. Также нужны Node.js 22, pnpm 11,
+FFmpeg и FFprobe.
 
 ## Профили Python
 
@@ -12,7 +14,7 @@ vision-профили используют `.venv`, OCR — `.venv-ocr`, а Qwen
 | apple + roboflow + vision | `make install-ml` | Whisper MLX, локальный RF-DETR, SigLIP и Torch-стек |
 | OCR worker | `make install-ocr` | PaddleOCR в изолированном `.venv-ocr`, связь по локальному JSONL stdio |
 | Qwen worker | `make install-video` | Изолированные `.venv-qwen`, MLX-VLM и loopback HTTP worker |
-| Lighthouse | `make install-lighthouse` | Отдельно закреплённые Lighthouse и OpenAI CLIP, checkpoint QD-DETR |
+| Lighthouse worker | `make install-lighthouse` | Отдельный Python 3.11 lock с закреплёнными Lighthouse/OpenAI CLIP; модели ставятся только `make models-lighthouse` |
 
 `pydantic` объявлен напрямую в базовом профиле и в отдельном `deploy/internvideo/requirements.txt`, потому что оба сервиса импортируют его публичный API. `huggingface-hub` также является прямой базовой зависимостью: провайдеры проверяют закреплённые локальные snapshots, а `scripts/download-models.py` загружает их через Hub.
 
@@ -49,24 +51,40 @@ OpenCV wheel в документации
 размера и строгой проверкой ответа; тяжёлый `inference-sdk` больше не является
 скрытой зависимостью локального RF-DETR и не ограничивает версию OpenCV.
 
-## Особый случай Lighthouse
+## Изолированный Lighthouse
 
-Upstream Lighthouse рассчитан на другой монолитный стек и объявляет несовместимые с основным окружением ограничения: `numpy<=1.23.5` и `transformers<=4.51.3`, а также аудио- и Gradio-зависимости, которые CLIP-only путь VideoScope не использует. Поэтому `scripts/install-lighthouse.sh` устанавливает закреплённые Git-коммиты Lighthouse и OpenAI CLIP с `--no-deps`, а приложение использует изолированный адаптер `lighthouse_qdetr.py`. Официальный QD-DETR checkpoint использует pickle-совместимый legacy-формат, поэтому до его небезопасного декодирования runtime обязательно сверяет закреплённый SHA-256; иной файл отклоняется.
+Upstream Lighthouse объявляет `numpy<=1.23.5` и
+`transformers<=4.51.3`, несовместимые с основным Python 3.12 vision-стеком.
+`workers/lighthouse/pyproject.toml` поэтому является самостоятельным Python 3.11
+проектом. Он не синхронизирует `backend/pyproject.toml`, не использует `--inexact`
+или `--no-deps`, не добавляет `clip`/`lighthouse` и не подменяет версии
+Torch/Transformers основного vision-профиля.
+Source-архивы Lighthouse и OpenAI CLIP закреплены полными Git SHA и отдельными
+SHA-256; полный dependency graph фиксирует собственный hashed
+`workers/lighthouse/requirements.lock`.
 
-Кэш каждого видео содержит manifest с версией схемы, SHA-256 checkpoint и
-ревизиями Lighthouse/CLIP. Несовместимые или незавершённые кэши не участвуют в
-поиске. После первой установки провайдера или осознанного обновления этих
-компонентов перестройте кэш существующей библиотеки командой
-`make index-lighthouse`.
+Установка кода и загрузка моделей разделены: `make install-lighthouse` не
+скачивает модели, а `make models-lighthouse` загружает QD-DETR и ViT-B/32 во
+временные файлы и активирует их только после SHA-256. Официальный QD-DETR
+checkpoint использует pickle-совместимый legacy-формат; небезопасный decode
+возможен только в worker после проверки обоих модельных файлов.
 
-Это сознательное временное исключение, а не полностью согласованный dependency graph. После установки Lighthouse команда `pip check` может сообщать о его отсутствующих upstream-зависимостях и несовместимых версиях NumPy/Transformers, хотя используемый VideoScope CLIP-only путь работает без них. `open-clip-torch` пока остаётся в профиле `vision`: само приложение его не импортирует, но пакет приносит общие runtime-зависимости, необходимые OpenAI CLIP, установленному с `--no-deps`.
+Новый кэш хранится как неизменяемые поколения безопасных NumPy-массивов.
+Manifest включает source SHA-256, полный preprocessing/model/runtime spec и hash
+каждого окна. Только полностью записанное и повторно прочитанное поколение может
+атомарно заменить `active.json`; любая ошибка сохраняет прежнее поколение.
+Старые `.pt` окна не удаляются автоматически, но новым runtime считаются stale.
 
-Надёжный следующий шаг — вынести Lighthouse в отдельное окружение/сервис либо перенести минимальный QD-DETR runtime в поддерживаемый пакет с собственным тестируемым набором зависимостей. После этого можно удалить исключение `--no-deps` и неиспользуемый `open-clip-torch`.
+Worker слушает только `127.0.0.1`, требует bearer token, игнорирует proxy-env,
+не следует redirect, ограничивает request/response/input и допускает одну
+операцию ML одновременно. Подробности: `docs/lighthouse-worker.md`.
 
 ## Воспроизводимость
 
 Frontend закреплён файлом `frontend/pnpm-lock.yaml`, Python —
-`backend/uv.lock` для Python 3.12. Bootstrap устанавливает `uv==0.12.3` и всегда
+`backend/uv.lock` для Python 3.12 и hashed
+`workers/lighthouse/requirements.lock` для Python 3.11.14 на Apple Silicon.
+Bootstrap устанавливает `uv==0.12.3` и всегда
 использует точный `uv sync --locked`; CI использует тот же lock и отклоняет
 рассинхронизацию с `pyproject.toml`. Поэтому повторный
 `make install-video` синхронизирует `.venv-qwen` из этого же lock-файла без
@@ -74,9 +92,8 @@ Frontend закреплён файлом `frontend/pnpm-lock.yaml`, Python —
 Повторный `make install` также удаляет устаревшие пакеты, которых больше нет в проекте
 (например, прежний in-process OCR/Roboflow stack). После такого базового reset
 нужные optional-профили устанавливаются заново. Флаг `--inexact` применяется
-только в `make install-ml`, чтобы vision-профиль и вручную
-установленный Lighthouse могли сосуществовать; все объявленные зависимости при
-этом всё равно берутся в версиях из lock-файла.
+только в `make install-ml`; Lighthouse больше не меняет `.venv` и не зависит от
+её текущего состояния.
 
 Обновление Python-зависимостей выполняется явно:
 
@@ -86,7 +103,6 @@ make test-backend
 ```
 
 После изменения ML-зависимостей дополнительно проверяются соответствующие
-профили и миграции производных индексов. OCR и Qwen остаются отдельными
-ограниченными окружениями, а Lighthouse — документированным исключением
-`--no-deps`; для них нужны независимые smoke-проверки. Model revision и checksum обновляются отдельно
-от package lock и проходят тесты manifest/identity.
+профили и миграции производных индексов. OCR, Qwen и Lighthouse имеют отдельные
+ограниченные окружения. Model revision, lock identity и checksum обновляются
+вместе с тестами manifest/identity.

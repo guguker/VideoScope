@@ -159,11 +159,13 @@ Required regressions:
 
 ## Capability provenance
 
-The target state exposes per-video readiness independently for probe, segment
-stages, text vectors, dense visual indexing and Lighthouse. Schema v5 currently
-provides source/specification-linked generations for scenes, speech, OCR and
-objects. SigLIP and Lighthouse use separate manifest validation; verified
-immutable text-vector generations remain follow-up work.
+Per-video readiness is represented independently for segment stages, text
+vectors, dense visual indexing and Lighthouse. Schema v5 introduced
+source/specification-linked generations for scenes, speech, OCR and objects;
+schema v6 adds immutable text-vector generations with exact upstream lineage,
+verified Qdrant manifests and an atomic SQLite active pointer. SigLIP and
+Lighthouse retain their own validated immutable manifests. A unified probe-stage
+readiness record remains follow-up work.
 
 Search requirements are derived from the actual query plan. Evaluation variants
 declare stronger deterministic requirements. Missing speech/OCR/object artifacts
@@ -174,7 +176,8 @@ The first migration derives only facts that can be proven from existing data.
 Unknown legacy provenance becomes `stale` or `unknown`; it is never guessed as
 complete.
 
-Schema v5 implements this rule for SQLite segment evidence. Legacy segment rows
+Schema v5 implements this rule for SQLite segment evidence, and schema v6 applies
+the same build-before-swap rule to semantic text vectors. Legacy segment rows
 stay present with no generation identity and are deliberately excluded from
 search. Reindex publishes immutable per-stage generations and swaps each active
 pointer only after the full candidate set (and, for scenes, its generation
@@ -194,10 +197,12 @@ The target development/runtime profiles are:
 - OCR worker;
 - Lighthouse worker or maintained minimal service.
 
-Workers use bounded local contracts, pinned dependencies and explicit health /
-capability responses. A clean base sync may remove stale packages, but optional
-workers are reinstalled independently. Existing `data/` is not recreated as part
-of dependency migration.
+Qwen, OCR and Lighthouse already use isolated worker boundaries. Extracting the
+Torch/SigLIP/RF-DETR vision stack and Whisper MLX from the main environment
+remains the next environment work. Workers use bounded local contracts, pinned
+dependencies and explicit health/capability responses. A clean base sync may
+remove stale packages, but optional workers are reinstalled independently.
+Existing `data/` is not recreated as part of dependency migration.
 
 ## Benchmark subsystem
 
@@ -214,9 +219,11 @@ platform:
 
 Cases support zero, one or multiple relevant intervals, hard negatives, domain
 and modality slices, gold/silver provenance and complete-video split groups.
-Metrics include retrieval quality, false positives, temporal boundaries,
-latency, memory and storage. Dataset and promotion thresholds are frozen before
-model comparison.
+The current core records auditable retrieval quality and per-case latency.
+Process-tree memory and contained artifact/storage growth require the future
+concrete runner and measurement protocol; they must not be claimed before that
+boundary exists. Dataset and promotion thresholds are frozen before model
+comparison.
 
 ## Model direction
 
