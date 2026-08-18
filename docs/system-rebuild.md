@@ -205,16 +205,17 @@ The target development/runtime profiles are:
 
 - base API/search environment;
 - vision worker for Torch, SigLIP and RF-DETR;
+- speech worker for MLX Whisper;
 - video worker for MLX/Qwen;
 - OCR worker;
 - Lighthouse worker or maintained minimal service.
 
-Qwen, OCR and Lighthouse already use isolated worker boundaries. Extracting the
-Torch/SigLIP/RF-DETR vision stack and Whisper MLX from the main environment
-remains the next environment work. Workers use bounded local contracts, pinned
-dependencies and explicit health/capability responses. A clean base sync may
-remove stale packages, but optional workers are reinstalled independently.
-Existing `data/` is not recreated as part of dependency migration.
+Qwen, OCR, Lighthouse, Vision and Whisper now use isolated worker boundaries.
+Workers use bounded local contracts, pinned dependencies and explicit
+health/capability responses. A clean base sync removes stale in-process ML
+packages, while optional workers are reinstalled independently. Existing
+`data/` is not recreated as part of dependency migration; artifacts with old
+provider identities remain inert until explicit reindex.
 
 ## Benchmark subsystem
 

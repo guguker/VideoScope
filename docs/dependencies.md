@@ -1,17 +1,21 @@
 # Зависимости VideoScope
 
-VideoScope разделяет базовое приложение и ресурсоёмкие ML-провайдеры. Базовый и
-vision-профили используют `.venv`, OCR — `.venv-ocr`, Qwen — `.venv-qwen`, а
-Lighthouse — `.venv-lighthouse`. Основному приложению нужен Python 3.12;
-Lighthouse отдельно закреплён на Python 3.11. Также нужны Node.js 22, pnpm 11,
-FFmpeg и FFprobe.
+VideoScope разделяет базовое приложение и ресурсоёмкие ML-провайдеры. Backend
+использует `.venv`, SigLIP/RF-DETR — `.venv-vision`, Whisper —
+`.venv-whisper`, OCR — `.venv-ocr`, Qwen — `.venv-qwen`, а Lighthouse —
+`.venv-lighthouse`. Основному приложению нужен Python 3.12, а Vision/Whisper
+workers воспроизводимо поддерживаются на Apple Silicon с macOS 14+ и ровно
+Python 3.12.13. Lighthouse отдельно закреплён на Python 3.11.14. Также нужны
+Node.js 22, pnpm 11, FFmpeg и FFprobe. Intel Mac и Linux не входят в заявленный
+контракт локальных Apple-ML workers.
 
 ## Профили Python
 
 | Профиль | Команда | Назначение |
 | --- | --- | --- |
 | base + dev | `make install` | FastAPI, SQLite/Qdrant, PySceneDetect, тесты (включая Torch-boundary regressions) и frontend-зависимости |
-| apple + roboflow + vision | `make install-ml` | Whisper MLX, локальный RF-DETR, SigLIP и Torch-стек |
+| Vision worker | `make install-vision` | Изолированный SigLIP 2 + RF-DETR runtime из хэшированного lock |
+| Whisper worker | `make install-whisper` | Изолированный MLX Whisper runtime из хэшированного lock |
 | OCR worker | `make install-ocr` | PaddleOCR в изолированном `.venv-ocr`, связь по локальному JSONL stdio |
 | Qwen worker | `make install-video` | Изолированные `.venv-qwen`, MLX-VLM и loopback HTTP worker |
 | Lighthouse worker | `make install-lighthouse` | Отдельный Python 3.11 lock с закреплёнными Lighthouse/OpenAI CLIP; модели ставятся только `make models-lighthouse` |
@@ -22,26 +26,29 @@ FastEmbed закреплён на `0.8.0`: для MPNet это фиксируе�
 Версия runtime и pooling входят в identity Qdrant collection, поэтому их осознанное
 обновление автоматически требует полной перестройки текстового индекса.
 
-`make models-ml` запускается после `make install-ml`, а `make models-video` — после
-`make install-video`. Общая команда `make models` последовательно загружает оба
-профиля. Hugging Face snapshots закреплены проверенными commit SHA в
+`make models-base`, `make models-vision`, `make models-whisper` и
+`make models-video` запускаются только после установки соответствующего
+окружения. Compatibility-команда `make install-ml` устанавливает два отдельных
+Vision/Whisper worker, но ничего не добавляет в `.venv`. Общая команда
+`make models` последовательно загружает эти четыре профиля. Hugging Face
+snapshots закреплены проверенными commit SHA в
 `scripts/download-models.py`, чтобы повторный bootstrap не переключал модель на
 новую ревизию незаметно. Runtime открывает те же commit snapshots в offline-режиме,
 а идентификаторы производных Qwen/SigLIP/Qdrant-артефактов включают revision,
 поэтому смена manifest не переиспользует старые оценки или векторы.
 
-### Почему OCR и Qwen вынесены в отдельные процессы
+### Почему ML-провайдеры вынесены в отдельные процессы
 
 Основное vision-окружение закрепляет `opencv-python>=4.12,<5`. MLX-VLM также
 приносит собственный video/OpenCV-стек, а PaddleOCR 3.7 через
 `paddlex[ocr-core]` требует ровно
 `opencv-contrib-python==4.10.0.84`. Эти колёса нельзя безопасно установить рядом:
 они публикуют один namespace `cv2`, а сами сопровождающие OpenCV прямо требуют
-выбрать только один пакет. Поэтому `make install-ocr` создаёт `.venv-ocr`, а
-`make install-video` — отдельное `.venv-qwen`. OCR использует ограниченный
-JSONL-stdio контракт, Qwen — аутентифицированный loopback-only HTTP-контракт.
-Ни Paddle, ни MLX-VLM больше не должны импортироваться процессом backend; их
-dependency graphs проверяются независимо. См. официальные metadata
+выбрать только один пакет. Поэтому OCR, Qwen, Vision и Whisper имеют собственные
+точные окружения. OCR использует ограниченный JSONL-stdio контракт, остальные
+workers — аутентифицированные loopback-only HTTP-контракты. Paddle, MLX-VLM,
+MLX Whisper, RF-DETR, TorchVision и Transformers не импортируются процессом
+backend; их dependency graphs проверяются независимо. См. официальные metadata
 [`mlx-vlm`](https://pypi.org/pypi/mlx-vlm/0.6.7/json),
 [`paddleocr`](https://pypi.org/pypi/paddleocr/3.7.0/json) и правило выбора одного
 OpenCV wheel в документации
@@ -50,6 +57,22 @@ OpenCV wheel в документации
 Облачный Roboflow вызывается напрямую через базовый `httpx` с ограничением
 размера и строгой проверкой ответа; тяжёлый `inference-sdk` больше не является
 скрытой зависимостью локального RF-DETR и не ограничивает версию OpenCV.
+
+## Изолированные Vision и Whisper
+
+`workers/vision/requirements.lock` и `workers/whisper/requirements.lock` содержат
+полные hashes всех пакетов. `make install-vision` и `make install-whisper`
+выполняют exact `uv pip sync --require-hashes`; они не изменяют `.venv`.
+Установка кода и загрузка моделей разделены. Vision worker принимает только
+кадры из разрешённых подкаталогов `data/`, Whisper — только media; оба копируют
+вход в приватный bounded snapshot и повторно проверяют исходник после inference.
+
+Vision worker возвращает отдельно закреплённые identity SigLIP и RF-DETR, поэтому
+смена detector не инвалидирует dense-вектора. Переключение 224/384 меняет
+спецификацию visual generation и требует явного `make index-visual` или
+`make index-visual-quality` при остановленном API. Whisper stage использует один
+immutable prompt snapshot: glossary, StageSpecification и HTTP request не могут
+увидеть разные версии файла в одном прогоне.
 
 ## Изолированный Lighthouse
 
@@ -82,18 +105,17 @@ Worker слушает только `127.0.0.1`, требует bearer token, и�
 ## Воспроизводимость
 
 Frontend закреплён файлом `frontend/pnpm-lock.yaml`, Python —
-`backend/uv.lock` для Python 3.12 и hashed
-`workers/lighthouse/requirements.lock` для Python 3.11.14 на Apple Silicon.
+`backend/uv.lock` для Python 3.12 и отдельными hashed locks для Vision, Whisper
+и Lighthouse workers.
 Bootstrap устанавливает `uv==0.12.3` и всегда
 использует точный `uv sync --locked`; CI использует тот же lock и отклоняет
 рассинхронизацию с `pyproject.toml`. Поэтому повторный
 `make install-video` синхронизирует `.venv-qwen` из этого же lock-файла без
 `--inexact`; Qwen package graph поэтому не зависит от текущего состояния `.venv`.
-Повторный `make install` также удаляет устаревшие пакеты, которых больше нет в проекте
-(например, прежний in-process OCR/Roboflow stack). После такого базового reset
-нужные optional-профили устанавливаются заново. Флаг `--inexact` применяется
-только в `make install-ml`; Lighthouse больше не меняет `.venv` и не зависит от
-её текущего состояния.
+Повторный `make install` также удаляет устаревшие пакеты, которых больше нет в
+проекте (включая прежние in-process Whisper/Roboflow/SigLIP стеки). После такого
+базового reset нужные workers устанавливаются отдельно; ни один ML target больше
+не использует `--inexact` для изменения основного окружения.
 
 Обновление Python-зависимостей выполняется явно:
 
@@ -102,7 +124,6 @@ Bootstrap устанавливает `uv==0.12.3` и всегда
 make test-backend
 ```
 
-После изменения ML-зависимостей дополнительно проверяются соответствующие
-профили и миграции производных индексов. OCR, Qwen и Lighthouse имеют отдельные
-ограниченные окружения. Model revision, lock identity и checksum обновляются
-вместе с тестами manifest/identity.
+После изменения ML-зависимостей дополнительно проверяются соответствующие worker
+locks и миграции производных индексов. Model revision, lock identity и checksum
+обновляются вместе с тестами manifest/identity.
