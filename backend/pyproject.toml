@@ -51,6 +51,7 @@ video = [
 
 [project.scripts]
 videoscope = "videoscope.__main__:main"
+videoscope-benchmark = "videoscope.benchmark.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/videoscope"]
