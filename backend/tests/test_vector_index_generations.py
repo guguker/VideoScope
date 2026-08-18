@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 import hashlib
+from threading import Barrier, BrokenBarrierError, Lock
 from types import SimpleNamespace
 
 import numpy as np
@@ -17,7 +19,12 @@ from videoscope.artifacts import (
     TextVectorSearchBinding,
 )
 from videoscope.search.embeddings import HashEmbedding
-from videoscope.search.vector_index import MemoryVectorIndex, QdrantVectorIndex
+from videoscope.search.vector_index import (
+    MemoryVectorIndex,
+    QdrantStorageContractError,
+    QdrantStorageUnavailableError,
+    QdrantVectorIndex,
+)
 
 
 def _index_specification(dimensions: int = 16) -> TextVectorIndexSpecification:
@@ -213,6 +220,343 @@ def test_generation_gc_deletes_only_exact_generation(tmp_path) -> None:
 
     assert index.validate_generation(_binding(first, first_receipt)) is False
     assert index.validate_generation(_binding(second, second_receipt)) is True
+
+
+def test_qdrant_storage_gc_uses_persisted_scope_not_current_embedding(tmp_path) -> None:
+    path = tmp_path / "qdrant"
+    writer = QdrantVectorIndex(path, embedding=HashEmbedding(16))
+    plan = _plan("79797979797979797979797979797979")
+    writer.build_generation(plan)
+    persisted_hash = plan.index_specification.specification_hash
+    persisted_collection = plan.index_specification.collection_name
+    writer.close()
+
+    gc_index = QdrantVectorIndex(path, embedding=HashEmbedding(32))
+    gc_index.delete_generation_from_storage(
+        plan.generation_id,
+        index_specification_hash=persisted_hash,
+        collection_name=persisted_collection,
+    )
+
+    client = gc_index._client
+    assert client is not None
+    assert client.collection_exists(persisted_collection) is True
+    assert client.collection_exists(gc_index.collection_name) is False
+    assert gc_index._get_client() is client
+    assert client.collection_exists(gc_index.collection_name) is True
+
+
+def test_qdrant_storage_gc_does_not_create_absent_storage_or_collection(tmp_path) -> None:
+    absent_path = tmp_path / "absent-qdrant"
+    index = QdrantVectorIndex(absent_path, embedding=HashEmbedding(16))
+    specification = _index_specification(16)
+
+    index.delete_generation_from_storage(
+        "7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a",
+        index_specification_hash=specification.specification_hash,
+        collection_name=specification.collection_name,
+    )
+
+    assert absent_path.exists() is False
+    assert index._client is None
+
+    active_client = index._get_client()
+    other_specification = _index_specification(32)
+    index.delete_generation_from_storage(
+        "7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b",
+        index_specification_hash=other_specification.specification_hash,
+        collection_name=other_specification.collection_name,
+    )
+
+    assert active_client.collection_exists(index.collection_name) is True
+    assert active_client.collection_exists(other_specification.collection_name) is False
+    assert index._client is active_client
+
+
+def test_one_qdrant_client_is_reused_by_concurrent_gc_and_indexer(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    import qdrant_client
+
+    path = tmp_path / "qdrant"
+    path.mkdir()
+    constructor_barrier = Barrier(2)
+    start_barrier = Barrier(3)
+    counter_lock = Lock()
+    constructed: list[object] = []
+
+    class ConcurrentClient:
+        def __init__(self, *, path: str) -> None:
+            del path
+            with counter_lock:
+                constructed.append(self)
+            try:
+                constructor_barrier.wait(timeout=0.5)
+            except BrokenBarrierError:
+                pass
+            self.collections: set[str] = set()
+            self.closed = False
+
+        def collection_exists(self, collection_name: str) -> bool:
+            return collection_name in self.collections
+
+        def create_collection(self, *, collection_name: str, **_kwargs) -> None:  # type: ignore[no-untyped-def]
+            self.collections.add(collection_name)
+
+        @staticmethod
+        def delete(**_kwargs) -> None:  # type: ignore[no-untyped-def]
+            pass
+
+        @staticmethod
+        def count(**_kwargs):  # type: ignore[no-untyped-def]
+            return SimpleNamespace(count=0)
+
+        def close(self) -> None:
+            self.closed = True
+
+    monkeypatch.setattr(qdrant_client, "QdrantClient", ConcurrentClient)
+    index = QdrantVectorIndex(path, embedding=HashEmbedding(16))
+
+    def run_gc() -> None:
+        start_barrier.wait()
+        index.delete_generation_from_storage(
+            "7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a",
+            index_specification_hash=index.index_specification.specification_hash,
+            collection_name=index.collection_name,
+        )
+
+    def run_indexer():  # type: ignore[no-untyped-def]
+        start_barrier.wait()
+        return index._get_client()
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            gc_future = pool.submit(run_gc)
+            indexer_future = pool.submit(run_indexer)
+            start_barrier.wait()
+            gc_future.result(timeout=2)
+            client = indexer_future.result(timeout=2)
+
+        assert len(constructed) == 1
+        assert client is constructed[0]
+        assert index._client is client
+        assert client.collection_exists(index.collection_name) is True
+    finally:
+        index.close()
+
+
+def test_qdrant_gc_separates_contract_errors_from_transient_storage_value_errors(
+    tmp_path,
+) -> None:
+    class StorageFailureClient:
+        @staticmethod
+        def collection_exists(_collection_name: str) -> bool:
+            return True
+
+        @staticmethod
+        def delete(**_kwargs) -> None:  # type: ignore[no-untyped-def]
+            raise ValueError("embedded storage is already borrowed")
+
+    index = QdrantVectorIndex(tmp_path / "qdrant", embedding=HashEmbedding(16))
+    index.path.mkdir()
+    index._client = StorageFailureClient()
+
+    with pytest.raises(QdrantStorageContractError):
+        index.delete_generation_from_storage(
+            "7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b",
+            index_specification_hash="f" * 64,
+            collection_name="unsafe",
+        )
+
+    with pytest.raises(QdrantStorageUnavailableError) as failure:
+        index.delete_generation_from_storage(
+            "7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b",
+            index_specification_hash=index.index_specification.specification_hash,
+            collection_name=index.collection_name,
+        )
+    assert not isinstance(failure.value, ValueError)
+
+
+def test_qdrant_client_open_value_error_is_a_transient_storage_failure(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    import qdrant_client
+
+    class FailingClient:
+        def __init__(self, *, path: str) -> None:
+            del path
+            raise ValueError("storage folder is already accessed")
+
+    monkeypatch.setattr(qdrant_client, "QdrantClient", FailingClient)
+    index = QdrantVectorIndex(tmp_path / "qdrant", embedding=HashEmbedding(16))
+
+    with pytest.raises(QdrantStorageUnavailableError) as failure:
+        index._get_storage_client(create_path=True)
+
+    assert not isinstance(failure.value, ValueError)
+    assert index._client is None
+
+
+def test_qdrant_close_retains_client_until_underlying_close_succeeds(tmp_path) -> None:
+    class RetryableCloseClient:
+        def __init__(self) -> None:
+            self.close_calls = 0
+
+        def close(self) -> None:
+            self.close_calls += 1
+            if self.close_calls == 1:
+                raise ValueError("embedded storage is still closing")
+
+    index = QdrantVectorIndex(tmp_path / "qdrant", embedding=HashEmbedding(16))
+    client = RetryableCloseClient()
+    index._client = client
+    index._current_collection_ready = True
+
+    with pytest.raises(QdrantStorageUnavailableError):
+        index.close()
+
+    assert index._client is client
+    assert index._current_collection_ready is True
+
+    index.close()
+
+    assert client.close_calls == 2
+    assert index._client is None
+    assert index._current_collection_ready is False
+
+
+@pytest.mark.parametrize("symlink_final_path", [True, False])
+def test_qdrant_storage_gc_rejects_symlinked_storage_path_or_ancestor(
+    tmp_path,
+    symlink_final_path,
+) -> None:
+    real_root = tmp_path / "real-root"
+    real_path = real_root / "text"
+    writer = QdrantVectorIndex(real_path, embedding=HashEmbedding(16))
+    plan = _plan("7a8a7a8a7a8a7a8a7a8a7a8a7a8a7a8a")
+    receipt = writer.build_generation(plan)
+    binding = _binding(plan, receipt)
+    writer.close()
+
+    if symlink_final_path:
+        unsafe_path = tmp_path / "linked-text"
+        unsafe_path.symlink_to(real_path, target_is_directory=True)
+    else:
+        linked_root = tmp_path / "linked-root"
+        linked_root.symlink_to(real_root, target_is_directory=True)
+        unsafe_path = linked_root / "text"
+    gc_index = QdrantVectorIndex(unsafe_path, embedding=HashEmbedding(32))
+
+    try:
+        with pytest.raises(RuntimeError, match="symlink"):
+            gc_index.delete_generation_from_storage(
+                plan.generation_id,
+                index_specification_hash=plan.index_specification.specification_hash,
+                collection_name=plan.index_specification.collection_name,
+            )
+    finally:
+        gc_index.close()
+
+    verifier = QdrantVectorIndex(real_path, embedding=HashEmbedding(16))
+    try:
+        assert verifier.validate_generation(binding) is True
+    finally:
+        verifier.close()
+
+
+def test_qdrant_storage_gc_waits_and_verifies_exact_generation_count(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    index = QdrantVectorIndex(tmp_path / "qdrant", embedding=HashEmbedding(16))
+    plan = _plan("7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c")
+    index.build_generation(plan)
+    client = index._get_client()
+    original_delete = client.delete
+    original_count = client.count
+    observed: dict[str, object] = {}
+
+    def recording_delete(**kwargs):  # type: ignore[no-untyped-def]
+        observed["wait"] = kwargs.get("wait")
+        return original_delete(**kwargs)
+
+    def recording_count(**kwargs):  # type: ignore[no-untyped-def]
+        observed["exact"] = kwargs.get("exact")
+        return original_count(**kwargs)
+
+    monkeypatch.setattr(client, "delete", recording_delete)
+    monkeypatch.setattr(client, "count", recording_count)
+
+    index.delete_generation_from_storage(
+        plan.generation_id,
+        index_specification_hash=plan.index_specification.specification_hash,
+        collection_name=plan.index_specification.collection_name,
+    )
+
+    assert observed == {"wait": True, "exact": True}
+
+
+def test_qdrant_storage_gc_fails_when_points_remain_after_delete(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    index = QdrantVectorIndex(tmp_path / "qdrant", embedding=HashEmbedding(16))
+    plan = _plan("7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d")
+    index.build_generation(plan)
+    monkeypatch.setattr(index._get_client(), "delete", lambda **_kwargs: None)
+
+    with pytest.raises(RuntimeError, match="still contains points"):
+        index.delete_generation_from_storage(
+            plan.generation_id,
+            index_specification_hash=plan.index_specification.specification_hash,
+            collection_name=plan.index_specification.collection_name,
+        )
+
+
+@pytest.mark.parametrize("index_type", [QdrantVectorIndex, MemoryVectorIndex])
+@pytest.mark.parametrize(
+    ("specification_hash", "collection_name"),
+    [
+        ("not-a-sha256", "videoscope_text_v1_unsafe"),
+        ("f" * 64, "../unsafe"),
+        ("f" * 64, "videoscope_text_v1_" + "e" * 32),
+    ],
+)
+def test_storage_gc_rejects_unsafe_or_mismatched_scope(
+    tmp_path,
+    index_type,
+    specification_hash,
+    collection_name,
+) -> None:  # type: ignore[no-untyped-def]
+    index = (
+        index_type(tmp_path / "qdrant", embedding=HashEmbedding(16))
+        if index_type is QdrantVectorIndex
+        else index_type(HashEmbedding(16))
+    )
+
+    with pytest.raises(ValueError, match="specification|collection"):
+        index.delete_generation_from_storage(
+            "7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e",
+            index_specification_hash=specification_hash,
+            collection_name=collection_name,
+        )
+
+
+def test_memory_storage_gc_uses_recorded_generation_scope() -> None:
+    index = MemoryVectorIndex(HashEmbedding(16))
+    plan = _plan("7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f")
+    index.build_generation(plan)
+    index.index_specification = _index_specification(32)
+
+    index.delete_generation_from_storage(
+        plan.generation_id,
+        index_specification_hash=plan.index_specification.specification_hash,
+        collection_name=plan.index_specification.collection_name,
+    )
+
+    assert plan.generation_id not in index._generation_records
 
 
 def test_exhaustive_validation_is_cached_but_sentinel_and_count_are_always_rechecked(

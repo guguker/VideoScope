@@ -20,7 +20,10 @@ from uuid import uuid4
 from weakref import WeakValueDictionary
 
 from videoscope.artifacts import (
+    ArtifactGCAttempt,
     ArtifactGCJob,
+    ArtifactGCOutcome,
+    ArtifactGCQuarantine,
     AssetIdentityError,
     AssetRecord,
     SEGMENT_STAGE_KINDS,
@@ -31,6 +34,8 @@ from videoscope.artifacts import (
     StageState,
     TEXT_VECTOR_INPUT_STAGE_KINDS,
     TextVectorBuildPlan,
+    TextVectorBuildQuarantine,
+    TextVectorBuildRecoveryReport,
     TextVectorBuildReceipt,
     TextVectorGeneration,
     TextVectorGenerationInput,
@@ -53,17 +58,55 @@ SEGMENT_STAGE_MODALITIES = {
     StageKind.OCR: "ocr",
     StageKind.OBJECTS: "objects",
 }
-LATEST_SCHEMA_VERSION = 6
+LATEST_SCHEMA_VERSION = 8
 _DATABASE_INITIALIZE_LOCK = Lock()
 _ASSET_IDENTITY_LOCKS_GUARD = Lock()
 _ASSET_IDENTITY_LOCKS: WeakValueDictionary[tuple[str, str], Any] = WeakValueDictionary()
 _JOURNAL_MODE_RETRIES = 8
 ASSET_HASH_CHUNK_SIZE = 1024 * 1024
 _VIDEO_THUMBNAIL_UNCHANGED = object()
+ARTIFACT_GC_MAX_LEASE_SECONDS = 300
+ARTIFACT_GC_V7_MAX_ATTEMPTS = 5
+ARTIFACT_GC_RETRY_BASE_SECONDS = 5
+ARTIFACT_GC_RETRY_MAX_SECONDS = 300
+ARTIFACT_GC_BACKOFF_LEVEL_MAX = 7
+ARTIFACT_GC_SCAN_LIMIT_MAX = 64
+ARTIFACT_GC_AUDIT_RETENTION_ATTEMPTS = 256
+REPOSITORY_BATCH_LIMIT_MAX = 1_000
+ARTIFACT_GC_TRANSIENT_LEGACY_ERROR_CODES = (
+    "artifact_gc_storage_unavailable",
+    "artifact_gc_lease_expired",
+    "artifact_gc_attempts_exhausted",
+)
 
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _validate_repository_batch_limit(limit: object, *, field_name: str) -> int:
+    if (
+        isinstance(limit, bool)
+        or not isinstance(limit, int)
+        or not 1 <= limit <= REPOSITORY_BATCH_LIMIT_MAX
+    ):
+        raise ValueError(
+            f"{field_name} must be between 1 and {REPOSITORY_BATCH_LIMIT_MAX}"
+        )
+    return limit
+
+
+def _validate_gc_lease_seconds(lease_seconds: object) -> int:
+    if (
+        isinstance(lease_seconds, bool)
+        or not isinstance(lease_seconds, int)
+        or not 1 <= lease_seconds <= ARTIFACT_GC_MAX_LEASE_SECONDS
+    ):
+        raise ValueError(
+            "artifact GC lease must be between "
+            f"1 and {ARTIFACT_GC_MAX_LEASE_SECONDS} seconds"
+        )
+    return lease_seconds
 
 
 def _reject_non_finite_json(value: str) -> None:
@@ -721,6 +764,902 @@ def _migration_6_add_text_vector_generations(connection: sqlite3.Connection) -> 
     )
 
 
+def _migration_7_add_crash_safe_artifact_gc(connection: sqlite3.Connection) -> None:
+    tombstone_exists = connection.execute(
+        """
+        SELECT 1 FROM sqlite_master
+        WHERE type = 'table' AND name = 'text_vector_generation_tombstones'
+        """
+    ).fetchone() is not None
+    gc_columns = {
+        row[1]
+        for row in connection.execute("PRAGMA table_info(artifact_gc_jobs)").fetchall()
+    }
+    v7_gc_columns = {
+        "max_attempts",
+        "available_at",
+        "worker_id",
+        "lease_token",
+        "lease_expires_at",
+        "error_code",
+    }
+    gc_is_v7 = v7_gc_columns <= gc_columns
+    gc_is_later = "backoff_level" in gc_columns
+    if tombstone_exists or gc_is_v7 or gc_is_later:
+        required_tombstone_columns = {
+            "generation_id",
+            "index_specification_hash",
+            "collection_name",
+            "lifecycle_state",
+            "created_at",
+            "updated_at",
+        }
+        tombstone_columns = {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA table_info(text_vector_generation_tombstones)"
+            ).fetchall()
+        }
+        required_triggers = {
+            "text_vector_generation_tombstones_immutable_delete",
+            "text_vector_generation_tombstones_valid_transition",
+            "text_vector_generation_tombstones_target_immutable",
+            "text_vector_builds_require_generation_tombstone",
+            "text_vector_builds_require_terminal_tombstone_delete",
+            "text_vector_builds_identity_immutable_update",
+            "text_vector_generations_require_building_tombstone",
+            "artifact_gc_jobs_reject_committed_insert",
+            "artifact_gc_jobs_reject_committed_update",
+            "artifact_gc_jobs_target_immutable_update",
+            "artifact_gc_jobs_immutable_delete",
+        }
+        persisted_triggers = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'trigger'"
+            ).fetchall()
+        }
+        if (
+            not tombstone_exists
+            or not (gc_is_v7 or gc_is_later)
+            or not required_tombstone_columns <= tombstone_columns
+            or not required_triggers <= persisted_triggers
+        ):
+            raise ValueError("artifact GC schema migration is incomplete or corrupt")
+        return
+
+    collision = connection.execute(
+        """
+        WITH identities(generation_id, source) AS (
+            SELECT generation_id, 'build' FROM text_vector_builds
+            UNION ALL
+            SELECT generation_id, 'generation' FROM text_vector_generations
+            UNION ALL
+            SELECT DISTINCT generation_id, 'gc' FROM artifact_gc_jobs
+        )
+        SELECT generation_id
+        FROM identities
+        GROUP BY generation_id
+        HAVING COUNT(DISTINCT source) > 1
+        LIMIT 1
+        """
+    ).fetchone()
+    if collision is not None:
+        raise ValueError("text vector generation identity history is corrupt")
+    invalid_attempt = connection.execute(
+        "SELECT job_id FROM artifact_gc_jobs WHERE attempt > 16 LIMIT 1"
+    ).fetchone()
+    if invalid_attempt is not None:
+        raise ValueError("artifact GC attempt history is corrupt")
+    duplicate_gc = connection.execute(
+        """
+        SELECT generation_id
+        FROM artifact_gc_jobs
+        GROUP BY generation_id
+        HAVING COUNT(*) > 1
+        LIMIT 1
+        """
+    ).fetchone()
+    if duplicate_gc is not None:
+        raise ValueError("artifact GC generation identity history is corrupt")
+    conflicting_gc_state = connection.execute(
+        """
+        SELECT generation_id
+        FROM artifact_gc_jobs
+        GROUP BY generation_id
+        HAVING COUNT(
+            DISTINCT CASE
+                WHEN state IN ('pending', 'running') THEN 'gc_pending'
+                WHEN state = 'complete' THEN 'gc_complete'
+                ELSE 'gc_failed'
+            END
+        ) > 1
+        LIMIT 1
+        """
+    ).fetchone()
+    if conflicting_gc_state is not None:
+        raise ValueError("artifact GC lifecycle history is corrupt")
+
+    connection.execute(
+        """
+        CREATE TABLE text_vector_generation_tombstones (
+            generation_id TEXT PRIMARY KEY,
+            index_specification_hash TEXT NOT NULL
+                REFERENCES text_vector_index_specifications(specification_hash),
+            collection_name TEXT NOT NULL,
+            lifecycle_state TEXT NOT NULL CHECK(
+                lifecycle_state IN (
+                    'building', 'committed', 'gc_pending', 'gc_complete', 'gc_failed'
+                )
+            ),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO text_vector_generation_tombstones (
+            generation_id, index_specification_hash, collection_name,
+            lifecycle_state, created_at, updated_at
+        )
+        SELECT generation_id, index_specification_hash, collection_name,
+            'building', reserved_at, heartbeat_at
+        FROM text_vector_builds
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO text_vector_generation_tombstones (
+            generation_id, index_specification_hash, collection_name,
+            lifecycle_state, created_at, updated_at
+        )
+        SELECT generation_id, index_specification_hash, collection_name,
+            'committed', completed_at, completed_at
+        FROM text_vector_generations
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO text_vector_generation_tombstones (
+            generation_id, index_specification_hash, collection_name,
+            lifecycle_state, created_at, updated_at
+        )
+        SELECT
+            generation_id,
+            MIN(index_specification_hash),
+            MIN(collection_name),
+            CASE
+                WHEN MIN(state) = 'complete' AND MAX(state) = 'complete'
+                    THEN 'gc_complete'
+                WHEN MIN(state) = 'failed' AND MAX(state) = 'failed'
+                    THEN 'gc_failed'
+                ELSE 'gc_pending'
+            END,
+            MIN(created_at),
+            MAX(updated_at)
+        FROM artifact_gc_jobs
+        GROUP BY generation_id
+        """
+    )
+
+    connection.execute("DROP INDEX IF EXISTS idx_artifact_gc_jobs_state")
+    connection.execute("ALTER TABLE artifact_gc_jobs RENAME TO artifact_gc_jobs_v6")
+    connection.execute(
+        """
+        CREATE TABLE artifact_gc_jobs (
+            sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id TEXT NOT NULL UNIQUE,
+            artifact_kind TEXT NOT NULL CHECK(artifact_kind = 'text_vectors'),
+            generation_id TEXT NOT NULL UNIQUE
+                REFERENCES text_vector_generation_tombstones(generation_id),
+            index_specification_hash TEXT NOT NULL,
+            collection_name TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            state TEXT NOT NULL CHECK(state IN ('pending', 'running', 'complete', 'failed')),
+            attempt INTEGER NOT NULL CHECK(attempt >= 0),
+            max_attempts INTEGER NOT NULL CHECK(max_attempts BETWEEN 1 AND 16),
+            available_at TEXT NOT NULL,
+            worker_id TEXT,
+            lease_token TEXT,
+            lease_expires_at TEXT,
+            error_code TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            CHECK(attempt <= max_attempts),
+            CHECK(
+                (state = 'running' AND worker_id IS NOT NULL
+                    AND lease_token IS NOT NULL AND lease_expires_at IS NOT NULL
+                    AND error_code IS NULL)
+                OR
+                (state != 'running' AND worker_id IS NULL
+                    AND lease_token IS NULL AND lease_expires_at IS NULL)
+            ),
+            CHECK(state != 'complete' OR error_code IS NULL),
+            CHECK(state != 'failed' OR error_code IS NOT NULL),
+            UNIQUE(artifact_kind, generation_id, index_specification_hash, reason)
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO artifact_gc_jobs (
+            sequence, job_id, artifact_kind, generation_id,
+            index_specification_hash, collection_name, reason, state, attempt,
+            max_attempts, available_at, worker_id, lease_token, lease_expires_at,
+            error_code, created_at, updated_at
+        )
+        SELECT
+            sequence, job_id, artifact_kind, generation_id,
+            index_specification_hash, collection_name, reason,
+            CASE WHEN state = 'running' THEN 'pending' ELSE state END,
+            attempt,
+            CASE
+                WHEN attempt > ? THEN attempt
+                ELSE ?
+            END,
+            updated_at,
+            NULL, NULL, NULL,
+            CASE WHEN state = 'failed' THEN 'legacy_gc_failed' ELSE NULL END,
+            created_at, updated_at
+        FROM artifact_gc_jobs_v6
+        ORDER BY sequence
+        """,
+        (ARTIFACT_GC_V7_MAX_ATTEMPTS, ARTIFACT_GC_V7_MAX_ATTEMPTS),
+    )
+    connection.execute("DROP TABLE artifact_gc_jobs_v6")
+    connection.execute(
+        """
+        CREATE INDEX idx_artifact_gc_jobs_ready
+        ON artifact_gc_jobs(state, available_at, lease_expires_at, sequence)
+        """
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER text_vector_generation_tombstones_immutable_delete
+        BEFORE DELETE ON text_vector_generation_tombstones
+        BEGIN
+            SELECT RAISE(ABORT, 'text vector generation tombstone is immutable');
+        END
+        """
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER text_vector_generation_tombstones_valid_transition
+        BEFORE UPDATE OF lifecycle_state ON text_vector_generation_tombstones
+        WHEN NOT (
+            NEW.lifecycle_state = OLD.lifecycle_state
+            OR (OLD.lifecycle_state = 'building'
+                AND NEW.lifecycle_state IN ('committed', 'gc_pending'))
+            OR (OLD.lifecycle_state = 'gc_pending'
+                AND NEW.lifecycle_state IN ('gc_complete', 'gc_failed'))
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'invalid text vector generation lifecycle transition');
+        END
+        """
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER text_vector_generation_tombstones_target_immutable
+        BEFORE UPDATE OF
+            generation_id, index_specification_hash, collection_name, created_at
+        ON text_vector_generation_tombstones
+        BEGIN
+            SELECT RAISE(ABORT, 'text vector generation tombstone target is immutable');
+        END
+        """
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER text_vector_builds_require_generation_tombstone
+        BEFORE INSERT ON text_vector_builds
+        WHEN NOT EXISTS (
+            SELECT 1 FROM text_vector_generation_tombstones
+            WHERE generation_id = NEW.generation_id
+              AND lifecycle_state = 'building'
+              AND index_specification_hash = NEW.index_specification_hash
+              AND collection_name = NEW.collection_name
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'text vector build generation identity is not reserved');
+        END
+        """
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER text_vector_generations_require_building_tombstone
+        BEFORE INSERT ON text_vector_generations
+        WHEN NOT EXISTS (
+            SELECT 1 FROM text_vector_generation_tombstones
+            WHERE generation_id = NEW.generation_id
+              AND lifecycle_state = 'building'
+              AND index_specification_hash = NEW.index_specification_hash
+              AND collection_name = NEW.collection_name
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'text vector generation identity is not building');
+        END
+        """
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER text_vector_builds_require_terminal_tombstone_delete
+        BEFORE DELETE ON text_vector_builds
+        WHEN EXISTS (
+            SELECT 1 FROM text_vector_generation_tombstones
+            WHERE generation_id = OLD.generation_id AND lifecycle_state = 'building'
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'text vector build must be terminal before deletion');
+        END
+        """
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER text_vector_builds_identity_immutable_update
+        BEFORE UPDATE OF
+            generation_id, run_id, video_id, stage_specification_hash,
+            source_sha256, index_specification_hash, collection_name,
+            expected_previous_generation_id, input_manifest_sha256,
+            point_manifest_sha256, point_count, reserved_at
+        ON text_vector_builds
+        BEGIN
+            SELECT RAISE(ABORT, 'text vector build identity is immutable');
+        END
+        """
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER artifact_gc_jobs_reject_committed_insert
+        BEFORE INSERT ON artifact_gc_jobs
+        WHEN EXISTS (
+            SELECT 1 FROM text_vector_generations
+            WHERE generation_id = NEW.generation_id
+        ) OR NOT EXISTS (
+            SELECT 1 FROM text_vector_generation_tombstones
+            WHERE generation_id = NEW.generation_id
+              AND lifecycle_state = 'gc_pending'
+              AND index_specification_hash = NEW.index_specification_hash
+              AND collection_name = NEW.collection_name
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'artifact GC cannot target a committed generation');
+        END
+        """
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER artifact_gc_jobs_reject_committed_update
+        BEFORE UPDATE ON artifact_gc_jobs
+        WHEN EXISTS (
+            SELECT 1 FROM text_vector_generations
+            WHERE generation_id = NEW.generation_id
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'artifact GC cannot target a committed generation');
+        END
+        """
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER artifact_gc_jobs_target_immutable_update
+        BEFORE UPDATE OF
+            artifact_kind, generation_id, index_specification_hash,
+            collection_name, reason, max_attempts, created_at
+        ON artifact_gc_jobs
+        BEGIN
+            SELECT RAISE(ABORT, 'artifact GC target is immutable');
+        END
+        """
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER artifact_gc_jobs_immutable_delete
+        BEFORE DELETE ON artifact_gc_jobs
+        BEGIN
+            SELECT RAISE(ABORT, 'artifact GC job is immutable');
+        END
+        """
+    )
+
+
+def _create_artifact_gc_attempts_bounded_delete_trigger(
+    connection: sqlite3.Connection,
+) -> None:
+    connection.execute(
+        f"""
+        CREATE TRIGGER artifact_gc_attempts_bounded_delete
+        BEFORE DELETE ON artifact_gc_attempts
+        WHEN OLD.finished_at IS NULL
+          OR OLD.outcome IS NULL
+          OR NOT EXISTS (
+              SELECT 1 FROM artifact_gc_jobs AS jobs
+              WHERE jobs.job_id = OLD.job_id
+          )
+          OR OLD.attempt > (
+              SELECT jobs.attempt - {ARTIFACT_GC_AUDIT_RETENTION_ATTEMPTS}
+              FROM artifact_gc_jobs AS jobs
+              WHERE jobs.job_id = OLD.job_id
+          )
+        BEGIN
+            SELECT RAISE(ABORT, 'artifact GC recent or open attempt is immutable');
+        END
+        """
+    )
+
+
+def _prune_artifact_gc_attempt_audit(
+    connection: sqlite3.Connection,
+    *,
+    job_id: str | None = None,
+) -> None:
+    scope = "" if job_id is None else "AND job_id = ?"
+    parameters: tuple[object, ...] = () if job_id is None else (job_id,)
+    connection.execute(
+        f"""
+        DELETE FROM artifact_gc_attempts
+        WHERE finished_at IS NOT NULL
+          AND outcome IS NOT NULL
+          AND attempt <= COALESCE((
+              SELECT jobs.attempt - {ARTIFACT_GC_AUDIT_RETENTION_ATTEMPTS}
+              FROM artifact_gc_jobs AS jobs
+              WHERE jobs.job_id = artifact_gc_attempts.job_id
+          ), -1)
+          {scope}
+        """,
+        parameters,
+    )
+
+
+def _migration_8_add_recoverable_artifact_gc(connection: sqlite3.Connection) -> None:
+    gc_columns = {
+        row[1]
+        for row in connection.execute("PRAGMA table_info(artifact_gc_jobs)").fetchall()
+    }
+    build_columns = {
+        row[1]
+        for row in connection.execute("PRAGMA table_info(text_vector_builds)").fetchall()
+    }
+    table_names = {
+        row[0]
+        for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        ).fetchall()
+    }
+    v8_markers_present = any(
+        (
+            "backoff_level" in gc_columns,
+            "recovery_state" in build_columns,
+            "artifact_gc_attempts" in table_names,
+            "artifact_gc_quarantines" in table_names,
+        )
+    )
+    if v8_markers_present:
+        required_build_columns = {
+            "recovery_state",
+            "recovery_error_code",
+            "quarantined_at",
+        }
+        required_tables = {"artifact_gc_attempts", "artifact_gc_quarantines"}
+        required_triggers = {
+            "text_vector_generation_tombstones_immutable_delete",
+            "text_vector_generation_tombstones_valid_transition",
+            "text_vector_generation_tombstones_target_immutable",
+            "text_vector_builds_require_generation_tombstone",
+            "text_vector_generations_require_building_tombstone",
+            "text_vector_builds_require_terminal_tombstone_delete",
+            "text_vector_builds_identity_immutable_update",
+            "artifact_gc_jobs_reject_committed_insert",
+            "artifact_gc_jobs_reject_committed_update",
+            "artifact_gc_jobs_target_immutable_update",
+            "artifact_gc_jobs_immutable_delete",
+            "text_vector_builds_recovery_transition",
+            "text_vector_builds_quarantine_immutable_update",
+            "artifact_gc_attempts_bounded_delete",
+            "artifact_gc_attempts_identity_immutable_update",
+            "artifact_gc_attempts_terminal_immutable_update",
+            "artifact_gc_quarantines_immutable_update",
+            "artifact_gc_quarantines_immutable_delete",
+            "artifact_gc_jobs_state_transition",
+            "artifact_gc_jobs_attempt_fence",
+            "artifact_gc_jobs_backoff_monotonic",
+            "artifact_gc_jobs_terminal_immutable_update",
+        }
+        persisted_triggers = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'trigger'"
+            ).fetchall()
+        }
+        if (
+            "backoff_level" not in gc_columns
+            or "max_attempts" in gc_columns
+            or not required_build_columns <= build_columns
+            or not required_tables <= table_names
+        ):
+            raise ValueError("recoverable artifact GC migration is incomplete or corrupt")
+        legacy_delete_trigger = "artifact_gc_attempts_immutable_delete"
+        bounded_delete_trigger = "artifact_gc_attempts_bounded_delete"
+        if legacy_delete_trigger in persisted_triggers:
+            connection.execute(f"DROP TRIGGER {legacy_delete_trigger}")
+            persisted_triggers.remove(legacy_delete_trigger)
+            if bounded_delete_trigger not in persisted_triggers:
+                _create_artifact_gc_attempts_bounded_delete_trigger(connection)
+                persisted_triggers.add(bounded_delete_trigger)
+            _prune_artifact_gc_attempt_audit(connection)
+        if not required_triggers <= persisted_triggers:
+            raise ValueError("recoverable artifact GC migration is incomplete or corrupt")
+        return
+
+    invalid_running = connection.execute(
+        """
+        SELECT job_id FROM artifact_gc_jobs
+        WHERE state = 'running' AND attempt < 1
+        LIMIT 1
+        """
+    ).fetchone()
+    if invalid_running is not None:
+        raise ValueError("running artifact GC attempt history is corrupt")
+
+    connection.execute(
+        """
+        ALTER TABLE text_vector_builds
+        ADD COLUMN recovery_state TEXT NOT NULL DEFAULT 'active'
+            CHECK(recovery_state IN ('active', 'quarantined'))
+        """
+    )
+    connection.execute(
+        "ALTER TABLE text_vector_builds ADD COLUMN recovery_error_code TEXT"
+    )
+    connection.execute(
+        "ALTER TABLE text_vector_builds ADD COLUMN quarantined_at TEXT"
+    )
+
+    for trigger_name in (
+        "artifact_gc_jobs_reject_committed_insert",
+        "artifact_gc_jobs_reject_committed_update",
+        "artifact_gc_jobs_target_immutable_update",
+        "artifact_gc_jobs_immutable_delete",
+        "text_vector_generation_tombstones_valid_transition",
+    ):
+        connection.execute(f"DROP TRIGGER {trigger_name}")
+    connection.execute("DROP INDEX idx_artifact_gc_jobs_ready")
+    connection.execute("ALTER TABLE artifact_gc_jobs RENAME TO artifact_gc_jobs_v7")
+    connection.execute(
+        """
+        CREATE TABLE artifact_gc_jobs (
+            sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id TEXT NOT NULL UNIQUE,
+            artifact_kind TEXT NOT NULL CHECK(artifact_kind = 'text_vectors'),
+            generation_id TEXT NOT NULL UNIQUE
+                REFERENCES text_vector_generation_tombstones(generation_id),
+            index_specification_hash TEXT NOT NULL,
+            collection_name TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            state TEXT NOT NULL CHECK(state IN ('pending', 'running', 'complete', 'failed')),
+            attempt INTEGER NOT NULL CHECK(attempt >= 0),
+            backoff_level INTEGER NOT NULL CHECK(backoff_level BETWEEN 0 AND 7),
+            available_at TEXT NOT NULL,
+            worker_id TEXT,
+            lease_token TEXT,
+            lease_expires_at TEXT,
+            error_code TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            CHECK(
+                (state = 'running' AND worker_id IS NOT NULL
+                    AND lease_token IS NOT NULL AND lease_expires_at IS NOT NULL
+                    AND error_code IS NULL)
+                OR
+                (state != 'running' AND worker_id IS NULL
+                    AND lease_token IS NULL AND lease_expires_at IS NULL)
+            ),
+            CHECK(state != 'complete' OR error_code IS NULL),
+            CHECK(state != 'failed' OR error_code IS NOT NULL),
+            UNIQUE(artifact_kind, generation_id, index_specification_hash, reason)
+        )
+        """
+    )
+    transient_placeholders = _sql_values(ARTIFACT_GC_TRANSIENT_LEGACY_ERROR_CODES)
+    connection.execute(
+        f"""
+        INSERT INTO artifact_gc_jobs (
+            sequence, job_id, artifact_kind, generation_id,
+            index_specification_hash, collection_name, reason, state, attempt,
+            backoff_level, available_at, worker_id, lease_token,
+            lease_expires_at, error_code, created_at, updated_at
+        )
+        SELECT
+            sequence, job_id, artifact_kind, generation_id,
+            index_specification_hash, collection_name, reason,
+            CASE
+                WHEN state = 'failed' AND error_code IN ({transient_placeholders})
+                    THEN 'pending'
+                ELSE state
+            END,
+            attempt,
+            MIN(attempt, ?),
+            available_at,
+            CASE
+                WHEN state = 'failed' AND error_code IN ({transient_placeholders})
+                    THEN NULL
+                ELSE worker_id
+            END,
+            CASE
+                WHEN state = 'failed' AND error_code IN ({transient_placeholders})
+                    THEN NULL
+                ELSE lease_token
+            END,
+            CASE
+                WHEN state = 'failed' AND error_code IN ({transient_placeholders})
+                    THEN NULL
+                ELSE lease_expires_at
+            END,
+            error_code, created_at, updated_at
+        FROM artifact_gc_jobs_v7
+        ORDER BY sequence
+        """,
+        (ARTIFACT_GC_BACKOFF_LEVEL_MAX,),
+    )
+    connection.execute(
+        f"""
+        UPDATE text_vector_generation_tombstones
+        SET lifecycle_state = 'gc_pending', updated_at = (
+            SELECT jobs.updated_at FROM artifact_gc_jobs AS jobs
+            WHERE jobs.generation_id = text_vector_generation_tombstones.generation_id
+        )
+        WHERE lifecycle_state = 'gc_failed'
+          AND generation_id IN (
+            SELECT generation_id FROM artifact_gc_jobs
+            WHERE state = 'pending' AND error_code IN ({transient_placeholders})
+          )
+        """
+    )
+    connection.execute("DROP TABLE artifact_gc_jobs_v7")
+    connection.execute(
+        """
+        CREATE INDEX idx_artifact_gc_jobs_ready
+        ON artifact_gc_jobs(state, available_at, lease_expires_at, sequence)
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE artifact_gc_attempts (
+            job_id TEXT NOT NULL REFERENCES artifact_gc_jobs(job_id),
+            attempt INTEGER NOT NULL CHECK(attempt >= 1),
+            worker_id TEXT NOT NULL,
+            lease_token TEXT NOT NULL UNIQUE,
+            claimed_at TEXT NOT NULL,
+            lease_expires_at TEXT NOT NULL,
+            finished_at TEXT,
+            outcome TEXT CHECK(
+                outcome IS NULL OR outcome IN (
+                    'success', 'transient_failure',
+                    'permanent_failure', 'lease_expired'
+                )
+            ),
+            error_code TEXT,
+            PRIMARY KEY(job_id, attempt),
+            CHECK(
+                (outcome IS NULL AND finished_at IS NULL AND error_code IS NULL)
+                OR
+                (outcome = 'success' AND finished_at IS NOT NULL AND error_code IS NULL)
+                OR
+                (outcome IN ('transient_failure', 'permanent_failure', 'lease_expired')
+                    AND finished_at IS NOT NULL AND error_code IS NOT NULL)
+            )
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO artifact_gc_attempts (
+            job_id, attempt, worker_id, lease_token, claimed_at,
+            lease_expires_at, finished_at, outcome, error_code
+        )
+        SELECT
+            job_id, attempt, worker_id, lease_token, updated_at,
+            lease_expires_at, NULL, NULL, NULL
+        FROM artifact_gc_jobs
+        WHERE state = 'running'
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE artifact_gc_quarantines (
+            sequence INTEGER PRIMARY KEY REFERENCES artifact_gc_jobs(sequence),
+            error_code TEXT NOT NULL,
+            quarantined_at TEXT NOT NULL
+        )
+        """
+    )
+
+    connection.execute(
+        """
+        CREATE TRIGGER text_vector_generation_tombstones_valid_transition
+        BEFORE UPDATE OF lifecycle_state ON text_vector_generation_tombstones
+        WHEN NOT (
+            NEW.lifecycle_state = OLD.lifecycle_state
+            OR (OLD.lifecycle_state = 'building'
+                AND NEW.lifecycle_state IN ('committed', 'gc_pending'))
+            OR (OLD.lifecycle_state = 'gc_pending'
+                AND NEW.lifecycle_state IN ('gc_complete', 'gc_failed'))
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'invalid text vector generation lifecycle transition');
+        END
+        """
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER artifact_gc_jobs_reject_committed_insert
+        BEFORE INSERT ON artifact_gc_jobs
+        WHEN EXISTS (
+            SELECT 1 FROM text_vector_generations
+            WHERE generation_id = NEW.generation_id
+        ) OR NOT EXISTS (
+            SELECT 1 FROM text_vector_generation_tombstones
+            WHERE generation_id = NEW.generation_id
+              AND lifecycle_state = 'gc_pending'
+              AND index_specification_hash = NEW.index_specification_hash
+              AND collection_name = NEW.collection_name
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'artifact GC cannot target a committed generation');
+        END
+        """
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER artifact_gc_jobs_reject_committed_update
+        BEFORE UPDATE ON artifact_gc_jobs
+        WHEN EXISTS (
+            SELECT 1 FROM text_vector_generations
+            WHERE generation_id = NEW.generation_id
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'artifact GC cannot target a committed generation');
+        END
+        """
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER artifact_gc_jobs_target_immutable_update
+        BEFORE UPDATE OF
+            artifact_kind, generation_id, index_specification_hash,
+            collection_name, reason, created_at
+        ON artifact_gc_jobs
+        BEGIN
+            SELECT RAISE(ABORT, 'artifact GC target is immutable');
+        END
+        """
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER artifact_gc_jobs_immutable_delete
+        BEFORE DELETE ON artifact_gc_jobs
+        BEGIN
+            SELECT RAISE(ABORT, 'artifact GC job is immutable');
+        END
+        """
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER artifact_gc_jobs_state_transition
+        BEFORE UPDATE OF state ON artifact_gc_jobs
+        WHEN NOT (
+            NEW.state = OLD.state
+            OR (OLD.state = 'pending' AND NEW.state = 'running')
+            OR (OLD.state = 'running'
+                AND NEW.state IN ('pending', 'complete', 'failed'))
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'invalid artifact GC state transition');
+        END
+        """
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER artifact_gc_jobs_attempt_fence
+        BEFORE UPDATE OF attempt ON artifact_gc_jobs
+        WHEN NOT (
+            NEW.attempt = OLD.attempt
+            OR (
+                OLD.state = 'pending' AND NEW.state = 'running'
+                AND NEW.attempt = OLD.attempt + 1
+            )
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'invalid artifact GC attempt transition');
+        END
+        """
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER artifact_gc_jobs_backoff_monotonic
+        BEFORE UPDATE OF backoff_level ON artifact_gc_jobs
+        WHEN NEW.backoff_level < OLD.backoff_level
+          OR NEW.backoff_level > OLD.backoff_level + 1
+        BEGIN
+            SELECT RAISE(ABORT, 'invalid artifact GC backoff transition');
+        END
+        """
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER artifact_gc_jobs_terminal_immutable_update
+        BEFORE UPDATE ON artifact_gc_jobs
+        WHEN OLD.state IN ('complete', 'failed')
+        BEGIN
+            SELECT RAISE(ABORT, 'terminal artifact GC job is immutable');
+        END
+        """
+    )
+    _create_artifact_gc_attempts_bounded_delete_trigger(connection)
+    connection.execute(
+        """
+        CREATE TRIGGER artifact_gc_attempts_identity_immutable_update
+        BEFORE UPDATE OF job_id, attempt, worker_id, lease_token, claimed_at
+        ON artifact_gc_attempts
+        BEGIN
+            SELECT RAISE(ABORT, 'artifact GC attempt identity is immutable');
+        END
+        """
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER artifact_gc_attempts_terminal_immutable_update
+        BEFORE UPDATE ON artifact_gc_attempts
+        WHEN OLD.finished_at IS NOT NULL
+        BEGIN
+            SELECT RAISE(ABORT, 'finished artifact GC attempt is immutable');
+        END
+        """
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER artifact_gc_quarantines_immutable_update
+        BEFORE UPDATE ON artifact_gc_quarantines
+        BEGIN
+            SELECT RAISE(ABORT, 'artifact GC quarantine is immutable');
+        END
+        """
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER artifact_gc_quarantines_immutable_delete
+        BEFORE DELETE ON artifact_gc_quarantines
+        BEGIN
+            SELECT RAISE(ABORT, 'artifact GC quarantine is immutable');
+        END
+        """
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER text_vector_builds_recovery_transition
+        BEFORE UPDATE OF recovery_state ON text_vector_builds
+        WHEN NOT (
+            NEW.recovery_state = OLD.recovery_state
+            OR (OLD.recovery_state = 'active' AND NEW.recovery_state = 'quarantined')
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'invalid text vector build recovery transition');
+        END
+        """
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER text_vector_builds_quarantine_immutable_update
+        BEFORE UPDATE ON text_vector_builds
+        WHEN OLD.recovery_state = 'quarantined'
+        BEGIN
+            SELECT RAISE(ABORT, 'quarantined text vector build is immutable');
+        END
+        """
+    )
+
+
 _SCHEMA_MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (1, _migration_1_create_library_schema),
     (2, _migration_2_add_video_display_name),
@@ -728,6 +1667,8 @@ _SCHEMA_MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...]
     (4, _migration_4_add_asset_identity),
     (5, _migration_5_add_segment_generations),
     (6, _migration_6_add_text_vector_generations),
+    (7, _migration_7_add_crash_safe_artifact_gc),
+    (8, _migration_8_add_recoverable_artifact_gc),
 )
 
 _STAGE_RUN_SELECT = """
@@ -807,6 +1748,7 @@ _TEXT_VECTOR_INPUT_COLUMNS = """
 
 _ARTIFACT_GC_SELECT = """
     SELECT
+        sequence,
         job_id,
         artifact_kind,
         generation_id,
@@ -815,6 +1757,12 @@ _ARTIFACT_GC_SELECT = """
         reason,
         state,
         attempt,
+        backoff_level,
+        available_at,
+        worker_id,
+        lease_token,
+        lease_expires_at,
+        error_code,
         created_at,
         updated_at
     FROM artifact_gc_jobs
@@ -982,6 +1930,8 @@ class Repository:
                             continue
                         migration(connection)
                         connection.execute(f"PRAGMA user_version = {version}")
+                    if current_version == LATEST_SCHEMA_VERSION:
+                        _migration_8_add_recoverable_artifact_gc(connection)
                     connection.commit()
                 except Exception:
                     connection.rollback()
@@ -2589,6 +3539,21 @@ class Repository:
             try:
                 connection.execute(
                     """
+                    INSERT INTO text_vector_generation_tombstones (
+                        generation_id, index_specification_hash, collection_name,
+                        lifecycle_state, created_at, updated_at
+                    ) VALUES (?, ?, ?, 'building', ?, ?)
+                    """,
+                    (
+                        plan.generation_id,
+                        plan.index_specification.specification_hash,
+                        plan.index_specification.collection_name,
+                        plan.reserved_at,
+                        plan.reserved_at,
+                    ),
+                )
+                connection.execute(
+                    """
                     INSERT INTO text_vector_builds (
                         generation_id, run_id, video_id, stage_specification_hash,
                         source_sha256, index_specification_hash, collection_name,
@@ -2896,6 +3861,12 @@ class Repository:
                 or build["point_count"] < 0
             ):
                 raise ValueError("text vector build point count is invalid")
+            if (
+                build["recovery_state"] != "active"
+                or build["recovery_error_code"] is not None
+                or build["quarantined_at"] is not None
+            ):
+                raise ValueError("text vector build is not active")
             if build["expected_previous_generation_id"] is not None:
                 validate_artifact_identifier(
                     build["expected_previous_generation_id"],
@@ -2921,6 +3892,22 @@ class Repository:
             or run.source_sha256 != build["source_sha256"]
         ):
             raise ValueError("persisted text vector build run identity is corrupt")
+        tombstone = connection.execute(
+            """
+            SELECT lifecycle_state, index_specification_hash, collection_name
+            FROM text_vector_generation_tombstones
+            WHERE generation_id = ?
+            """,
+            (build["generation_id"],),
+        ).fetchone()
+        if (
+            tombstone is None
+            or tombstone["lifecycle_state"] != "building"
+            or tombstone["index_specification_hash"]
+            != build["index_specification_hash"]
+            or tombstone["collection_name"] != build["collection_name"]
+        ):
+            raise ValueError("persisted text vector build tombstone is corrupt")
         index_specification = cls._get_text_vector_index_specification(
             connection,
             build["index_specification_hash"],
@@ -3179,6 +4166,16 @@ class Repository:
             )
             if cursor.rowcount != 1:
                 raise RuntimeError("text vector stage changed during generation activation")
+            cursor = connection.execute(
+                """
+                UPDATE text_vector_generation_tombstones
+                SET lifecycle_state = 'committed', updated_at = ?
+                WHERE generation_id = ? AND lifecycle_state = 'building'
+                """,
+                (completed_at, generation.generation_id),
+            )
+            if cursor.rowcount != 1:
+                raise RuntimeError("text vector generation tombstone changed during commit")
             connection.execute(
                 "DELETE FROM text_vector_builds WHERE generation_id = ?",
                 (generation.generation_id,),
@@ -3196,12 +4193,45 @@ class Repository:
         timestamp: str,
     ) -> None:
         validate_artifact_identifier(reason, field_name="artifact GC reason")
+        if connection.execute(
+            "SELECT 1 FROM text_vector_generations WHERE generation_id = ?",
+            (generation_id,),
+        ).fetchone() is not None:
+            raise ValueError("artifact GC cannot target a committed generation")
+        tombstone = connection.execute(
+            """
+            SELECT lifecycle_state, index_specification_hash, collection_name
+            FROM text_vector_generation_tombstones
+            WHERE generation_id = ?
+            """,
+            (generation_id,),
+        ).fetchone()
+        if (
+            tombstone is None
+            or tombstone["lifecycle_state"] not in {"building", "gc_pending"}
+            or tombstone["index_specification_hash"] != index_specification_hash
+            or tombstone["collection_name"] != collection_name
+        ):
+            raise ValueError("artifact GC generation tombstone is corrupt")
+        if tombstone["lifecycle_state"] == "building":
+            cursor = connection.execute(
+                """
+                UPDATE text_vector_generation_tombstones
+                SET lifecycle_state = 'gc_pending', updated_at = ?
+                WHERE generation_id = ? AND lifecycle_state = 'building'
+                """,
+                (timestamp, generation_id),
+            )
+            if cursor.rowcount != 1:
+                raise RuntimeError("artifact GC generation tombstone changed concurrently")
         connection.execute(
             """
             INSERT OR IGNORE INTO artifact_gc_jobs (
                 job_id, artifact_kind, generation_id, index_specification_hash,
-                collection_name, reason, state, attempt, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                collection_name, reason, state, attempt, backoff_level,
+                available_at, worker_id, lease_token, lease_expires_at, error_code,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?)
             """,
             (
                 uuid4().hex,
@@ -3212,6 +4242,8 @@ class Repository:
                 reason,
                 "pending",
                 0,
+                0,
+                timestamp,
                 timestamp,
                 timestamp,
             ),
@@ -3266,7 +4298,131 @@ class Repository:
         assert failed is not None
         return failed
 
-    def expire_text_vector_builds(self, *, before: str | None = None) -> tuple[str, ...]:
+    @classmethod
+    def _terminalize_text_vector_build_rows(
+        cls,
+        connection: sqlite3.Connection,
+        rows: Iterable[sqlite3.Row],
+        *,
+        error_code: str,
+        timestamp: str,
+    ) -> tuple[str, ...]:
+        validate_error_code(error_code)
+        terminalized: list[str] = []
+        for build in rows:
+            run = cls._get_stage_run(connection, build["run_id"])
+            if run is None:
+                raise ValueError("abandoned text vector build run is corrupt")
+            cls._validate_text_vector_build_row(connection, build, run)
+            cls._enqueue_artifact_gc(
+                connection,
+                generation_id=build["generation_id"],
+                index_specification_hash=build["index_specification_hash"],
+                collection_name=build["collection_name"],
+                reason=error_code,
+                timestamp=timestamp,
+            )
+            if run.state is StageState.RUNNING:
+                cursor = connection.execute(
+                    """
+                    UPDATE stage_runs
+                    SET state = ?, output_generation = NULL, error_code = ?,
+                        finished_at = ?, updated_at = ?
+                    WHERE run_id = ? AND state = ?
+                    """,
+                    (
+                        StageState.FAILED.value,
+                        error_code,
+                        timestamp,
+                        timestamp,
+                        run.run_id,
+                        StageState.RUNNING.value,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise RuntimeError("text vector stage changed during recovery")
+            elif run.state not in {StageState.FAILED, StageState.CANCELLED}:
+                raise ValueError("abandoned text vector build run is corrupt")
+            connection.execute(
+                "DELETE FROM text_vector_builds WHERE generation_id = ?",
+                (build["generation_id"],),
+            )
+            terminalized.append(build["generation_id"])
+        return tuple(terminalized)
+
+    @classmethod
+    def _recover_text_vector_build_rows(
+        cls,
+        connection: sqlite3.Connection,
+        rows: Iterable[sqlite3.Row],
+        *,
+        error_code: str,
+        timestamp: str,
+    ) -> tuple[tuple[str, ...], int]:
+        terminalized: list[str] = []
+        quarantined_count = 0
+        for build in rows:
+            connection.execute("SAVEPOINT recover_text_vector_build")
+            try:
+                recovered = cls._terminalize_text_vector_build_rows(
+                    connection,
+                    (build,),
+                    error_code=error_code,
+                    timestamp=timestamp,
+                )
+            except (KeyError, ValueError, sqlite3.IntegrityError):
+                connection.execute("ROLLBACK TO recover_text_vector_build")
+                connection.execute("RELEASE recover_text_vector_build")
+                cursor = connection.execute(
+                    """
+                    UPDATE text_vector_builds
+                    SET recovery_state = 'quarantined',
+                        recovery_error_code = ?, quarantined_at = ?
+                    WHERE rowid = ? AND recovery_state = 'active'
+                    """,
+                    (
+                        "text_vector_build_metadata_corrupt",
+                        timestamp,
+                        build["build_row_id"],
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise RuntimeError(
+                        "text vector build quarantine changed concurrently"
+                    )
+                quarantined_count += 1
+            else:
+                connection.execute("RELEASE recover_text_vector_build")
+                terminalized.extend(recovered)
+        return tuple(terminalized), quarantined_count
+
+    def expire_text_vector_builds(
+        self,
+        *,
+        before: str | None = None,
+        limit: int = 100,
+    ) -> tuple[str, ...]:
+        report = self.recover_expired_text_vector_builds(
+            before=before,
+            limit=limit,
+        )
+        if report.quarantined_count:
+            raise RuntimeError(
+                "expired text vector build metadata was quarantined; "
+                "inspect repository degraded health"
+            )
+        return report.terminalized_generation_ids
+
+    def recover_expired_text_vector_builds(
+        self,
+        *,
+        before: str | None = None,
+        limit: int = 100,
+    ) -> TextVectorBuildRecoveryReport:
+        resolved_limit = _validate_repository_batch_limit(
+            limit,
+            field_name="text vector build expiry limit",
+        )
         cutoff = _now() if before is None else before
         if type(cutoff) is not str:
             raise ValueError("text vector build expiry cutoff must be an ISO timestamp")
@@ -3276,61 +4432,120 @@ class Repository:
             raise ValueError("text vector build expiry cutoff must be an ISO timestamp") from error
         if resolved_cutoff.tzinfo is None or resolved_cutoff.utcoffset() is None:
             raise ValueError("text vector build expiry cutoff must include a timezone")
-        expired: list[str] = []
         timestamp = _now()
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             rows = connection.execute(
                 """
-                SELECT * FROM text_vector_builds
-                WHERE lease_expires_at <= ?
+                SELECT rowid AS build_row_id, * FROM text_vector_builds
+                WHERE recovery_state = 'active' AND lease_expires_at <= ?
                 ORDER BY reserved_at, generation_id
+                LIMIT ?
+                """,
+                (resolved_cutoff.astimezone(UTC).isoformat(), resolved_limit),
+            ).fetchall()
+            terminalized, quarantined_count = self._recover_text_vector_build_rows(
+                connection,
+                rows,
+                error_code="text_vector_build_interrupted",
+                timestamp=timestamp,
+            )
+            has_more = connection.execute(
+                """
+                SELECT 1 FROM text_vector_builds
+                WHERE recovery_state = 'active' AND lease_expires_at <= ?
+                LIMIT 1
                 """,
                 (resolved_cutoff.astimezone(UTC).isoformat(),),
+            ).fetchone() is not None
+            return TextVectorBuildRecoveryReport(
+                examined_count=len(rows),
+                terminalized_generation_ids=terminalized,
+                quarantined_count=quarantined_count,
+                has_more=has_more,
+            )
+
+    def list_quarantined_text_vector_builds(
+        self,
+        *,
+        limit: int = 100,
+    ) -> tuple[TextVectorBuildQuarantine, ...]:
+        resolved_limit = _validate_repository_batch_limit(
+            limit,
+            field_name="text vector build quarantine listing limit",
+        )
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT
+                    rowid AS row_id,
+                    recovery_error_code AS error_code,
+                    quarantined_at
+                FROM text_vector_builds
+                WHERE recovery_state = 'quarantined'
+                ORDER BY quarantined_at, rowid
+                LIMIT ?
+                """,
+                (resolved_limit,),
             ).fetchall()
-            for build in rows:
-                run = self._get_stage_run(connection, build["run_id"])
-                if run is None:
-                    raise ValueError("expired text vector build run is corrupt")
-                self._validate_text_vector_build_row(connection, build, run)
-                self._enqueue_artifact_gc(
-                    connection,
-                    generation_id=build["generation_id"],
-                    index_specification_hash=build["index_specification_hash"],
-                    collection_name=build["collection_name"],
-                    reason="text_vector_build_interrupted",
-                    timestamp=timestamp,
-                )
-                if run.state is StageState.RUNNING:
-                    cursor = connection.execute(
-                        """
-                        UPDATE stage_runs
-                        SET state = ?, output_generation = NULL, error_code = ?,
-                            finished_at = ?, updated_at = ?
-                        WHERE run_id = ? AND state = ?
-                        """,
-                        (
-                            StageState.FAILED.value,
-                            "text_vector_build_interrupted",
-                            timestamp,
-                            timestamp,
-                            run.run_id,
-                            StageState.RUNNING.value,
-                        ),
-                    )
-                    if cursor.rowcount != 1:
-                        raise RuntimeError("expired text vector stage changed concurrently")
-                elif run.state not in {
-                    StageState.FAILED,
-                    StageState.CANCELLED,
-                }:
-                    raise ValueError("expired text vector build run is corrupt")
-                connection.execute(
-                    "DELETE FROM text_vector_builds WHERE generation_id = ?",
-                    (build["generation_id"],),
-                )
-                expired.append(build["generation_id"])
-        return tuple(expired)
+        try:
+            return tuple(TextVectorBuildQuarantine(**dict(row)) for row in rows)
+        except (TypeError, ValueError) as error:
+            raise ValueError("persisted text vector build quarantine is corrupt") from error
+
+    def recover_abandoned_text_vector_builds(
+        self,
+        *,
+        limit: int = 100,
+    ) -> TextVectorBuildRecoveryReport:
+        """Recover prior-runtime builds after the caller acquires the exclusive data lock."""
+
+        resolved_limit = _validate_repository_batch_limit(
+            limit,
+            field_name="text vector build abandonment limit",
+        )
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            timestamp = _now()
+            rows = connection.execute(
+                """
+                SELECT rowid AS build_row_id, * FROM text_vector_builds
+                WHERE recovery_state = 'active'
+                ORDER BY reserved_at, generation_id
+                LIMIT ?
+                """,
+                (resolved_limit,),
+            ).fetchall()
+            terminalized, quarantined_count = self._recover_text_vector_build_rows(
+                connection,
+                rows,
+                error_code="text_vector_runtime_abandoned",
+                timestamp=timestamp,
+            )
+            has_more = connection.execute(
+                """
+                SELECT 1 FROM text_vector_builds
+                WHERE recovery_state = 'active'
+                LIMIT 1
+                """
+            ).fetchone() is not None
+            return TextVectorBuildRecoveryReport(
+                examined_count=len(rows),
+                terminalized_generation_ids=terminalized,
+                quarantined_count=quarantined_count,
+                has_more=has_more,
+            )
+
+    def abandon_text_vector_builds(self, *, limit: int = 100) -> tuple[str, ...]:
+        """Compatibility wrapper for exclusive-lock startup recovery."""
+
+        report = self.recover_abandoned_text_vector_builds(limit=limit)
+        if report.quarantined_count:
+            raise RuntimeError(
+                "abandoned text vector build metadata was quarantined; "
+                "inspect repository degraded health"
+            )
+        return report.terminalized_generation_ids
 
     @classmethod
     def _artifact_gc_job_from_row(
@@ -3339,7 +4554,9 @@ class Repository:
         row: sqlite3.Row,
     ) -> ArtifactGCJob:
         try:
-            job = ArtifactGCJob(**dict(row))
+            values = dict(row)
+            values.pop("sequence", None)
+            job = ArtifactGCJob(**values)
         except (TypeError, ValueError) as error:
             raise ValueError("persisted artifact GC job is corrupt") from error
         specification = cls._get_text_vector_index_specification(
@@ -3349,87 +4566,531 @@ class Repository:
         if specification.collection_name != job.collection_name:
             raise ValueError("persisted artifact GC collection is corrupt")
         if connection.execute(
+            "SELECT 1 FROM text_vector_generations WHERE generation_id = ?",
+            (job.generation_id,),
+        ).fetchone() is not None:
+            raise ValueError("artifact GC job targets a committed generation")
+        tombstone = connection.execute(
             """
-            SELECT 1
-            FROM active_text_vector_generations
+            SELECT lifecycle_state, index_specification_hash, collection_name
+            FROM text_vector_generation_tombstones
             WHERE generation_id = ?
             """,
             (job.generation_id,),
-        ).fetchone() is not None:
-            raise ValueError("artifact GC job targets an active generation")
+        ).fetchone()
+        expected_lifecycle = {
+            "pending": "gc_pending",
+            "running": "gc_pending",
+            "complete": "gc_complete",
+            "failed": "gc_failed",
+        }[job.state]
+        if (
+            tombstone is None
+            or tombstone["lifecycle_state"] != expected_lifecycle
+            or tombstone["index_specification_hash"]
+            != job.index_specification_hash
+            or tombstone["collection_name"] != job.collection_name
+        ):
+            raise ValueError("persisted artifact GC tombstone is corrupt")
         return job
 
-    def list_pending_artifact_gc_jobs(self) -> tuple[ArtifactGCJob, ...]:
+    @staticmethod
+    def _artifact_gc_attempt_from_row(row: sqlite3.Row) -> ArtifactGCAttempt:
+        try:
+            return ArtifactGCAttempt(**dict(row))
+        except (TypeError, ValueError) as error:
+            raise ValueError("persisted artifact GC attempt audit is corrupt") from error
+
+    def list_pending_artifact_gc_jobs(
+        self,
+        *,
+        limit: int = 100,
+    ) -> tuple[ArtifactGCJob, ...]:
+        resolved_limit = _validate_repository_batch_limit(
+            limit,
+            field_name="artifact GC listing limit",
+        )
         with self._connect() as connection:
             rows = connection.execute(
-                f"{_ARTIFACT_GC_SELECT} WHERE state = ? ORDER BY created_at, job_id",
-                ("pending",),
+                f"""
+                {_ARTIFACT_GC_SELECT}
+                WHERE state = 'pending'
+                  AND NOT EXISTS (
+                    SELECT 1 FROM artifact_gc_quarantines AS quarantines
+                    WHERE quarantines.sequence = artifact_gc_jobs.sequence
+                  )
+                ORDER BY available_at, sequence
+                LIMIT ?
+                """,
+                (resolved_limit,),
             ).fetchall()
             jobs = tuple(self._artifact_gc_job_from_row(connection, row) for row in rows)
         return jobs
 
-    def claim_artifact_gc_job(self, job_id: str) -> ArtifactGCJob:
-        validate_artifact_identifier(job_id, field_name="artifact GC job id")
-        timestamp = _now()
+    def claim_next_artifact_gc_job(
+        self,
+        *,
+        worker_id: str,
+        lease_seconds: int = 30,
+        scan_limit: int = 16,
+    ) -> ArtifactGCJob | None:
+        validate_artifact_identifier(worker_id, field_name="artifact GC worker id")
+        resolved_lease_seconds = _validate_gc_lease_seconds(lease_seconds)
+        if (
+            isinstance(scan_limit, bool)
+            or not isinstance(scan_limit, int)
+            or not 1 <= scan_limit <= ARTIFACT_GC_SCAN_LIMIT_MAX
+        ):
+            raise ValueError(
+                "artifact GC scan limit must be between "
+                f"1 and {ARTIFACT_GC_SCAN_LIMIT_MAX}"
+            )
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            pending = connection.execute(
-                f"{_ARTIFACT_GC_SELECT} WHERE job_id = ? AND state = 'pending'",
-                (job_id,),
-            ).fetchone()
-            if pending is None:
-                raise ValueError("artifact GC job is not pending")
-            self._artifact_gc_job_from_row(connection, pending)
-            cursor = connection.execute(
-                """
-                UPDATE artifact_gc_jobs
-                SET state = 'running', attempt = attempt + 1, updated_at = ?
-                WHERE job_id = ? AND state = 'pending'
+            timestamp = _now()
+            lease_expires_at = (
+                datetime.fromisoformat(timestamp)
+                + timedelta(seconds=resolved_lease_seconds)
+            ).isoformat()
+            rows = connection.execute(
+                f"""
+                {_ARTIFACT_GC_SELECT}
+                WHERE (
+                    (state = 'pending' AND available_at <= ?)
+                    OR (state = 'running' AND lease_expires_at <= ?)
+                )
+                  AND NOT EXISTS (
+                    SELECT 1 FROM artifact_gc_quarantines AS quarantines
+                    WHERE quarantines.sequence = artifact_gc_jobs.sequence
+                  )
+                ORDER BY
+                    CASE
+                        WHEN state = 'pending' THEN available_at
+                        ELSE lease_expires_at
+                    END,
+                    sequence
+                LIMIT ?
                 """,
-                (timestamp, job_id),
-            )
-            if cursor.rowcount != 1:
-                raise ValueError("artifact GC job is not pending")
-            row = connection.execute(
-                f"{_ARTIFACT_GC_SELECT} WHERE job_id = ?",
-                (job_id,),
-            ).fetchone()
-            assert row is not None
-            job = self._artifact_gc_job_from_row(connection, row)
-        return job
+                (timestamp, timestamp, scan_limit),
+            ).fetchall()
+            for row in rows:
+                sequence = row["sequence"]
+                connection.execute("SAVEPOINT claim_artifact_gc")
+                try:
+                    current = self._artifact_gc_job_from_row(connection, row)
+                    if current.state == "running":
+                        assert current.lease_token is not None
+                        audit_row = connection.execute(
+                            """
+                            SELECT
+                                job_id, attempt, worker_id, lease_token,
+                                claimed_at, lease_expires_at, finished_at,
+                                outcome, error_code
+                            FROM artifact_gc_attempts
+                            WHERE job_id = ? AND attempt = ?
+                            """,
+                            (current.job_id, current.attempt),
+                        ).fetchone()
+                        if audit_row is None:
+                            raise ValueError("artifact GC attempt audit is missing")
+                        audit = self._artifact_gc_attempt_from_row(audit_row)
+                        if (
+                            audit.worker_id != current.worker_id
+                            or audit.lease_token != current.lease_token
+                            or audit.lease_expires_at != current.lease_expires_at
+                            or audit.outcome is not None
+                        ):
+                            raise ValueError("artifact GC attempt audit is inconsistent")
+                        cursor = connection.execute(
+                            """
+                            UPDATE artifact_gc_attempts
+                            SET finished_at = ?, outcome = 'lease_expired',
+                                error_code = 'artifact_gc_lease_expired'
+                            WHERE job_id = ? AND attempt = ? AND lease_token = ?
+                              AND outcome IS NULL
+                            """,
+                            (
+                                timestamp,
+                                current.job_id,
+                                current.attempt,
+                                current.lease_token,
+                            ),
+                        )
+                        if cursor.rowcount != 1:
+                            raise ValueError("artifact GC attempt audit is corrupt")
+                        next_backoff_level = min(
+                            current.backoff_level + 1,
+                            ARTIFACT_GC_BACKOFF_LEVEL_MAX,
+                        )
+                        delay_seconds = min(
+                            ARTIFACT_GC_RETRY_BASE_SECONDS
+                            * (2**current.backoff_level),
+                            ARTIFACT_GC_RETRY_MAX_SECONDS,
+                        )
+                        available_at = (
+                            datetime.fromisoformat(timestamp)
+                            + timedelta(seconds=delay_seconds)
+                        ).isoformat()
+                        cursor = connection.execute(
+                            """
+                            UPDATE artifact_gc_jobs
+                            SET state = 'pending', backoff_level = ?,
+                                available_at = ?, worker_id = NULL,
+                                lease_token = NULL, lease_expires_at = NULL,
+                                error_code = 'artifact_gc_lease_expired', updated_at = ?
+                            WHERE job_id = ? AND state = 'running'
+                              AND attempt = ? AND lease_token = ?
+                              AND lease_expires_at <= ?
+                            """,
+                            (
+                                next_backoff_level,
+                                available_at,
+                                timestamp,
+                                current.job_id,
+                                current.attempt,
+                                current.lease_token,
+                                timestamp,
+                            ),
+                        )
+                        if cursor.rowcount != 1:
+                            raise ValueError("artifact GC expired lease changed")
+                        connection.execute("RELEASE claim_artifact_gc")
+                        continue
 
-    def complete_artifact_gc_job(self, job_id: str, *, succeeded: bool) -> ArtifactGCJob:
+                    lease_token = uuid4().hex
+                    next_attempt = current.attempt + 1
+                    cursor = connection.execute(
+                        """
+                        UPDATE artifact_gc_jobs
+                        SET state = 'running', attempt = ?,
+                            worker_id = ?, lease_token = ?, lease_expires_at = ?,
+                            error_code = NULL, updated_at = ?
+                        WHERE job_id = ? AND state = 'pending' AND attempt = ?
+                          AND available_at <= ?
+                        """,
+                        (
+                            next_attempt,
+                            worker_id,
+                            lease_token,
+                            lease_expires_at,
+                            timestamp,
+                            current.job_id,
+                            current.attempt,
+                            timestamp,
+                        ),
+                    )
+                    if cursor.rowcount != 1:
+                        raise ValueError("artifact GC claim changed concurrently")
+                    connection.execute(
+                        """
+                        INSERT INTO artifact_gc_attempts (
+                            job_id, attempt, worker_id, lease_token,
+                            claimed_at, lease_expires_at,
+                            finished_at, outcome, error_code
+                        ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL)
+                        """,
+                        (
+                            current.job_id,
+                            next_attempt,
+                            worker_id,
+                            lease_token,
+                            timestamp,
+                            lease_expires_at,
+                        ),
+                    )
+                    _prune_artifact_gc_attempt_audit(
+                        connection,
+                        job_id=current.job_id,
+                    )
+                    claimed_row = connection.execute(
+                        f"{_ARTIFACT_GC_SELECT} WHERE job_id = ?",
+                        (current.job_id,),
+                    ).fetchone()
+                    assert claimed_row is not None
+                    claimed = self._artifact_gc_job_from_row(connection, claimed_row)
+                except (KeyError, ValueError, sqlite3.IntegrityError):
+                    connection.execute("ROLLBACK TO claim_artifact_gc")
+                    connection.execute("RELEASE claim_artifact_gc")
+                    connection.execute(
+                        """
+                        INSERT OR IGNORE INTO artifact_gc_quarantines (
+                            sequence, error_code, quarantined_at
+                        ) VALUES (?, 'artifact_gc_metadata_corrupt', ?)
+                        """,
+                        (sequence, timestamp),
+                    )
+                    continue
+                connection.execute("RELEASE claim_artifact_gc")
+                return claimed
+            return None
+
+    def list_artifact_gc_attempts(
+        self,
+        job_id: str,
+        *,
+        limit: int = 100,
+    ) -> tuple[ArtifactGCAttempt, ...]:
+        validate_artifact_identifier(job_id, field_name="artifact GC audit job id")
+        resolved_limit = _validate_repository_batch_limit(
+            limit,
+            field_name="artifact GC audit listing limit",
+        )
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT
+                    job_id, attempt, worker_id, lease_token,
+                    claimed_at, lease_expires_at, finished_at, outcome, error_code
+                FROM artifact_gc_attempts
+                WHERE job_id = ?
+                ORDER BY attempt DESC
+                LIMIT ?
+                """,
+                (job_id, resolved_limit),
+            ).fetchall()
+        return tuple(
+            self._artifact_gc_attempt_from_row(row) for row in reversed(rows)
+        )
+
+    def list_artifact_gc_quarantines(
+        self,
+        *,
+        limit: int = 100,
+    ) -> tuple[ArtifactGCQuarantine, ...]:
+        resolved_limit = _validate_repository_batch_limit(
+            limit,
+            field_name="artifact GC quarantine listing limit",
+        )
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT sequence, error_code, quarantined_at
+                FROM artifact_gc_quarantines
+                ORDER BY quarantined_at, sequence
+                LIMIT ?
+                """,
+                (resolved_limit,),
+            ).fetchall()
+        try:
+            return tuple(ArtifactGCQuarantine(**dict(row)) for row in rows)
+        except (TypeError, ValueError) as error:
+            raise ValueError("persisted artifact GC quarantine is corrupt") from error
+
+    def heartbeat_artifact_gc_job(
+        self,
+        job_id: str,
+        *,
+        worker_id: str,
+        lease_token: str,
+        attempt: int,
+        lease_seconds: int = 30,
+    ) -> ArtifactGCJob:
         validate_artifact_identifier(job_id, field_name="artifact GC job id")
-        if type(succeeded) is not bool:
-            raise ValueError("artifact GC outcome must be boolean")
-        timestamp = _now()
-        state = "complete" if succeeded else "failed"
+        validate_artifact_identifier(worker_id, field_name="artifact GC worker id")
+        validate_artifact_identifier(lease_token, field_name="artifact GC lease token")
+        if isinstance(attempt, bool) or not isinstance(attempt, int) or attempt < 1:
+            raise ValueError("artifact GC attempt fence must be positive")
+        resolved_lease_seconds = _validate_gc_lease_seconds(lease_seconds)
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            running = connection.execute(
-                f"{_ARTIFACT_GC_SELECT} WHERE job_id = ? AND state = 'running'",
-                (job_id,),
-            ).fetchone()
-            if running is None:
-                raise ValueError("artifact GC job is not running")
-            self._artifact_gc_job_from_row(connection, running)
-            cursor = connection.execute(
-                """
-                UPDATE artifact_gc_jobs
-                SET state = ?, updated_at = ?
-                WHERE job_id = ? AND state = 'running'
-                """,
-                (state, timestamp, job_id),
-            )
-            if cursor.rowcount != 1:
-                raise ValueError("artifact GC job is not running")
+            timestamp = _now()
+            lease_expires_at = (
+                datetime.fromisoformat(timestamp)
+                + timedelta(seconds=resolved_lease_seconds)
+            ).isoformat()
             row = connection.execute(
                 f"{_ARTIFACT_GC_SELECT} WHERE job_id = ?",
                 (job_id,),
             ).fetchone()
-            assert row is not None
-            job = self._artifact_gc_job_from_row(connection, row)
-        return job
+            if row is None:
+                raise KeyError(job_id)
+            current = self._artifact_gc_job_from_row(connection, row)
+            if (
+                current.state != "running"
+                or current.worker_id != worker_id
+                or current.lease_token != lease_token
+                or current.attempt != attempt
+                or current.lease_expires_at is None
+                or current.lease_expires_at <= timestamp
+            ):
+                raise ValueError("artifact GC claim changed or expired")
+            cursor = connection.execute(
+                """
+                UPDATE artifact_gc_jobs
+                SET lease_expires_at = ?, updated_at = ?
+                WHERE job_id = ? AND state = 'running'
+                  AND worker_id = ? AND lease_token = ? AND attempt = ?
+                  AND lease_expires_at > ?
+                """,
+                (
+                    lease_expires_at,
+                    timestamp,
+                    job_id,
+                    worker_id,
+                    lease_token,
+                    attempt,
+                    timestamp,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("artifact GC claim changed or expired")
+            cursor = connection.execute(
+                """
+                UPDATE artifact_gc_attempts
+                SET lease_expires_at = ?
+                WHERE job_id = ? AND attempt = ? AND worker_id = ?
+                  AND lease_token = ? AND outcome IS NULL
+                """,
+                (
+                    lease_expires_at,
+                    job_id,
+                    attempt,
+                    worker_id,
+                    lease_token,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("artifact GC attempt audit changed or is corrupt")
+            heartbeat_row = connection.execute(
+                f"{_ARTIFACT_GC_SELECT} WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+            assert heartbeat_row is not None
+            return self._artifact_gc_job_from_row(connection, heartbeat_row)
+
+    def finish_artifact_gc_job(
+        self,
+        job_id: str,
+        *,
+        worker_id: str,
+        lease_token: str,
+        attempt: int,
+        outcome: ArtifactGCOutcome,
+        error_code: str | None = None,
+    ) -> ArtifactGCJob:
+        validate_artifact_identifier(job_id, field_name="artifact GC job id")
+        validate_artifact_identifier(worker_id, field_name="artifact GC worker id")
+        validate_artifact_identifier(lease_token, field_name="artifact GC lease token")
+        if isinstance(attempt, bool) or not isinstance(attempt, int) or attempt < 1:
+            raise ValueError("artifact GC attempt fence must be positive")
+        try:
+            resolved_outcome = ArtifactGCOutcome(outcome)
+        except (TypeError, ValueError) as error:
+            raise ValueError("unsupported artifact GC outcome") from error
+        validate_error_code(error_code)
+        if resolved_outcome is ArtifactGCOutcome.SUCCESS:
+            if error_code is not None:
+                raise ValueError("successful artifact GC cannot contain an error")
+        elif error_code is None:
+            raise ValueError("failed artifact GC requires a sanitized error code")
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            timestamp = _now()
+            row = connection.execute(
+                f"{_ARTIFACT_GC_SELECT} WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(job_id)
+            current = self._artifact_gc_job_from_row(connection, row)
+            if (
+                current.state != "running"
+                or current.worker_id != worker_id
+                or current.lease_token != lease_token
+                or current.attempt != attempt
+                or current.lease_expires_at is None
+                or current.lease_expires_at <= timestamp
+            ):
+                raise ValueError("artifact GC claim changed or expired")
+
+            if resolved_outcome is ArtifactGCOutcome.SUCCESS:
+                next_state = "complete"
+                next_lifecycle = "gc_complete"
+                next_backoff_level = current.backoff_level
+                available_at = timestamp
+                persisted_error = None
+            elif resolved_outcome is ArtifactGCOutcome.PERMANENT_FAILURE:
+                next_state = "failed"
+                next_lifecycle = "gc_failed"
+                next_backoff_level = current.backoff_level
+                available_at = timestamp
+                persisted_error = error_code
+            else:
+                next_state = "pending"
+                next_lifecycle = "gc_pending"
+                next_backoff_level = min(
+                    current.backoff_level + 1,
+                    ARTIFACT_GC_BACKOFF_LEVEL_MAX,
+                )
+                delay_seconds = min(
+                    ARTIFACT_GC_RETRY_BASE_SECONDS * (2**current.backoff_level),
+                    ARTIFACT_GC_RETRY_MAX_SECONDS,
+                )
+                available_at = (
+                    datetime.fromisoformat(timestamp) + timedelta(seconds=delay_seconds)
+                ).isoformat()
+                persisted_error = error_code
+
+            cursor = connection.execute(
+                """
+                UPDATE artifact_gc_jobs
+                SET state = ?, backoff_level = ?, available_at = ?, worker_id = NULL,
+                    lease_token = NULL, lease_expires_at = NULL,
+                    error_code = ?, updated_at = ?
+                WHERE job_id = ? AND state = 'running'
+                  AND worker_id = ? AND lease_token = ? AND attempt = ?
+                  AND lease_expires_at > ?
+                """,
+                (
+                    next_state,
+                    next_backoff_level,
+                    available_at,
+                    persisted_error,
+                    timestamp,
+                    job_id,
+                    worker_id,
+                    lease_token,
+                    attempt,
+                    timestamp,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("artifact GC claim changed or expired")
+            cursor = connection.execute(
+                """
+                UPDATE text_vector_generation_tombstones
+                SET lifecycle_state = ?, updated_at = ?
+                WHERE generation_id = ? AND lifecycle_state = 'gc_pending'
+                """,
+                (next_lifecycle, timestamp, current.generation_id),
+            )
+            if cursor.rowcount != 1:
+                raise RuntimeError("artifact GC tombstone changed during finish")
+            cursor = connection.execute(
+                """
+                UPDATE artifact_gc_attempts
+                SET finished_at = ?, outcome = ?, error_code = ?
+                WHERE job_id = ? AND attempt = ? AND worker_id = ?
+                  AND lease_token = ? AND outcome IS NULL
+                """,
+                (
+                    timestamp,
+                    resolved_outcome.value,
+                    persisted_error,
+                    job_id,
+                    attempt,
+                    worker_id,
+                    lease_token,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise RuntimeError("artifact GC attempt audit changed during finish")
+            finished_row = connection.execute(
+                f"{_ARTIFACT_GC_SELECT} WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+            assert finished_row is not None
+            return self._artifact_gc_job_from_row(connection, finished_row)
 
     def list_current_text_vector_bindings(
         self,
