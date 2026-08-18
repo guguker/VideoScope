@@ -35,12 +35,30 @@ directory before they are served.
 | `evaluation/cases.json` | local developer evaluation cases | local user data |
 | `evaluation/latest-report.json` | latest generated evaluation result | derived |
 
-Evaluation cases contain local video IDs, so the repository does not claim to ship
-a built-in dataset. A portable benchmark would need a versioned asset manifest and
-an import step that maps stable asset IDs/checksums to local video records.
-Cases are accepted only for existing, fully processed videos and their labelled
-intervals must fit inside the recorded video duration. The same references are
-checked again before every run; an empty case set is not a successful benchmark.
+SQLite schema v5 stores scene, speech, OCR and object segments in immutable
+generations. A stage run, source SHA-256 and canonical specification hash identify
+each generation; a separate pointer selects the active generation atomically.
+Reindexing never deletes the previous generation. Scene images follow the same
+rule under `thumbnails/<video-id>/generations/<generation-id>/` and are published
+before the database pointer changes.
+
+Rows migrated from older databases retain `generation_id = NULL`. They remain
+stored for recovery but are not trusted by lexical search, semantic indexing or
+thumbnail fallback. The application does not silently rebuild a ready library at
+startup: each legacy video needs an explicit Reindex action before its evidence
+becomes searchable again. A successful
+unversioned Qdrant write is usable interactively, but is not recorded as a
+verified `text_vectors` generation until Qdrant gains an immutable per-video
+generation contract.
+
+Legacy evaluation cases contain local video IDs, so they are not a built-in
+portable dataset. The benchmark subsystem instead accepts versioned manifests
+whose stable aliases and source checksums are explicitly resolved to local Asset
+records; paths and private repository IDs never enter the portable manifest.
+Legacy cases are accepted only for existing, fully processed videos and their
+labelled intervals must fit inside the recorded video duration. The same
+references are checked again before every run; an empty case set is not a
+successful benchmark.
 
 Generated reports include separate cases, runtime, schema and methodology
 revisions. The runtime fingerprint covers the active retrieval components, pinned
