@@ -55,6 +55,13 @@ search response, but are not accepted as persistent segment modalities. SQLite
 remains the source of truth for video metadata, processing state, and persisted
 temporal evidence.
 
+The API acquires an exclusive lock for `data/` before SQLite initialization,
+recovery or provider construction. Offline visual and Lighthouse maintenance use
+the same ownership boundary. Within one runtime, Indexer and GC share a
+`TextVectorStorageGate`, and a single lazy embedded-Qdrant client is reused.
+Shutdown stops intake and drops queued backlog; if the current ML operation is
+still running, a reaper retains Qdrant and the lock until workers actually stop.
+
 ## Ranking
 
 1. The query router chooses speech, OCR, object, visual, or mixed retrieval and assigns modality weights.
@@ -99,6 +106,12 @@ stages record explicit failed/not-configured runs and preserve compatible active
 generations; text-vector, dense visual and Lighthouse activation preserve their
 previous pointers. Dense and Lighthouse failures become video warnings, while
 Qwen and InternVideo failures are logged at query time.
+
+Text-vector recovery is leased and fenced. Temporary Qdrant failures remain
+retryable with capped backoff, permanent contract violations fail closed, and
+corrupt recovery metadata is quarantined without becoming a deletion target.
+Committed generations are never eligible for GC, and exact deletion is verified
+before a job completes.
 
 ## Security boundary
 

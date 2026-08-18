@@ -34,12 +34,17 @@ directory before they are served.
 | `search-glossary.json` | user-maintained search aliases | local user data |
 | `evaluation/cases.json` | local developer evaluation cases | local user data |
 | `evaluation/latest-report.json` | latest generated evaluation result | derived |
+| `.videoscope-runtime.lock` | persistent process-ownership inode guarded by `flock` | coordination state; never delete as cleanup |
 
-SQLite schema v6 stores derived evidence as immutable generations. Migration v5
+SQLite schema v8 stores derived evidence and its recovery state. Migration v5
 introduced source/specification-linked scene, speech, OCR and object generations;
-migration v6 adds verified per-video text-vector generations. A stage run, source
-SHA-256 and canonical specification hash identify each generation; separate
-SQLite pointers select the active segment and vector generations atomically.
+migration v6 added verified per-video text-vector generations; v7 introduced
+global generation tombstones and leased crash-safe GC jobs; v8 adds indefinitely
+recoverable transient retries with capped backoff, a monotonic total-attempt fence,
+a bounded window of 256 immutable recent audit rows, and quarantine for corrupt
+build/job metadata. A stage run, source SHA-256 and
+canonical specification hash identify each generation; separate SQLite pointers
+select the active segment and vector generations atomically.
 Reindexing never deletes the previous active generation. Scene images follow the
 same rule under `thumbnails/<video-id>/generations/<generation-id>/` and are
 published before the database pointer changes.
@@ -54,6 +59,15 @@ validation. Only then may one SQLite transaction activate that generation and
 complete its stage run. A failed build preserves the previous active generation.
 Legacy unversioned Qdrant points and markers remain inert and untrusted until an
 explicit reindex publishes a verified generation.
+
+GC never targets a committed generation. At startup the API acquires the data-dir
+lock before SQLite initialization and terminalizes reservations left by the
+previous owner. During normal operation one shared storage gate makes Qdrant
+build/commit mutually exclusive with lease recovery and exact generation delete;
+deletion is complete only after an exact zero-count read-back. Transient storage
+failures stay retryable with backoff up to 300 seconds, while permanent contract
+failures and quarantined metadata fail closed. The lock file is intentionally
+persistent: ownership is the live `flock`, not file presence.
 
 Legacy evaluation cases contain local video IDs, so they are not a built-in
 portable dataset. The benchmark subsystem instead accepts versioned manifests

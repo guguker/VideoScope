@@ -39,6 +39,11 @@ history is the canonical base for all future branches.
 Do not run `git clean -fdX` in this repository: ignored `data/`, `.venv/` and model
 caches are large, valuable local state.
 
+`data/.videoscope-runtime.lock` is intentionally persistent and is not a stale
+temporary file. Never delete it to resolve a conflict: stop the owning API or
+maintenance process, or wait for its shutdown reaper to finish the current task.
+The lock is released by `flock`; the inode remains for race-free reuse.
+
 ## Project policy
 
 The owner selected the MIT License; the canonical terms are in the repository
