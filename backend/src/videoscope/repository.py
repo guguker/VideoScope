@@ -7,10 +7,11 @@ import logging
 import math
 from numbers import Real
 import os
+import re
 import sqlite3
 import stat
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Lock
 from time import sleep
@@ -19,6 +20,7 @@ from uuid import uuid4
 from weakref import WeakValueDictionary
 
 from videoscope.artifacts import (
+    ArtifactGCJob,
     AssetIdentityError,
     AssetRecord,
     SEGMENT_STAGE_KINDS,
@@ -27,8 +29,17 @@ from videoscope.artifacts import (
     StageRun,
     StageSpecification,
     StageState,
+    TEXT_VECTOR_INPUT_STAGE_KINDS,
+    TextVectorBuildPlan,
+    TextVectorBuildReceipt,
+    TextVectorGeneration,
+    TextVectorGenerationInput,
+    TextVectorIndexSpecification,
+    TextVectorPointSource,
+    TextVectorSearchBinding,
     asset_id_for_sha256,
     validate_artifact_identifier,
+    validate_error_code,
     validate_stage_transition,
 )
 from videoscope.search.text_matching import lexical_match
@@ -42,7 +53,7 @@ SEGMENT_STAGE_MODALITIES = {
     StageKind.OCR: "ocr",
     StageKind.OBJECTS: "objects",
 }
-LATEST_SCHEMA_VERSION = 5
+LATEST_SCHEMA_VERSION = 6
 _DATABASE_INITIALIZE_LOCK = Lock()
 _ASSET_IDENTITY_LOCKS_GUARD = Lock()
 _ASSET_IDENTITY_LOCKS: WeakValueDictionary[tuple[str, str], Any] = WeakValueDictionary()
@@ -458,12 +469,265 @@ def _migration_5_add_segment_generations(connection: sqlite3.Connection) -> None
     )
 
 
+def _migration_6_add_text_vector_generations(connection: sqlite3.Connection) -> None:
+    input_stage_kinds = _sql_values([kind.value for kind in TEXT_VECTOR_INPUT_STAGE_KINDS])
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS text_vector_index_specifications (
+            specification_hash TEXT PRIMARY KEY,
+            canonical_json TEXT NOT NULL,
+            collection_name TEXT NOT NULL UNIQUE,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS text_vector_builds (
+            generation_id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL UNIQUE REFERENCES stage_runs(run_id),
+            video_id TEXT NOT NULL UNIQUE REFERENCES videos(id) ON DELETE CASCADE,
+            stage_specification_hash TEXT NOT NULL
+                REFERENCES stage_specifications(specification_hash),
+            source_sha256 TEXT NOT NULL,
+            index_specification_hash TEXT NOT NULL
+                REFERENCES text_vector_index_specifications(specification_hash),
+            collection_name TEXT NOT NULL,
+            expected_previous_generation_id TEXT
+                REFERENCES text_vector_generations(generation_id),
+            input_manifest_sha256 TEXT NOT NULL,
+            point_manifest_sha256 TEXT NOT NULL,
+            point_count INTEGER NOT NULL CHECK(point_count >= 0),
+            reserved_at TEXT NOT NULL,
+            heartbeat_at TEXT NOT NULL,
+            lease_expires_at TEXT NOT NULL
+        )
+        """
+    )
+    connection.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS text_vector_build_inputs (
+            generation_id TEXT NOT NULL
+                REFERENCES text_vector_builds(generation_id) ON DELETE CASCADE,
+            stage_kind TEXT NOT NULL CHECK(stage_kind IN ({input_stage_kinds})),
+            specification_hash TEXT NOT NULL
+                REFERENCES stage_specifications(specification_hash),
+            segment_generation_id TEXT REFERENCES segment_generations(generation_id),
+            segment_run_id TEXT REFERENCES stage_runs(run_id),
+            source_sha256 TEXT,
+            segment_count INTEGER NOT NULL CHECK(segment_count >= 0),
+            content_manifest_sha256 TEXT NOT NULL,
+            PRIMARY KEY(generation_id, stage_kind),
+            CHECK(
+                (segment_generation_id IS NULL AND segment_run_id IS NULL
+                 AND source_sha256 IS NULL AND segment_count = 0)
+                OR
+                (segment_generation_id IS NOT NULL AND segment_run_id IS NOT NULL
+                 AND source_sha256 IS NOT NULL)
+            )
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS text_vector_generations (
+            generation_id TEXT PRIMARY KEY,
+            video_id TEXT NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+            specification_hash TEXT NOT NULL
+                REFERENCES stage_specifications(specification_hash),
+            source_sha256 TEXT NOT NULL,
+            run_id TEXT NOT NULL UNIQUE REFERENCES stage_runs(run_id),
+            index_specification_hash TEXT NOT NULL
+                REFERENCES text_vector_index_specifications(specification_hash),
+            collection_name TEXT NOT NULL,
+            input_manifest_sha256 TEXT NOT NULL,
+            point_manifest_sha256 TEXT NOT NULL,
+            vector_manifest_sha256 TEXT NOT NULL,
+            point_count INTEGER NOT NULL CHECK(point_count >= 0),
+            completed_at TEXT NOT NULL
+        )
+        """
+    )
+    connection.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS text_vector_generation_inputs (
+            generation_id TEXT NOT NULL
+                REFERENCES text_vector_generations(generation_id) ON DELETE CASCADE,
+            stage_kind TEXT NOT NULL CHECK(stage_kind IN ({input_stage_kinds})),
+            specification_hash TEXT NOT NULL
+                REFERENCES stage_specifications(specification_hash),
+            segment_generation_id TEXT REFERENCES segment_generations(generation_id),
+            segment_run_id TEXT REFERENCES stage_runs(run_id),
+            source_sha256 TEXT,
+            segment_count INTEGER NOT NULL CHECK(segment_count >= 0),
+            content_manifest_sha256 TEXT NOT NULL,
+            PRIMARY KEY(generation_id, stage_kind),
+            CHECK(
+                (segment_generation_id IS NULL AND segment_run_id IS NULL
+                 AND source_sha256 IS NULL AND segment_count = 0)
+                OR
+                (segment_generation_id IS NOT NULL AND segment_run_id IS NOT NULL
+                 AND source_sha256 IS NOT NULL)
+            )
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS active_text_vector_generations (
+            video_id TEXT PRIMARY KEY REFERENCES videos(id) ON DELETE CASCADE,
+            generation_id TEXT NOT NULL UNIQUE
+                REFERENCES text_vector_generations(generation_id),
+            activated_at TEXT NOT NULL
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS artifact_gc_jobs (
+            sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id TEXT NOT NULL UNIQUE,
+            artifact_kind TEXT NOT NULL CHECK(artifact_kind = 'text_vectors'),
+            generation_id TEXT NOT NULL,
+            index_specification_hash TEXT NOT NULL,
+            collection_name TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            state TEXT NOT NULL CHECK(state IN ('pending', 'running', 'complete', 'failed')),
+            attempt INTEGER NOT NULL CHECK(attempt >= 0),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(artifact_kind, generation_id, index_specification_hash, reason)
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_text_vector_generations_video_completed
+        ON text_vector_generations(video_id, completed_at)
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_text_vector_builds_expiry
+        ON text_vector_builds(lease_expires_at)
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_artifact_gc_jobs_state
+        ON artifact_gc_jobs(state, sequence)
+        """
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS text_vector_index_specifications_immutable_update
+        BEFORE UPDATE ON text_vector_index_specifications
+        BEGIN
+            SELECT RAISE(ABORT, 'text vector index specification is immutable');
+        END
+        """
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS text_vector_index_specifications_immutable_delete
+        BEFORE DELETE ON text_vector_index_specifications
+        BEGIN
+            SELECT RAISE(ABORT, 'text vector index specification is immutable');
+        END
+        """
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS text_vector_build_run_identity_insert
+        BEFORE INSERT ON text_vector_builds
+        WHEN NOT EXISTS (
+            SELECT 1
+            FROM stage_runs AS runs
+            JOIN stage_specifications AS specifications
+              ON specifications.specification_hash = runs.specification_hash
+            WHERE runs.run_id = NEW.run_id
+              AND runs.video_id = NEW.video_id
+              AND runs.specification_hash = NEW.stage_specification_hash
+              AND runs.source_sha256 = NEW.source_sha256
+              AND runs.state = 'running'
+              AND specifications.stage_kind = 'text_vectors'
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'text vector build run identity mismatch');
+        END
+        """
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS text_vector_generation_run_identity_insert
+        BEFORE INSERT ON text_vector_generations
+        WHEN NOT EXISTS (
+            SELECT 1
+            FROM stage_runs AS runs
+            JOIN stage_specifications AS specifications
+              ON specifications.specification_hash = runs.specification_hash
+            WHERE runs.run_id = NEW.run_id
+              AND runs.video_id = NEW.video_id
+              AND runs.specification_hash = NEW.specification_hash
+              AND runs.source_sha256 = NEW.source_sha256
+              AND runs.state = 'running'
+              AND specifications.stage_kind = 'text_vectors'
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'text vector generation run identity mismatch');
+        END
+        """
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS text_vector_generations_immutable_update
+        BEFORE UPDATE ON text_vector_generations
+        BEGIN
+            SELECT RAISE(ABORT, 'text vector generation is immutable');
+        END
+        """
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS text_vector_generations_immutable_delete
+        BEFORE DELETE ON text_vector_generations
+        WHEN EXISTS (SELECT 1 FROM videos WHERE id = OLD.video_id)
+        BEGIN
+            SELECT RAISE(ABORT, 'text vector generation is immutable');
+        END
+        """
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS text_vector_generation_inputs_immutable_update
+        BEFORE UPDATE ON text_vector_generation_inputs
+        BEGIN
+            SELECT RAISE(ABORT, 'text vector generation input is immutable');
+        END
+        """
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS text_vector_generation_inputs_immutable_delete
+        BEFORE DELETE ON text_vector_generation_inputs
+        WHEN EXISTS (
+            SELECT 1 FROM text_vector_generations
+            WHERE generation_id = OLD.generation_id
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'text vector generation input is immutable');
+        END
+        """
+    )
+
+
 _SCHEMA_MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (1, _migration_1_create_library_schema),
     (2, _migration_2_add_video_display_name),
     (3, _migration_3_add_stage_provenance),
     (4, _migration_4_add_asset_identity),
     (5, _migration_5_add_segment_generations),
+    (6, _migration_6_add_text_vector_generations),
 )
 
 _STAGE_RUN_SELECT = """
@@ -513,6 +777,101 @@ _SEGMENT_GENERATION_SELECT = """
         completed_at
     FROM segment_generations
 """
+
+_TEXT_VECTOR_GENERATION_SELECT = """
+    SELECT
+        generation_id,
+        video_id,
+        specification_hash,
+        source_sha256,
+        run_id,
+        index_specification_hash,
+        collection_name,
+        input_manifest_sha256,
+        point_manifest_sha256,
+        vector_manifest_sha256,
+        point_count,
+        completed_at
+    FROM text_vector_generations
+"""
+
+_TEXT_VECTOR_INPUT_COLUMNS = """
+    stage_kind,
+    specification_hash,
+    segment_generation_id,
+    segment_run_id,
+    source_sha256,
+    segment_count,
+    content_manifest_sha256
+"""
+
+_ARTIFACT_GC_SELECT = """
+    SELECT
+        job_id,
+        artifact_kind,
+        generation_id,
+        index_specification_hash,
+        collection_name,
+        reason,
+        state,
+        attempt,
+        created_at,
+        updated_at
+    FROM artifact_gc_jobs
+"""
+
+
+def _canonical_sha256(payload: object) -> str:
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _text_vector_input_manifest(
+    inputs: Iterable[TextVectorGenerationInput],
+) -> str:
+    return _canonical_sha256(
+        [
+            {
+                "content_manifest_sha256": item.content_manifest_sha256,
+                "segment_count": item.segment_count,
+                "segment_generation_id": item.segment_generation_id,
+                "segment_run_id": item.segment_run_id,
+                "source_sha256": item.source_sha256,
+                "specification_hash": item.specification_hash,
+                "stage_kind": item.stage_kind.value,
+            }
+            for item in inputs
+        ]
+    )
+
+
+def _text_vector_point_manifest(points: Iterable[TextVectorPointSource]) -> str:
+    return _canonical_sha256(
+        [
+            {
+                "modality": item.modality,
+                "segment_generation_id": item.segment_generation_id,
+                "segment_id": item.segment_id,
+                "text_sha256": item.text_sha256,
+                "video_id": item.video_id,
+            }
+            for item in points
+        ]
+    )
+
+
+def _is_searchable_text_segment(segment: SegmentRecord) -> bool:
+    if not segment.text.strip() or segment.modality not in {"speech", "ocr", "objects"}:
+        return False
+    return segment.modality != "speech" or len(
+        re.findall(r"[\w]+", segment.text, flags=re.UNICODE)
+    ) >= 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -1340,8 +1699,12 @@ class Repository:
             validate_stage_transition(current.state, target_state)
             if (
                 target_state is StageState.COMPLETE
-                and current.stage_kind in SEGMENT_STAGE_KINDS
+                and current.stage_kind in {*SEGMENT_STAGE_KINDS, StageKind.TEXT_VECTORS}
             ):
+                if current.stage_kind is StageKind.TEXT_VECTORS:
+                    raise ValueError(
+                        "text vector stages must complete through an atomic text vector generation commit"
+                    )
                 raise ValueError(
                     "segment stages must complete through an atomic segment generation commit"
                 )
@@ -1886,6 +2249,1258 @@ class Repository:
                         self._list_generation_segments(connection, generation)
                     )
         return segments
+
+    @staticmethod
+    def _resolve_semantic_specifications(
+        specifications: Iterable[StageSpecification],
+    ) -> tuple[StageSpecification, ...]:
+        try:
+            candidates = tuple(specifications)
+        except TypeError as error:
+            raise ValueError("semantic specifications must be a collection") from error
+        by_kind: dict[StageKind, StageSpecification] = {}
+        for specification in candidates:
+            if not isinstance(specification, StageSpecification):
+                raise ValueError("semantic specifications must be validated")
+            if specification.kind not in TEXT_VECTOR_INPUT_STAGE_KINDS:
+                raise ValueError("text vector inputs must be semantic segment stages")
+            if specification.kind in by_kind:
+                raise ValueError("semantic specifications must have unique stages")
+            by_kind[specification.kind] = specification
+        if set(by_kind) != set(TEXT_VECTOR_INPUT_STAGE_KINDS):
+            raise ValueError("semantic specifications must cover speech, OCR and objects")
+        return tuple(by_kind[kind] for kind in TEXT_VECTOR_INPUT_STAGE_KINDS)
+
+    @staticmethod
+    def _persist_stage_specification(
+        connection: sqlite3.Connection,
+        specification: StageSpecification,
+        *,
+        timestamp: str,
+    ) -> None:
+        connection.execute(
+            """
+            INSERT OR IGNORE INTO stage_specifications (
+                specification_hash, stage_kind, canonical_json, created_at
+            ) VALUES (?, ?, ?, ?)
+            """,
+            (
+                specification.specification_hash,
+                specification.kind.value,
+                specification.canonical_json,
+                timestamp,
+            ),
+        )
+        row = connection.execute(
+            """
+            SELECT stage_kind, canonical_json
+            FROM stage_specifications
+            WHERE specification_hash = ?
+            """,
+            (specification.specification_hash,),
+        ).fetchone()
+        if row is None or (
+            row["stage_kind"] != specification.kind.value
+            or row["canonical_json"] != specification.canonical_json
+        ):
+            raise ValueError("stage specification hash collision or corrupted registry")
+
+    @staticmethod
+    def _get_stage_specification_from_connection(
+        connection: sqlite3.Connection,
+        specification_hash: str,
+    ) -> StageSpecification:
+        row = connection.execute(
+            """
+            SELECT stage_kind, canonical_json
+            FROM stage_specifications
+            WHERE specification_hash = ?
+            """,
+            (specification_hash,),
+        ).fetchone()
+        if row is None:
+            raise ValueError("persisted stage specification is missing")
+        try:
+            specification = StageSpecification.from_canonical_json(row["canonical_json"])
+        except (TypeError, ValueError) as error:
+            raise ValueError("persisted stage specification is corrupt") from error
+        if (
+            specification.specification_hash != specification_hash
+            or specification.kind.value != row["stage_kind"]
+        ):
+            raise ValueError("persisted stage specification is corrupt")
+        return specification
+
+    @staticmethod
+    def _persist_text_vector_index_specification(
+        connection: sqlite3.Connection,
+        specification: TextVectorIndexSpecification,
+        *,
+        timestamp: str,
+    ) -> None:
+        connection.execute(
+            """
+            INSERT OR IGNORE INTO text_vector_index_specifications (
+                specification_hash, canonical_json, collection_name, created_at
+            ) VALUES (?, ?, ?, ?)
+            """,
+            (
+                specification.specification_hash,
+                specification.canonical_json,
+                specification.collection_name,
+                timestamp,
+            ),
+        )
+        row = connection.execute(
+            """
+            SELECT canonical_json, collection_name
+            FROM text_vector_index_specifications
+            WHERE specification_hash = ?
+            """,
+            (specification.specification_hash,),
+        ).fetchone()
+        if row is None or (
+            row["canonical_json"] != specification.canonical_json
+            or row["collection_name"] != specification.collection_name
+        ):
+            raise ValueError("text vector index specification registry is corrupt")
+
+    @staticmethod
+    def _get_text_vector_index_specification(
+        connection: sqlite3.Connection,
+        specification_hash: str,
+    ) -> TextVectorIndexSpecification:
+        row = connection.execute(
+            """
+            SELECT canonical_json, collection_name
+            FROM text_vector_index_specifications
+            WHERE specification_hash = ?
+            """,
+            (specification_hash,),
+        ).fetchone()
+        if row is None:
+            raise ValueError("persisted text vector index specification is missing")
+        try:
+            specification = TextVectorIndexSpecification.from_canonical_json(
+                row["canonical_json"]
+            )
+        except (TypeError, ValueError) as error:
+            raise ValueError("persisted text vector index specification is corrupt") from error
+        if (
+            specification.specification_hash != specification_hash
+            or specification.collection_name != row["collection_name"]
+        ):
+            raise ValueError("persisted text vector index specification is corrupt")
+        return specification
+
+    @staticmethod
+    def _segment_content_manifest(
+        specification: StageSpecification,
+        generation: SegmentGeneration | None,
+        segments: Iterable[SegmentRecord],
+    ) -> str:
+        return _canonical_sha256(
+            {
+                "generation_id": generation.generation_id if generation is not None else None,
+                "segments": [
+                    {
+                        "confidence": segment.confidence,
+                        "end": segment.end,
+                        "id": segment.id,
+                        "metadata": segment.metadata,
+                        "modality": segment.modality,
+                        "start": segment.start,
+                        "text": segment.text,
+                        "thumbnail_path": segment.thumbnail_path,
+                    }
+                    for segment in segments
+                ],
+                "specification_hash": specification.specification_hash,
+                "stage_kind": specification.kind.value,
+            }
+        )
+
+    @classmethod
+    def _snapshot_text_vector_inputs(
+        cls,
+        connection: sqlite3.Connection,
+        *,
+        video_id: str,
+        source_sha256: str,
+        semantic_specifications: tuple[StageSpecification, ...],
+    ) -> tuple[tuple[TextVectorGenerationInput, ...], tuple[TextVectorPointSource, ...]]:
+        inputs: list[TextVectorGenerationInput] = []
+        points: list[TextVectorPointSource] = []
+        for specification in semantic_specifications:
+            active = cls._get_active_segment_generation(
+                connection,
+                video_id,
+                specification.kind,
+            )
+            if (
+                active is None
+                or active.specification_hash != specification.specification_hash
+                or active.source_sha256 != source_sha256
+            ):
+                inputs.append(
+                    TextVectorGenerationInput(
+                        stage_kind=specification.kind,
+                        specification_hash=specification.specification_hash,
+                        segment_generation_id=None,
+                        segment_run_id=None,
+                        source_sha256=None,
+                        segment_count=0,
+                        content_manifest_sha256=cls._segment_content_manifest(
+                            specification,
+                            None,
+                            (),
+                        ),
+                    )
+                )
+                continue
+            segments = cls._list_generation_segments(connection, active)
+            inputs.append(
+                TextVectorGenerationInput(
+                    stage_kind=specification.kind,
+                    specification_hash=specification.specification_hash,
+                    segment_generation_id=active.generation_id,
+                    segment_run_id=active.run_id,
+                    source_sha256=active.source_sha256,
+                    segment_count=active.segment_count,
+                    content_manifest_sha256=cls._segment_content_manifest(
+                        specification,
+                        active,
+                        segments,
+                    ),
+                )
+            )
+            points.extend(
+                TextVectorPointSource(
+                    video_id=segment.video_id,
+                    segment_id=segment.id,
+                    modality=segment.modality,
+                    text=segment.text,
+                    segment_generation_id=active.generation_id,
+                    text_sha256=hashlib.sha256(segment.text.encode("utf-8")).hexdigest(),
+                )
+                for segment in segments
+                if _is_searchable_text_segment(segment)
+            )
+        return tuple(inputs), tuple(points)
+
+    @staticmethod
+    def _validate_text_vector_stage_dependencies(
+        text_specification: StageSpecification,
+        semantic_specifications: tuple[StageSpecification, ...],
+    ) -> None:
+        if text_specification.kind is not StageKind.TEXT_VECTORS:
+            raise ValueError("text vector build requires a text vector stage run")
+        expected = {
+            f"{specification.kind.value}_specification": specification.specification_hash
+            for specification in semantic_specifications
+        }
+        for name, value in expected.items():
+            persisted = text_specification.dependencies.get(name)
+            if persisted is not None and persisted != value:
+                raise ValueError("text vector stage dependency identity is inconsistent")
+
+    def reserve_text_vector_generation(
+        self,
+        run_id: str,
+        *,
+        index_specification: TextVectorIndexSpecification,
+        semantic_specifications: Iterable[StageSpecification],
+        generation_id: str | None = None,
+        lease_seconds: int = 900,
+    ) -> TextVectorBuildPlan:
+        if not isinstance(index_specification, TextVectorIndexSpecification):
+            raise ValueError("text vector index specification must be validated")
+        resolved_semantic = self._resolve_semantic_specifications(semantic_specifications)
+        if (
+            isinstance(lease_seconds, bool)
+            or not isinstance(lease_seconds, int)
+            or not 1 <= lease_seconds <= 86_400
+        ):
+            raise ValueError("text vector build lease must be between 1 and 86400 seconds")
+        resolved_generation_id = uuid4().hex if generation_id is None else generation_id
+        validate_artifact_identifier(
+            resolved_generation_id,
+            field_name="text vector generation id",
+        )
+        reserved_at = _now()
+        lease_expires_at = (
+            datetime.fromisoformat(reserved_at) + timedelta(seconds=lease_seconds)
+        ).isoformat()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            run = self._get_stage_run(connection, run_id)
+            if run is None:
+                raise KeyError(run_id)
+            if run.state is not StageState.RUNNING or run.stage_kind is not StageKind.TEXT_VECTORS:
+                raise ValueError("only a running text vector stage can reserve a build")
+            if connection.execute(
+                "SELECT 1 FROM text_vector_builds WHERE video_id = ?",
+                (run.video_id,),
+            ).fetchone() is not None:
+                raise ValueError("a text vector build already active for this video")
+            text_specification = self._get_stage_specification_from_connection(
+                connection,
+                run.specification_hash,
+            )
+            self._validate_text_vector_stage_dependencies(
+                text_specification,
+                resolved_semantic,
+            )
+            for specification in resolved_semantic:
+                self._persist_stage_specification(
+                    connection,
+                    specification,
+                    timestamp=reserved_at,
+                )
+            self._persist_text_vector_index_specification(
+                connection,
+                index_specification,
+                timestamp=reserved_at,
+            )
+            inputs, points = self._snapshot_text_vector_inputs(
+                connection,
+                video_id=run.video_id,
+                source_sha256=run.source_sha256,
+                semantic_specifications=resolved_semantic,
+            )
+            previous = self._get_active_text_vector_generation(connection, run.video_id)
+            plan = TextVectorBuildPlan(
+                generation_id=resolved_generation_id,
+                run_id=run.run_id,
+                video_id=run.video_id,
+                stage_specification_hash=run.specification_hash,
+                source_sha256=run.source_sha256,
+                index_specification=index_specification,
+                expected_previous_generation_id=(
+                    previous.generation_id if previous is not None else None
+                ),
+                inputs=inputs,
+                points=points,
+                input_manifest_sha256=_text_vector_input_manifest(inputs),
+                point_manifest_sha256=_text_vector_point_manifest(points),
+                reserved_at=reserved_at,
+                lease_expires_at=lease_expires_at,
+            )
+            try:
+                connection.execute(
+                    """
+                    INSERT INTO text_vector_builds (
+                        generation_id, run_id, video_id, stage_specification_hash,
+                        source_sha256, index_specification_hash, collection_name,
+                        expected_previous_generation_id, input_manifest_sha256,
+                        point_manifest_sha256, point_count, reserved_at,
+                        heartbeat_at, lease_expires_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        plan.generation_id,
+                        plan.run_id,
+                        plan.video_id,
+                        plan.stage_specification_hash,
+                        plan.source_sha256,
+                        plan.index_specification.specification_hash,
+                        plan.index_specification.collection_name,
+                        plan.expected_previous_generation_id,
+                        plan.input_manifest_sha256,
+                        plan.point_manifest_sha256,
+                        len(plan.points),
+                        plan.reserved_at,
+                        plan.reserved_at,
+                        plan.lease_expires_at,
+                    ),
+                )
+                for item in plan.inputs:
+                    connection.execute(
+                        f"""
+                        INSERT INTO text_vector_build_inputs (
+                            generation_id, {_TEXT_VECTOR_INPUT_COLUMNS}
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            plan.generation_id,
+                            item.stage_kind.value,
+                            item.specification_hash,
+                            item.segment_generation_id,
+                            item.segment_run_id,
+                            item.source_sha256,
+                            item.segment_count,
+                            item.content_manifest_sha256,
+                        ),
+                    )
+            except sqlite3.IntegrityError as error:
+                raise ValueError("text vector generation identity already exists or is invalid") from error
+        return plan
+
+    @staticmethod
+    def _text_vector_input_from_row(row: sqlite3.Row) -> TextVectorGenerationInput:
+        try:
+            return TextVectorGenerationInput(
+                stage_kind=row["stage_kind"],
+                specification_hash=row["specification_hash"],
+                segment_generation_id=row["segment_generation_id"],
+                segment_run_id=row["segment_run_id"],
+                source_sha256=row["source_sha256"],
+                segment_count=row["segment_count"],
+                content_manifest_sha256=row["content_manifest_sha256"],
+            )
+        except (TypeError, ValueError) as error:
+            raise ValueError("persisted text vector input is corrupt") from error
+
+    @classmethod
+    def _load_text_vector_inputs(
+        cls,
+        connection: sqlite3.Connection,
+        *,
+        table: str,
+        generation_id: str,
+    ) -> tuple[TextVectorGenerationInput, ...]:
+        if table not in {"text_vector_build_inputs", "text_vector_generation_inputs"}:
+            raise ValueError("unsupported text vector input table")
+        rows = connection.execute(
+            f"SELECT {_TEXT_VECTOR_INPUT_COLUMNS} FROM {table} WHERE generation_id = ?",
+            (generation_id,),
+        ).fetchall()
+        by_kind: dict[StageKind, TextVectorGenerationInput] = {}
+        for row in rows:
+            item = cls._text_vector_input_from_row(row)
+            if item.stage_kind in by_kind:
+                raise ValueError("persisted text vector inputs are corrupt")
+            by_kind[item.stage_kind] = item
+        if set(by_kind) != set(TEXT_VECTOR_INPUT_STAGE_KINDS):
+            raise ValueError("persisted text vector inputs are incomplete")
+        return tuple(by_kind[kind] for kind in TEXT_VECTOR_INPUT_STAGE_KINDS)
+
+    @classmethod
+    def _validate_referenced_text_vector_inputs(
+        cls,
+        connection: sqlite3.Connection,
+        inputs: tuple[TextVectorGenerationInput, ...],
+        *,
+        video_id: str,
+        source_sha256: str,
+    ) -> tuple[TextVectorPointSource, ...]:
+        points: list[TextVectorPointSource] = []
+        for item in inputs:
+            specification = cls._get_stage_specification_from_connection(
+                connection,
+                item.specification_hash,
+            )
+            if specification.kind is not item.stage_kind:
+                raise ValueError("persisted text vector input specification is corrupt")
+            if not item.present:
+                expected_manifest = cls._segment_content_manifest(
+                    specification,
+                    None,
+                    (),
+                )
+                if item.content_manifest_sha256 != expected_manifest:
+                    raise ValueError("persisted text vector input manifest is corrupt")
+                continue
+            assert item.segment_generation_id is not None
+            resolved = cls._get_segment_generation_with_run(
+                connection,
+                item.segment_generation_id,
+            )
+            if resolved is None:
+                raise ValueError("persisted text vector input generation is missing")
+            generation, _run = resolved
+            if (
+                generation.video_id != video_id
+                or generation.stage_kind is not item.stage_kind
+                or generation.specification_hash != item.specification_hash
+                or generation.source_sha256 != source_sha256
+                or generation.source_sha256 != item.source_sha256
+                or generation.run_id != item.segment_run_id
+                or generation.segment_count != item.segment_count
+            ):
+                raise ValueError("persisted text vector input lineage is corrupt")
+            segments = cls._list_generation_segments(connection, generation)
+            expected_manifest = cls._segment_content_manifest(
+                specification,
+                generation,
+                segments,
+            )
+            if item.content_manifest_sha256 != expected_manifest:
+                raise ValueError("persisted text vector input manifest is corrupt")
+            points.extend(
+                TextVectorPointSource(
+                    video_id=segment.video_id,
+                    segment_id=segment.id,
+                    modality=segment.modality,
+                    text=segment.text,
+                    segment_generation_id=generation.generation_id,
+                    text_sha256=hashlib.sha256(segment.text.encode("utf-8")).hexdigest(),
+                )
+                for segment in segments
+                if _is_searchable_text_segment(segment)
+            )
+        return tuple(points)
+
+    @classmethod
+    def _get_text_vector_generation_with_run(
+        cls,
+        connection: sqlite3.Connection,
+        generation_id: str,
+    ) -> tuple[
+        TextVectorGeneration,
+        StageRun,
+        TextVectorIndexSpecification,
+        tuple[TextVectorGenerationInput, ...],
+        tuple[TextVectorPointSource, ...],
+    ] | None:
+        row = connection.execute(
+            f"{_TEXT_VECTOR_GENERATION_SELECT} WHERE generation_id = ?",
+            (generation_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            generation = TextVectorGeneration(**dict(row))
+        except (TypeError, ValueError) as error:
+            raise ValueError("persisted text vector generation is corrupt") from error
+        run = cls._get_stage_run(connection, generation.run_id)
+        if run is None:
+            raise ValueError("persisted text vector generation run is missing")
+        if (
+            run.video_id != generation.video_id
+            or run.stage_kind is not StageKind.TEXT_VECTORS
+            or run.specification_hash != generation.specification_hash
+            or run.source_sha256 != generation.source_sha256
+            or run.output_generation != generation.generation_id
+            or run.state not in {StageState.COMPLETE, StageState.STALE}
+            or run.finished_at != generation.completed_at
+        ):
+            raise ValueError("persisted text vector generation identity is corrupt")
+        index_specification = cls._get_text_vector_index_specification(
+            connection,
+            generation.index_specification_hash,
+        )
+        if generation.collection_name != index_specification.collection_name:
+            raise ValueError("persisted text vector generation collection is corrupt")
+        inputs = cls._load_text_vector_inputs(
+            connection,
+            table="text_vector_generation_inputs",
+            generation_id=generation.generation_id,
+        )
+        points = cls._validate_referenced_text_vector_inputs(
+            connection,
+            inputs,
+            video_id=generation.video_id,
+            source_sha256=generation.source_sha256,
+        )
+        if (
+            generation.input_manifest_sha256 != _text_vector_input_manifest(inputs)
+            or generation.point_manifest_sha256 != _text_vector_point_manifest(points)
+            or generation.point_count != len(points)
+        ):
+            raise ValueError("persisted text vector generation manifest is corrupt")
+        return generation, run, index_specification, inputs, points
+
+    @classmethod
+    def _get_active_text_vector_generation(
+        cls,
+        connection: sqlite3.Connection,
+        video_id: str,
+    ) -> TextVectorGeneration | None:
+        pointer = connection.execute(
+            """
+            SELECT generation_id, activated_at
+            FROM active_text_vector_generations
+            WHERE video_id = ?
+            """,
+            (video_id,),
+        ).fetchone()
+        if pointer is None:
+            return None
+        resolved = cls._get_text_vector_generation_with_run(
+            connection,
+            pointer["generation_id"],
+        )
+        if resolved is None:
+            raise ValueError("active text vector generation pointer is dangling")
+        generation, run, _index, _inputs, _points = resolved
+        if (
+            generation.video_id != video_id
+            or run.state is not StageState.COMPLETE
+            or pointer["activated_at"] != generation.completed_at
+        ):
+            raise ValueError("active text vector generation pointer is corrupt")
+        return generation
+
+    def get_text_vector_generation(
+        self,
+        generation_id: str,
+    ) -> TextVectorGeneration | None:
+        with self._connect() as connection:
+            resolved = self._get_text_vector_generation_with_run(
+                connection,
+                generation_id,
+            )
+        return resolved[0] if resolved is not None else None
+
+    def get_active_text_vector_generation(
+        self,
+        video_id: str,
+    ) -> TextVectorGeneration | None:
+        with self._connect() as connection:
+            return self._get_active_text_vector_generation(connection, video_id)
+
+    @classmethod
+    def _validate_text_vector_build_row(
+        cls,
+        connection: sqlite3.Connection,
+        build: sqlite3.Row,
+        run: StageRun,
+    ) -> tuple[
+        TextVectorIndexSpecification,
+        tuple[TextVectorGenerationInput, ...],
+        tuple[TextVectorPointSource, ...],
+    ]:
+        try:
+            validate_artifact_identifier(
+                build["generation_id"],
+                field_name="text vector build generation id",
+            )
+            validate_artifact_identifier(
+                build["run_id"],
+                field_name="text vector build run id",
+            )
+            validate_artifact_identifier(
+                build["video_id"],
+                field_name="text vector build video id",
+            )
+            validate_artifact_identifier(
+                build["collection_name"],
+                field_name="text vector build collection name",
+            )
+            if any(
+                type(build[name]) is not str
+                or re.fullmatch(r"[0-9a-f]{64}", build[name]) is None
+                for name in (
+                    "stage_specification_hash",
+                    "source_sha256",
+                    "index_specification_hash",
+                    "input_manifest_sha256",
+                    "point_manifest_sha256",
+                )
+            ):
+                raise ValueError("text vector build digest is invalid")
+            if (
+                isinstance(build["point_count"], bool)
+                or not isinstance(build["point_count"], int)
+                or build["point_count"] < 0
+            ):
+                raise ValueError("text vector build point count is invalid")
+            if build["expected_previous_generation_id"] is not None:
+                validate_artifact_identifier(
+                    build["expected_previous_generation_id"],
+                    field_name="expected previous text vector generation id",
+                )
+            reserved_at = datetime.fromisoformat(build["reserved_at"])
+            heartbeat_at = datetime.fromisoformat(build["heartbeat_at"])
+            lease_expires_at = datetime.fromisoformat(build["lease_expires_at"])
+            if any(
+                value.tzinfo is None or value.utcoffset() is None
+                for value in (reserved_at, heartbeat_at, lease_expires_at)
+            ):
+                raise ValueError("text vector build timestamps require timezones")
+            if not reserved_at <= heartbeat_at < lease_expires_at:
+                raise ValueError("text vector build timestamps are inconsistent")
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError("persisted text vector build is corrupt") from error
+        if (
+            run.run_id != build["run_id"]
+            or run.video_id != build["video_id"]
+            or run.stage_kind is not StageKind.TEXT_VECTORS
+            or run.specification_hash != build["stage_specification_hash"]
+            or run.source_sha256 != build["source_sha256"]
+        ):
+            raise ValueError("persisted text vector build run identity is corrupt")
+        index_specification = cls._get_text_vector_index_specification(
+            connection,
+            build["index_specification_hash"],
+        )
+        if index_specification.collection_name != build["collection_name"]:
+            raise ValueError("persisted text vector build collection is corrupt")
+        inputs = cls._load_text_vector_inputs(
+            connection,
+            table="text_vector_build_inputs",
+            generation_id=build["generation_id"],
+        )
+        points = cls._validate_referenced_text_vector_inputs(
+            connection,
+            inputs,
+            video_id=run.video_id,
+            source_sha256=run.source_sha256,
+        )
+        if (
+            _text_vector_input_manifest(inputs) != build["input_manifest_sha256"]
+            or _text_vector_point_manifest(points) != build["point_manifest_sha256"]
+            or len(points) != build["point_count"]
+        ):
+            raise ValueError("persisted text vector build manifest is corrupt")
+        return index_specification, inputs, points
+
+    def heartbeat_text_vector_build(
+        self,
+        generation_id: str,
+        *,
+        lease_seconds: int = 900,
+    ) -> str:
+        validate_artifact_identifier(generation_id, field_name="text vector generation id")
+        if (
+            isinstance(lease_seconds, bool)
+            or not isinstance(lease_seconds, int)
+            or not 1 <= lease_seconds <= 86_400
+        ):
+            raise ValueError("text vector build lease must be between 1 and 86400 seconds")
+        heartbeat_at = _now()
+        lease_expires_at = (
+            datetime.fromisoformat(heartbeat_at) + timedelta(seconds=lease_seconds)
+        ).isoformat()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM text_vector_builds WHERE generation_id = ?",
+                (generation_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(generation_id)
+            run = self._get_stage_run(connection, row["run_id"])
+            if run is None or run.state is not StageState.RUNNING:
+                raise ValueError("text vector build run is unavailable")
+            self._validate_text_vector_build_row(connection, row, run)
+            if datetime.fromisoformat(row["lease_expires_at"]) <= datetime.fromisoformat(
+                heartbeat_at
+            ):
+                raise ValueError("text vector build lease has expired")
+            connection.execute(
+                """
+                UPDATE text_vector_builds
+                SET heartbeat_at = ?, lease_expires_at = ?
+                WHERE generation_id = ?
+                """,
+                (heartbeat_at, lease_expires_at, generation_id),
+            )
+        return lease_expires_at
+
+    def commit_text_vector_generation(
+        self,
+        run_id: str,
+        *,
+        receipt: TextVectorBuildReceipt,
+    ) -> TextVectorGeneration:
+        if not isinstance(receipt, TextVectorBuildReceipt):
+            raise ValueError("text vector build receipt must be validated")
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            build = connection.execute(
+                "SELECT * FROM text_vector_builds WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+            if build is None:
+                existing = connection.execute(
+                    f"{_TEXT_VECTOR_GENERATION_SELECT} WHERE run_id = ?",
+                    (run_id,),
+                ).fetchone()
+                if existing is None:
+                    raise KeyError(run_id)
+                resolved = self._get_text_vector_generation_with_run(
+                    connection,
+                    existing["generation_id"],
+                )
+                assert resolved is not None
+                generation = resolved[0]
+                if (
+                    generation.generation_id != receipt.generation_id
+                    or generation.index_specification_hash
+                    != receipt.index_specification_hash
+                    or generation.point_count != receipt.point_count
+                    or generation.point_manifest_sha256
+                    != receipt.point_manifest_sha256
+                    or generation.vector_manifest_sha256
+                    != receipt.vector_manifest_sha256
+                ):
+                    raise ValueError("text vector receipt does not match completed generation")
+                return generation
+            run = self._get_stage_run(connection, run_id)
+            if run is None:
+                raise KeyError(run_id)
+            if run.state is not StageState.RUNNING or run.stage_kind is not StageKind.TEXT_VECTORS:
+                raise ValueError("only a running text vector stage can publish a generation")
+            _index_specification, validated_build_inputs, _build_points = (
+                self._validate_text_vector_build_row(connection, build, run)
+            )
+            if datetime.fromisoformat(build["lease_expires_at"]) <= datetime.now(UTC):
+                raise ValueError("text vector build lease has expired")
+            if (
+                receipt.generation_id != build["generation_id"]
+                or receipt.index_specification_hash != build["index_specification_hash"]
+                or receipt.point_count != build["point_count"]
+                or receipt.point_manifest_sha256 != build["point_manifest_sha256"]
+            ):
+                raise ValueError("text vector build receipt does not match reservation")
+            stored_inputs = validated_build_inputs
+            semantic_specifications = tuple(
+                self._get_stage_specification_from_connection(
+                    connection,
+                    item.specification_hash,
+                )
+                for item in stored_inputs
+            )
+            current_inputs, current_points = self._snapshot_text_vector_inputs(
+                connection,
+                video_id=run.video_id,
+                source_sha256=run.source_sha256,
+                semantic_specifications=semantic_specifications,
+            )
+            if (
+                current_inputs != stored_inputs
+                or _text_vector_input_manifest(current_inputs)
+                != build["input_manifest_sha256"]
+                or _text_vector_point_manifest(current_points)
+                != build["point_manifest_sha256"]
+                or len(current_points) != build["point_count"]
+            ):
+                raise ValueError("text vector inputs changed during build")
+            active = self._get_active_text_vector_generation(connection, run.video_id)
+            active_id = active.generation_id if active is not None else None
+            if active_id != build["expected_previous_generation_id"]:
+                raise ValueError("active text vector generation changed during build")
+            completed_at = _now()
+            generation = TextVectorGeneration(
+                generation_id=build["generation_id"],
+                video_id=run.video_id,
+                specification_hash=run.specification_hash,
+                source_sha256=run.source_sha256,
+                run_id=run.run_id,
+                index_specification_hash=build["index_specification_hash"],
+                collection_name=build["collection_name"],
+                input_manifest_sha256=build["input_manifest_sha256"],
+                point_manifest_sha256=build["point_manifest_sha256"],
+                vector_manifest_sha256=receipt.vector_manifest_sha256,
+                point_count=build["point_count"],
+                completed_at=completed_at,
+            )
+            connection.execute(
+                """
+                INSERT INTO text_vector_generations (
+                    generation_id, video_id, specification_hash, source_sha256,
+                    run_id, index_specification_hash, collection_name,
+                    input_manifest_sha256, point_manifest_sha256,
+                    vector_manifest_sha256, point_count, completed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    generation.generation_id,
+                    generation.video_id,
+                    generation.specification_hash,
+                    generation.source_sha256,
+                    generation.run_id,
+                    generation.index_specification_hash,
+                    generation.collection_name,
+                    generation.input_manifest_sha256,
+                    generation.point_manifest_sha256,
+                    generation.vector_manifest_sha256,
+                    generation.point_count,
+                    generation.completed_at,
+                ),
+            )
+            for item in stored_inputs:
+                connection.execute(
+                    f"""
+                    INSERT INTO text_vector_generation_inputs (
+                        generation_id, {_TEXT_VECTOR_INPUT_COLUMNS}
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        generation.generation_id,
+                        item.stage_kind.value,
+                        item.specification_hash,
+                        item.segment_generation_id,
+                        item.segment_run_id,
+                        item.source_sha256,
+                        item.segment_count,
+                        item.content_manifest_sha256,
+                    ),
+                )
+            if active_id is None:
+                try:
+                    connection.execute(
+                        """
+                        INSERT INTO active_text_vector_generations (
+                            video_id, generation_id, activated_at
+                        ) VALUES (?, ?, ?)
+                        """,
+                        (generation.video_id, generation.generation_id, completed_at),
+                    )
+                except sqlite3.IntegrityError as error:
+                    raise RuntimeError(
+                        "active text vector generation changed during activation"
+                    ) from error
+            else:
+                cursor = connection.execute(
+                    """
+                    UPDATE active_text_vector_generations
+                    SET generation_id = ?, activated_at = ?
+                    WHERE video_id = ? AND generation_id = ?
+                    """,
+                    (
+                        generation.generation_id,
+                        completed_at,
+                        generation.video_id,
+                        active_id,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise RuntimeError(
+                        "active text vector generation changed during activation"
+                    )
+            cursor = connection.execute(
+                """
+                UPDATE stage_runs
+                SET state = ?, output_generation = ?, error_code = NULL,
+                    finished_at = ?, updated_at = ?
+                WHERE run_id = ? AND state = ?
+                """,
+                (
+                    StageState.COMPLETE.value,
+                    generation.generation_id,
+                    completed_at,
+                    completed_at,
+                    run.run_id,
+                    StageState.RUNNING.value,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise RuntimeError("text vector stage changed during generation activation")
+            connection.execute(
+                "DELETE FROM text_vector_builds WHERE generation_id = ?",
+                (generation.generation_id,),
+            )
+        return generation
+
+    @staticmethod
+    def _enqueue_artifact_gc(
+        connection: sqlite3.Connection,
+        *,
+        generation_id: str,
+        index_specification_hash: str,
+        collection_name: str,
+        reason: str,
+        timestamp: str,
+    ) -> None:
+        validate_artifact_identifier(reason, field_name="artifact GC reason")
+        connection.execute(
+            """
+            INSERT OR IGNORE INTO artifact_gc_jobs (
+                job_id, artifact_kind, generation_id, index_specification_hash,
+                collection_name, reason, state, attempt, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                uuid4().hex,
+                StageKind.TEXT_VECTORS.value,
+                generation_id,
+                index_specification_hash,
+                collection_name,
+                reason,
+                "pending",
+                0,
+                timestamp,
+                timestamp,
+            ),
+        )
+
+    def fail_text_vector_build(self, run_id: str, *, error_code: str) -> StageRun:
+        validate_error_code(error_code)
+        timestamp = _now()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            build = connection.execute(
+                "SELECT * FROM text_vector_builds WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+            if build is None:
+                raise KeyError(run_id)
+            run = self._get_stage_run(connection, run_id)
+            if run is None or run.state is not StageState.RUNNING:
+                raise ValueError("only a running text vector build can fail")
+            self._validate_text_vector_build_row(connection, build, run)
+            self._enqueue_artifact_gc(
+                connection,
+                generation_id=build["generation_id"],
+                index_specification_hash=build["index_specification_hash"],
+                collection_name=build["collection_name"],
+                reason=error_code,
+                timestamp=timestamp,
+            )
+            cursor = connection.execute(
+                """
+                UPDATE stage_runs
+                SET state = ?, output_generation = NULL, error_code = ?,
+                    finished_at = ?, updated_at = ?
+                WHERE run_id = ? AND state = ?
+                """,
+                (
+                    StageState.FAILED.value,
+                    error_code,
+                    timestamp,
+                    timestamp,
+                    run.run_id,
+                    StageState.RUNNING.value,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise RuntimeError("text vector stage changed while failing build")
+            connection.execute(
+                "DELETE FROM text_vector_builds WHERE generation_id = ?",
+                (build["generation_id"],),
+            )
+        failed = self.get_stage_run(run_id)
+        assert failed is not None
+        return failed
+
+    def expire_text_vector_builds(self, *, before: str | None = None) -> tuple[str, ...]:
+        cutoff = _now() if before is None else before
+        if type(cutoff) is not str:
+            raise ValueError("text vector build expiry cutoff must be an ISO timestamp")
+        try:
+            resolved_cutoff = datetime.fromisoformat(cutoff)
+        except ValueError as error:
+            raise ValueError("text vector build expiry cutoff must be an ISO timestamp") from error
+        if resolved_cutoff.tzinfo is None or resolved_cutoff.utcoffset() is None:
+            raise ValueError("text vector build expiry cutoff must include a timezone")
+        expired: list[str] = []
+        timestamp = _now()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            rows = connection.execute(
+                """
+                SELECT * FROM text_vector_builds
+                WHERE lease_expires_at <= ?
+                ORDER BY reserved_at, generation_id
+                """,
+                (resolved_cutoff.astimezone(UTC).isoformat(),),
+            ).fetchall()
+            for build in rows:
+                run = self._get_stage_run(connection, build["run_id"])
+                if run is None:
+                    raise ValueError("expired text vector build run is corrupt")
+                self._validate_text_vector_build_row(connection, build, run)
+                self._enqueue_artifact_gc(
+                    connection,
+                    generation_id=build["generation_id"],
+                    index_specification_hash=build["index_specification_hash"],
+                    collection_name=build["collection_name"],
+                    reason="text_vector_build_interrupted",
+                    timestamp=timestamp,
+                )
+                if run.state is StageState.RUNNING:
+                    cursor = connection.execute(
+                        """
+                        UPDATE stage_runs
+                        SET state = ?, output_generation = NULL, error_code = ?,
+                            finished_at = ?, updated_at = ?
+                        WHERE run_id = ? AND state = ?
+                        """,
+                        (
+                            StageState.FAILED.value,
+                            "text_vector_build_interrupted",
+                            timestamp,
+                            timestamp,
+                            run.run_id,
+                            StageState.RUNNING.value,
+                        ),
+                    )
+                    if cursor.rowcount != 1:
+                        raise RuntimeError("expired text vector stage changed concurrently")
+                elif run.state not in {
+                    StageState.FAILED,
+                    StageState.CANCELLED,
+                }:
+                    raise ValueError("expired text vector build run is corrupt")
+                connection.execute(
+                    "DELETE FROM text_vector_builds WHERE generation_id = ?",
+                    (build["generation_id"],),
+                )
+                expired.append(build["generation_id"])
+        return tuple(expired)
+
+    @classmethod
+    def _artifact_gc_job_from_row(
+        cls,
+        connection: sqlite3.Connection,
+        row: sqlite3.Row,
+    ) -> ArtifactGCJob:
+        try:
+            job = ArtifactGCJob(**dict(row))
+        except (TypeError, ValueError) as error:
+            raise ValueError("persisted artifact GC job is corrupt") from error
+        specification = cls._get_text_vector_index_specification(
+            connection,
+            job.index_specification_hash,
+        )
+        if specification.collection_name != job.collection_name:
+            raise ValueError("persisted artifact GC collection is corrupt")
+        if connection.execute(
+            """
+            SELECT 1
+            FROM active_text_vector_generations
+            WHERE generation_id = ?
+            """,
+            (job.generation_id,),
+        ).fetchone() is not None:
+            raise ValueError("artifact GC job targets an active generation")
+        return job
+
+    def list_pending_artifact_gc_jobs(self) -> tuple[ArtifactGCJob, ...]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"{_ARTIFACT_GC_SELECT} WHERE state = ? ORDER BY created_at, job_id",
+                ("pending",),
+            ).fetchall()
+            jobs = tuple(self._artifact_gc_job_from_row(connection, row) for row in rows)
+        return jobs
+
+    def claim_artifact_gc_job(self, job_id: str) -> ArtifactGCJob:
+        validate_artifact_identifier(job_id, field_name="artifact GC job id")
+        timestamp = _now()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            pending = connection.execute(
+                f"{_ARTIFACT_GC_SELECT} WHERE job_id = ? AND state = 'pending'",
+                (job_id,),
+            ).fetchone()
+            if pending is None:
+                raise ValueError("artifact GC job is not pending")
+            self._artifact_gc_job_from_row(connection, pending)
+            cursor = connection.execute(
+                """
+                UPDATE artifact_gc_jobs
+                SET state = 'running', attempt = attempt + 1, updated_at = ?
+                WHERE job_id = ? AND state = 'pending'
+                """,
+                (timestamp, job_id),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("artifact GC job is not pending")
+            row = connection.execute(
+                f"{_ARTIFACT_GC_SELECT} WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+            assert row is not None
+            job = self._artifact_gc_job_from_row(connection, row)
+        return job
+
+    def complete_artifact_gc_job(self, job_id: str, *, succeeded: bool) -> ArtifactGCJob:
+        validate_artifact_identifier(job_id, field_name="artifact GC job id")
+        if type(succeeded) is not bool:
+            raise ValueError("artifact GC outcome must be boolean")
+        timestamp = _now()
+        state = "complete" if succeeded else "failed"
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            running = connection.execute(
+                f"{_ARTIFACT_GC_SELECT} WHERE job_id = ? AND state = 'running'",
+                (job_id,),
+            ).fetchone()
+            if running is None:
+                raise ValueError("artifact GC job is not running")
+            self._artifact_gc_job_from_row(connection, running)
+            cursor = connection.execute(
+                """
+                UPDATE artifact_gc_jobs
+                SET state = ?, updated_at = ?
+                WHERE job_id = ? AND state = 'running'
+                """,
+                (state, timestamp, job_id),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("artifact GC job is not running")
+            row = connection.execute(
+                f"{_ARTIFACT_GC_SELECT} WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+            assert row is not None
+            job = self._artifact_gc_job_from_row(connection, row)
+        return job
+
+    def list_current_text_vector_bindings(
+        self,
+        *,
+        video_ids: Iterable[str],
+        text_specification: StageSpecification,
+        semantic_specifications: Iterable[StageSpecification],
+        required_modalities: set[str] | None = None,
+    ) -> tuple[TextVectorSearchBinding, ...]:
+        if (
+            not isinstance(text_specification, StageSpecification)
+            or text_specification.kind is not StageKind.TEXT_VECTORS
+        ):
+            raise ValueError("current text vector specification must be validated")
+        semantic = self._resolve_semantic_specifications(semantic_specifications)
+        self._validate_text_vector_stage_dependencies(text_specification, semantic)
+        try:
+            selected_ids = tuple(dict.fromkeys(video_ids))
+        except TypeError as error:
+            raise ValueError("video ids must be a collection") from error
+        if any(type(video_id) is not str or not video_id for video_id in selected_ids):
+            raise ValueError("video ids must be non-empty strings")
+        required = set() if required_modalities is None else set(required_modalities)
+        if not required <= {"speech", "ocr", "objects"}:
+            raise ValueError("unsupported required text vector modality")
+        bindings: list[TextVectorSearchBinding] = []
+        expected_by_kind = {item.kind: item for item in semantic}
+        with self._connect() as connection:
+            for video_id in selected_ids:
+                generation = self._get_active_text_vector_generation(connection, video_id)
+                if generation is None or generation.specification_hash != text_specification.specification_hash:
+                    continue
+                resolved = self._get_text_vector_generation_with_run(
+                    connection,
+                    generation.generation_id,
+                )
+                assert resolved is not None
+                _generation, _run, index_specification, inputs, points = resolved
+                stale = False
+                for item in inputs:
+                    expected = expected_by_kind[item.stage_kind]
+                    if item.specification_hash != expected.specification_hash:
+                        stale = True
+                        break
+                    active = self._get_active_segment_generation(
+                        connection,
+                        video_id,
+                        item.stage_kind,
+                    )
+                    current_id = None
+                    if (
+                        active is not None
+                        and active.specification_hash == expected.specification_hash
+                        and active.source_sha256 == generation.source_sha256
+                    ):
+                        current_id = active.generation_id
+                    if current_id != item.segment_generation_id:
+                        stale = True
+                        break
+                if stale:
+                    continue
+                binding = TextVectorSearchBinding(
+                    generation=generation,
+                    index_specification=index_specification,
+                    inputs=inputs,
+                    points=points,
+                )
+                if any(not binding.supports_modality(modality) for modality in required):
+                    continue
+                bindings.append(binding)
+        return tuple(bindings)
 
     def add_segment(
         self,

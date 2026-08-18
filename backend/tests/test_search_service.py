@@ -1,6 +1,11 @@
 import pytest
 
-from videoscope.artifacts import StageKind, StageSpecification, StageState
+from videoscope.artifacts import (
+    IndexingSpecifications,
+    StageKind,
+    StageSpecification,
+    StageState,
+)
 from videoscope.repository import Repository, SegmentRecord
 from videoscope.search.service import (
     SearchDependencyError,
@@ -33,6 +38,53 @@ def _publish_segments(
     )
     repository.transition_stage_run(run.run_id, StageState.RUNNING)
     repository.commit_segment_generation(run.run_id, segments=segments)
+
+
+def _indexing_specifications() -> IndexingSpecifications:
+    scenes = _stage_specification(StageKind.SCENES)
+    speech = _stage_specification(StageKind.SPEECH)
+    ocr = _stage_specification(StageKind.OCR)
+    objects = _stage_specification(StageKind.OBJECTS)
+    text_vectors = StageSpecification(
+        kind=StageKind.TEXT_VECTORS,
+        schema_version=1,
+        implementation_revision="tests.search.text-vectors.v1",
+        model_identity="hash-embedding-v1:384",
+        dependencies={
+            "speech_specification": speech.specification_hash,
+            "ocr_specification": ocr.specification_hash,
+            "objects_specification": objects.specification_hash,
+        },
+    )
+    return IndexingSpecifications(
+        scenes=scenes,
+        speech=speech,
+        ocr=ocr,
+        objects=objects,
+        text_vectors=text_vectors,
+    )
+
+
+def _publish_text_vectors(
+    repository: Repository,
+    index: MemoryVectorIndex,
+    specifications: IndexingSpecifications,
+) -> str:
+    queued = repository.create_stage_run(
+        video_id="video-1",
+        specification=specifications.text_vectors,
+    )
+    run = repository.transition_stage_run(queued.run_id, StageState.RUNNING)
+    plan = repository.reserve_text_vector_generation(
+        run.run_id,
+        index_specification=index.index_specification,
+        semantic_specifications=specifications.semantic_segment_specifications,
+    )
+    receipt = index.build_generation(plan)
+    return repository.commit_text_vector_generation(
+        run.run_id,
+        receipt=receipt,
+    ).generation_id
 
 
 def test_search_service_returns_enriched_ranked_moment(tmp_path) -> None:
@@ -608,6 +660,151 @@ def test_evaluation_uses_strict_candidate_reranker(tmp_path) -> None:
     with pytest.raises(SearchDependencyError, match="Candidate"):
         service.search_for_evaluation(
             "игрок поднимает руку",
+            use_lighthouse=False,
+        )
+
+
+def test_generation_aware_search_uses_only_current_verified_vector_binding(tmp_path) -> None:
+    repository = _repository_with_video(tmp_path)
+    specifications = _indexing_specifications()
+    speech = SegmentRecord(
+        id="speech-current",
+        video_id="video-1",
+        start=3,
+        end=6,
+        modality="speech",
+        text="player made winning basket",
+        confidence=0.9,
+        metadata={},
+        thumbnail_path=None,
+    )
+    _publish_segments(repository, specifications.speech, [speech])
+    _publish_segments(repository, specifications.ocr, [])
+    _publish_segments(repository, specifications.objects, [])
+
+    class RecordingGenerationIndex(MemoryVectorIndex):
+        searched_generations: tuple[str, ...] = ()
+
+        def search_generations(
+            self,
+            query,
+            *,
+            bindings,
+            modalities=None,
+            limit=50,
+            exhaustive_validation=False,
+        ):  # type: ignore[no-untyped-def]
+            self.searched_generations = tuple(item.generation_id for item in bindings)
+            return super().search_generations(
+                query,
+                bindings=bindings,
+                modalities=modalities,
+                limit=limit,
+                exhaustive_validation=exhaustive_validation,
+            )
+
+    index = RecordingGenerationIndex()
+    generation_id = _publish_text_vectors(repository, index, specifications)
+    service = SearchService(
+        repository,
+        index,
+        specification_resolver=lambda: specifications,
+    )
+
+    results = service.search("winning basket", mode="speech", use_lighthouse=False)
+
+    assert results and results[0].evidence[0].text == speech.text
+    assert index.searched_generations == (generation_id,)
+
+
+def test_strict_search_requires_verified_text_vector_generation_but_interactive_falls_back(
+    tmp_path,
+) -> None:
+    repository = _repository_with_video(tmp_path)
+    specifications = _indexing_specifications()
+    speech = SegmentRecord(
+        id="speech-current",
+        video_id="video-1",
+        start=3,
+        end=6,
+        modality="speech",
+        text="player made winning basket",
+        confidence=0.9,
+        metadata={},
+        thumbnail_path=None,
+    )
+    _publish_segments(repository, specifications.speech, [speech])
+    service = SearchService(
+        repository,
+        MemoryVectorIndex(),
+        specification_resolver=lambda: specifications,
+    )
+
+    assert service.search("winning basket", mode="speech", use_lighthouse=False)
+    with pytest.raises(SearchDependencyError, match="Semantic index"):
+        service.search_for_evaluation(
+            "winning basket",
+            mode="speech",
+            use_lighthouse=False,
+        )
+
+
+def test_strict_search_accepts_verified_empty_text_vector_generation(tmp_path) -> None:
+    repository = _repository_with_video(tmp_path)
+    specifications = _indexing_specifications()
+    for specification in specifications.semantic_segment_specifications:
+        _publish_segments(repository, specification, [])
+    index = MemoryVectorIndex()
+    _publish_text_vectors(repository, index, specifications)
+    service = SearchService(
+        repository,
+        index,
+        specification_resolver=lambda: specifications,
+    )
+
+    assert service.search_for_evaluation(
+        "missing phrase",
+        mode="speech",
+        use_lighthouse=False,
+    ) == []
+
+
+def test_missing_physical_generation_is_lexical_fallback_interactively_and_error_strictly(
+    tmp_path,
+) -> None:
+    repository = _repository_with_video(tmp_path)
+    specifications = _indexing_specifications()
+    speech = SegmentRecord(
+        id="speech-current",
+        video_id="video-1",
+        start=3,
+        end=6,
+        modality="speech",
+        text="player made winning basket",
+        confidence=0.9,
+        metadata={},
+        thumbnail_path=None,
+    )
+    _publish_segments(repository, specifications.speech, [speech])
+    _publish_segments(repository, specifications.ocr, [])
+    _publish_segments(repository, specifications.objects, [])
+    index = MemoryVectorIndex()
+    generation_id = _publish_text_vectors(repository, index, specifications)
+    index.delete_generation(
+        generation_id,
+        index_specification_hash=index.index_specification.specification_hash,
+    )
+    service = SearchService(
+        repository,
+        index,
+        specification_resolver=lambda: specifications,
+    )
+
+    assert service.search("winning basket", mode="speech", use_lighthouse=False)
+    with pytest.raises(SearchDependencyError, match="Semantic text search"):
+        service.search_for_evaluation(
+            "winning basket",
+            mode="speech",
             use_lighthouse=False,
         )
 

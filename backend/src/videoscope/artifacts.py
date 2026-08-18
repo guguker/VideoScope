@@ -40,6 +40,16 @@ SEGMENT_STAGE_KINDS = frozenset(
         StageKind.OBJECTS,
     }
 )
+TEXT_VECTOR_INPUT_STAGE_KINDS = (
+    StageKind.SPEECH,
+    StageKind.OCR,
+    StageKind.OBJECTS,
+)
+TEXT_VECTOR_MODALITY_BY_STAGE = {
+    StageKind.SPEECH: "speech",
+    StageKind.OCR: "ocr",
+    StageKind.OBJECTS: "objects",
+}
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _ERROR_CODE_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
@@ -389,6 +399,438 @@ class SegmentGeneration:
             raise ValueError("segment generation count must be a non-negative integer")
         _validate_timestamp(self.completed_at, field_name="completed_at", required=True)
         object.__setattr__(self, "stage_kind", stage_kind)
+
+
+@dataclass(frozen=True, slots=True)
+class TextVectorIndexSpecification:
+    """Physical Qdrant contract shared by immutable per-video generations."""
+
+    embedding_identity: str
+    dimensions: int
+    distance: str = "cosine"
+    payload_schema_version: int = 1
+    point_id_algorithm: str = "uuid5-generation-segment-v1"
+    _canonical_json: str = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        embedding_identity = _required_identity(
+            self.embedding_identity,
+            field_name="text vector embedding identity",
+        )
+        if (
+            isinstance(self.dimensions, bool)
+            or not isinstance(self.dimensions, int)
+            or self.dimensions <= 0
+        ):
+            raise ValueError("text vector dimensions must be a positive integer")
+        if self.distance != "cosine":
+            raise ValueError("unsupported text vector distance")
+        if (
+            isinstance(self.payload_schema_version, bool)
+            or not isinstance(self.payload_schema_version, int)
+            or self.payload_schema_version < 1
+        ):
+            raise ValueError("text vector payload schema version must be positive")
+        point_id_algorithm = validate_artifact_identifier(
+            self.point_id_algorithm,
+            field_name="text vector point id algorithm",
+        )
+        payload = {
+            "dimensions": self.dimensions,
+            "distance": self.distance,
+            "embedding_identity": embedding_identity,
+            "payload_schema_version": self.payload_schema_version,
+            "point_id_algorithm": point_id_algorithm,
+        }
+        canonical_json = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        object.__setattr__(self, "embedding_identity", embedding_identity)
+        object.__setattr__(self, "point_id_algorithm", point_id_algorithm)
+        object.__setattr__(self, "_canonical_json", canonical_json)
+
+    @property
+    def canonical_json(self) -> str:
+        return self._canonical_json
+
+    @property
+    def specification_hash(self) -> str:
+        return hashlib.sha256(self.canonical_json.encode("utf-8")).hexdigest()
+
+    @property
+    def collection_name(self) -> str:
+        return f"videoscope_text_v1_{self.specification_hash[:32]}"
+
+    @classmethod
+    def from_canonical_json(cls, value: str) -> TextVectorIndexSpecification:
+        if type(value) is not str:
+            raise ValueError("canonical text vector index specification must be a string")
+        try:
+            payload = json.loads(value, parse_constant=_reject_non_finite_json)
+        except (TypeError, ValueError, json.JSONDecodeError) as error:
+            raise ValueError("invalid canonical text vector index specification") from error
+        if not isinstance(payload, dict) or set(payload) != {
+            "dimensions",
+            "distance",
+            "embedding_identity",
+            "payload_schema_version",
+            "point_id_algorithm",
+        }:
+            raise ValueError("canonical text vector index specification has unsupported fields")
+        specification = cls(**payload)
+        if specification.canonical_json != value:
+            raise ValueError("text vector index specification is not canonical")
+        return specification
+
+
+def _validate_sha256(value: object, *, field_name: str) -> str:
+    if type(value) is not str or not _SHA256_PATTERN.fullmatch(value):
+        raise ValueError(f"{field_name} must be lowercase SHA-256")
+    return value
+
+
+def _validate_non_negative_integer(value: object, *, field_name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"{field_name} must be a non-negative integer")
+    return value
+
+
+@dataclass(frozen=True, slots=True)
+class TextVectorGenerationInput:
+    stage_kind: StageKind
+    specification_hash: str
+    segment_generation_id: str | None
+    segment_run_id: str | None
+    source_sha256: str | None
+    segment_count: int
+    content_manifest_sha256: str
+
+    def __post_init__(self) -> None:
+        try:
+            stage_kind = StageKind(self.stage_kind)
+        except (TypeError, ValueError) as error:
+            raise ValueError("unsupported text vector input stage") from error
+        if stage_kind not in TEXT_VECTOR_INPUT_STAGE_KINDS:
+            raise ValueError("text vector input must be a semantic segment stage")
+        _validate_sha256(
+            self.specification_hash,
+            field_name="text vector input specification hash",
+        )
+        _validate_non_negative_integer(
+            self.segment_count,
+            field_name="text vector input segment count",
+        )
+        _validate_sha256(
+            self.content_manifest_sha256,
+            field_name="text vector input content manifest",
+        )
+        if self.segment_generation_id is None:
+            if self.segment_run_id is not None or self.source_sha256 is not None:
+                raise ValueError("absent text vector input cannot claim generation lineage")
+            if self.segment_count != 0:
+                raise ValueError("absent text vector input must have zero segments")
+        else:
+            validate_artifact_identifier(
+                self.segment_generation_id,
+                field_name="text vector input generation id",
+            )
+            if self.segment_run_id is None or self.source_sha256 is None:
+                raise ValueError("present text vector input requires complete lineage")
+            validate_artifact_identifier(
+                self.segment_run_id,
+                field_name="text vector input run id",
+            )
+            _validate_sha256(
+                self.source_sha256,
+                field_name="text vector input source hash",
+            )
+        object.__setattr__(self, "stage_kind", stage_kind)
+
+    @property
+    def modality(self) -> str:
+        return TEXT_VECTOR_MODALITY_BY_STAGE[self.stage_kind]
+
+    @property
+    def present(self) -> bool:
+        return self.segment_generation_id is not None
+
+
+@dataclass(frozen=True, slots=True)
+class TextVectorPointSource:
+    video_id: str
+    segment_id: str
+    modality: str
+    text: str
+    segment_generation_id: str
+    text_sha256: str
+
+    def __post_init__(self) -> None:
+        validate_artifact_identifier(self.video_id, field_name="text vector point video id")
+        validate_artifact_identifier(
+            self.segment_id,
+            field_name="text vector point segment id",
+        )
+        if self.modality not in set(TEXT_VECTOR_MODALITY_BY_STAGE.values()):
+            raise ValueError("unsupported text vector point modality")
+        if type(self.text) is not str or not self.text.strip():
+            raise ValueError("text vector point text must not be empty")
+        validate_artifact_identifier(
+            self.segment_generation_id,
+            field_name="text vector point segment generation id",
+        )
+        _validate_sha256(self.text_sha256, field_name="text vector point text hash")
+        if hashlib.sha256(self.text.encode("utf-8")).hexdigest() != self.text_sha256:
+            raise ValueError("text vector point text hash does not match text")
+
+
+@dataclass(frozen=True, slots=True)
+class TextVectorBuildPlan:
+    generation_id: str
+    run_id: str
+    video_id: str
+    stage_specification_hash: str
+    source_sha256: str
+    index_specification: TextVectorIndexSpecification
+    expected_previous_generation_id: str | None
+    inputs: tuple[TextVectorGenerationInput, ...]
+    points: tuple[TextVectorPointSource, ...]
+    input_manifest_sha256: str
+    point_manifest_sha256: str
+    reserved_at: str
+    lease_expires_at: str
+
+    def __post_init__(self) -> None:
+        validate_artifact_identifier(self.generation_id, field_name="text vector generation id")
+        validate_artifact_identifier(self.run_id, field_name="text vector build run id")
+        validate_artifact_identifier(self.video_id, field_name="text vector build video id")
+        _validate_sha256(
+            self.stage_specification_hash,
+            field_name="text vector stage specification hash",
+        )
+        _validate_sha256(self.source_sha256, field_name="text vector source hash")
+        if not isinstance(self.index_specification, TextVectorIndexSpecification):
+            raise ValueError("text vector build index specification must be validated")
+        if self.expected_previous_generation_id is not None:
+            validate_artifact_identifier(
+                self.expected_previous_generation_id,
+                field_name="expected previous text vector generation id",
+            )
+        if type(self.inputs) is not tuple or any(
+            not isinstance(item, TextVectorGenerationInput) for item in self.inputs
+        ):
+            raise ValueError("text vector build inputs must be validated")
+        if tuple(item.stage_kind for item in self.inputs) != TEXT_VECTOR_INPUT_STAGE_KINDS:
+            raise ValueError("text vector build inputs must cover every semantic stage in order")
+        if type(self.points) is not tuple or any(
+            not isinstance(item, TextVectorPointSource) for item in self.points
+        ):
+            raise ValueError("text vector build points must be validated")
+        if any(item.video_id != self.video_id for item in self.points):
+            raise ValueError("text vector points must match build video")
+        if len({item.segment_id for item in self.points}) != len(self.points):
+            raise ValueError("text vector point segment ids must be unique")
+        _validate_sha256(
+            self.input_manifest_sha256,
+            field_name="text vector input manifest",
+        )
+        _validate_sha256(
+            self.point_manifest_sha256,
+            field_name="text vector point manifest",
+        )
+        reserved_at = _validate_timestamp(
+            self.reserved_at,
+            field_name="reserved_at",
+            required=True,
+        )
+        lease_expires_at = _validate_timestamp(
+            self.lease_expires_at,
+            field_name="lease_expires_at",
+            required=True,
+        )
+        assert reserved_at is not None and lease_expires_at is not None
+        if lease_expires_at <= reserved_at:
+            raise ValueError("text vector build lease must expire after reservation")
+
+
+@dataclass(frozen=True, slots=True)
+class TextVectorBuildReceipt:
+    generation_id: str
+    index_specification_hash: str
+    point_count: int
+    point_manifest_sha256: str
+    vector_manifest_sha256: str
+
+    def __post_init__(self) -> None:
+        validate_artifact_identifier(self.generation_id, field_name="text vector receipt generation id")
+        _validate_sha256(
+            self.index_specification_hash,
+            field_name="text vector receipt index specification hash",
+        )
+        _validate_non_negative_integer(
+            self.point_count,
+            field_name="text vector receipt point count",
+        )
+        _validate_sha256(
+            self.point_manifest_sha256,
+            field_name="text vector receipt point manifest",
+        )
+        _validate_sha256(
+            self.vector_manifest_sha256,
+            field_name="text vector receipt vector manifest",
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class TextVectorGeneration:
+    generation_id: str
+    video_id: str
+    specification_hash: str
+    source_sha256: str
+    run_id: str
+    index_specification_hash: str
+    collection_name: str
+    input_manifest_sha256: str
+    point_manifest_sha256: str
+    vector_manifest_sha256: str
+    point_count: int
+    completed_at: str
+
+    def __post_init__(self) -> None:
+        for value, field_name in (
+            (self.generation_id, "text vector generation id"),
+            (self.video_id, "text vector generation video id"),
+            (self.run_id, "text vector generation run id"),
+            (self.collection_name, "text vector collection name"),
+        ):
+            validate_artifact_identifier(value, field_name=field_name)
+        for value, field_name in (
+            (self.specification_hash, "text vector stage specification hash"),
+            (self.source_sha256, "text vector source hash"),
+            (self.index_specification_hash, "text vector index specification hash"),
+            (self.input_manifest_sha256, "text vector input manifest"),
+            (self.point_manifest_sha256, "text vector point manifest"),
+            (self.vector_manifest_sha256, "text vector vector manifest"),
+        ):
+            _validate_sha256(value, field_name=field_name)
+        _validate_non_negative_integer(self.point_count, field_name="text vector point count")
+        _validate_timestamp(self.completed_at, field_name="completed_at", required=True)
+
+
+@dataclass(frozen=True, slots=True)
+class TextVectorSearchBinding:
+    generation: TextVectorGeneration
+    index_specification: TextVectorIndexSpecification
+    inputs: tuple[TextVectorGenerationInput, ...]
+    points: tuple[TextVectorPointSource, ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.generation, TextVectorGeneration):
+            raise ValueError("text vector search generation must be validated")
+        if not isinstance(self.index_specification, TextVectorIndexSpecification):
+            raise ValueError("text vector search index specification must be validated")
+        if (
+            self.generation.index_specification_hash
+            != self.index_specification.specification_hash
+            or self.generation.collection_name != self.index_specification.collection_name
+        ):
+            raise ValueError("text vector search index identity is inconsistent")
+        if tuple(item.stage_kind for item in self.inputs) != TEXT_VECTOR_INPUT_STAGE_KINDS:
+            raise ValueError("text vector search inputs are incomplete")
+        if type(self.points) is not tuple or any(
+            not isinstance(item, TextVectorPointSource) for item in self.points
+        ):
+            raise ValueError("text vector search points must be validated")
+        if len(self.points) != self.generation.point_count or any(
+            item.video_id != self.generation.video_id for item in self.points
+        ):
+            raise ValueError("text vector search points do not match generation")
+        input_generation_ids = {
+            item.segment_generation_id for item in self.inputs if item.present
+        }
+        if any(
+            item.segment_generation_id not in input_generation_ids
+            for item in self.points
+        ):
+            raise ValueError("text vector search point lineage is inconsistent")
+
+    @property
+    def video_id(self) -> str:
+        return self.generation.video_id
+
+    @property
+    def generation_id(self) -> str:
+        return self.generation.generation_id
+
+    def supports_modality(self, modality: str) -> bool:
+        return any(item.modality == modality and item.present for item in self.inputs)
+
+
+@dataclass(frozen=True, slots=True)
+class TextVectorSearchHit:
+    video_id: str
+    generation_id: str
+    segment_id: str
+    modality: str
+    score: float
+
+    def __post_init__(self) -> None:
+        validate_artifact_identifier(self.video_id, field_name="text vector hit video id")
+        validate_artifact_identifier(
+            self.generation_id,
+            field_name="text vector hit generation id",
+        )
+        validate_artifact_identifier(self.segment_id, field_name="text vector hit segment id")
+        if self.modality not in set(TEXT_VECTOR_MODALITY_BY_STAGE.values()):
+            raise ValueError("unsupported text vector hit modality")
+        if (
+            isinstance(self.score, bool)
+            or not isinstance(self.score, (int, float))
+            or not math.isfinite(float(self.score))
+        ):
+            raise ValueError("text vector hit score must be finite")
+        object.__setattr__(self, "score", float(self.score))
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactGCJob:
+    job_id: str
+    artifact_kind: str
+    generation_id: str
+    index_specification_hash: str
+    collection_name: str
+    reason: str
+    state: str
+    attempt: int
+    created_at: str
+    updated_at: str
+
+    def __post_init__(self) -> None:
+        for value, field_name in (
+            (self.job_id, "artifact GC job id"),
+            (self.generation_id, "artifact GC generation id"),
+            (self.collection_name, "artifact GC collection name"),
+            (self.reason, "artifact GC reason"),
+        ):
+            validate_artifact_identifier(value, field_name=field_name)
+        if self.artifact_kind != StageKind.TEXT_VECTORS.value:
+            raise ValueError("unsupported artifact GC kind")
+        _validate_sha256(
+            self.index_specification_hash,
+            field_name="artifact GC index specification hash",
+        )
+        if self.state not in {"pending", "running", "complete", "failed"}:
+            raise ValueError("unsupported artifact GC state")
+        if isinstance(self.attempt, bool) or not isinstance(self.attempt, int) or self.attempt < 0:
+            raise ValueError("artifact GC attempt must be non-negative")
+        created = _validate_timestamp(self.created_at, field_name="created_at", required=True)
+        updated = _validate_timestamp(self.updated_at, field_name="updated_at", required=True)
+        assert created is not None and updated is not None
+        if updated < created:
+            raise ValueError("artifact GC update cannot precede creation")
 
 
 @dataclass(frozen=True, slots=True)

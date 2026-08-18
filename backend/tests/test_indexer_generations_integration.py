@@ -18,7 +18,7 @@ from videoscope.providers.types import ObjectTag, TimedText
 from videoscope.repository import Repository
 from videoscope.runtime import create_indexing_specifications
 from videoscope.search.service import SearchService
-from videoscope.search.vector_index import MemoryVectorIndex
+from videoscope.search.vector_index import EmptyVectorIndex, MemoryVectorIndex
 
 
 def _specification(kind: StageKind) -> StageSpecification:
@@ -479,6 +479,94 @@ def test_successful_unversioned_text_vector_write_is_not_false_complete(tmp_path
 
     run = repository.get_latest_stage_run("video-1", StageKind.TEXT_VECTORS)
     assert run is None or run.state is not StageState.COMPLETE
+
+
+def test_versioned_text_vector_build_atomically_activates_and_retains_previous(
+    tmp_path,
+) -> None:
+    repository, media_root = _repository_with_legacy_video(tmp_path)
+    vector_index = MemoryVectorIndex()
+    speech = MutableSpeech()
+    indexer = _indexer(
+        tmp_path,
+        repository,
+        media_root,
+        ffmpeg=MutableFFmpeg(),
+        scenes=MutableScenes(),
+        vector_index=vector_index,  # type: ignore[arg-type]
+        speech=speech,
+        ocr=MutableOCR(),
+        objects=FakeObjects(),
+    )
+
+    indexer.process("video-1")
+    first = repository.get_active_text_vector_generation("video-1")
+    speech.text = "second spoken generation"
+    indexer.process("video-1")
+    second = repository.get_active_text_vector_generation("video-1")
+
+    assert first is not None and second is not None
+    assert second.generation_id != first.generation_id
+    assert repository.get_text_vector_generation(first.generation_id) == first
+    latest = repository.get_latest_stage_run("video-1", StageKind.TEXT_VECTORS)
+    assert latest is not None and latest.state is StageState.COMPLETE
+    assert latest.output_generation == second.generation_id
+
+
+def test_failed_versioned_text_vector_build_preserves_previous_active(tmp_path) -> None:
+    class FailingMemoryIndex(MemoryVectorIndex):
+        fail = False
+
+        def build_generation(self, plan):  # type: ignore[no-untyped-def]
+            if self.fail:
+                raise RuntimeError("provider secret must not be persisted")
+            return super().build_generation(plan)
+
+    repository, media_root = _repository_with_legacy_video(tmp_path)
+    vector_index = FailingMemoryIndex()
+    indexer = _indexer(
+        tmp_path,
+        repository,
+        media_root,
+        ffmpeg=MutableFFmpeg(),
+        scenes=MutableScenes(),
+        vector_index=vector_index,  # type: ignore[arg-type]
+        speech=MutableSpeech(),
+        ocr=None,
+        objects=None,
+    )
+    indexer.process("video-1")
+    active = repository.get_active_text_vector_generation("video-1")
+    vector_index.fail = True
+
+    indexer.process("video-1")
+
+    assert repository.get_active_text_vector_generation("video-1") == active
+    latest = repository.get_latest_stage_run("video-1", StageKind.TEXT_VECTORS)
+    assert latest is not None and latest.state is StageState.FAILED
+    assert latest.error_code == "text_vector_index_failed"
+    assert repository.list_pending_artifact_gc_jobs()
+
+
+def test_absent_vector_provider_is_not_configured_not_false_complete(tmp_path) -> None:
+    repository, media_root = _repository_with_legacy_video(tmp_path)
+    indexer = _indexer(
+        tmp_path,
+        repository,
+        media_root,
+        ffmpeg=MutableFFmpeg(),
+        scenes=MutableScenes(),
+        vector_index=EmptyVectorIndex(),  # type: ignore[arg-type]
+        speech=MutableSpeech(),
+        ocr=None,
+        objects=None,
+    )
+
+    indexer.process("video-1")
+
+    latest = repository.get_latest_stage_run("video-1", StageKind.TEXT_VECTORS)
+    assert latest is not None and latest.state is StageState.NOT_CONFIGURED
+    assert repository.get_active_text_vector_generation("video-1") is None
 
 
 def test_same_size_media_replacement_aborts_before_any_new_stage_run(tmp_path) -> None:

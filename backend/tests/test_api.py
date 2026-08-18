@@ -11,6 +11,8 @@ from videoscope.api import UPLOAD_BODY_OVERHEAD_BYTES, create_app
 from videoscope.config import AppSettings
 from videoscope.repository import Repository
 from videoscope.runtime import create_indexing_specifications
+from videoscope.search.service import SearchService
+from videoscope.search.vector_index import MemoryVectorIndex
 
 
 class RecordingQueue:
@@ -596,16 +598,39 @@ def test_evaluation_cases_and_report_are_available_via_api(tmp_path) -> None:
     media = settings.media_dir / "match.mp4"
     media.write_bytes(b"x")
     repository.ensure_asset_identity("video-1", media_root=settings.media_dir)
+    specifications = create_indexing_specifications(settings)
     speech_run = repository.create_stage_run(
         video_id="video-1",
-        specification=create_indexing_specifications(settings).speech,
+        specification=specifications.speech,
     )
     repository.transition_stage_run(speech_run.run_id, StageState.RUNNING)
     repository.commit_segment_generation(speech_run.run_id, segments=[])
+    vector_index = MemoryVectorIndex()
+    text_run = repository.create_stage_run(
+        video_id="video-1",
+        specification=specifications.text_vectors,
+    )
+    repository.transition_stage_run(text_run.run_id, StageState.RUNNING)
+    plan = repository.reserve_text_vector_generation(
+        text_run.run_id,
+        index_specification=vector_index.index_specification,
+        semantic_specifications=specifications.semantic_segment_specifications,
+    )
+    repository.commit_text_vector_generation(
+        text_run.run_id,
+        receipt=vector_index.build_generation(plan),
+    )
+    search = SearchService(
+        repository,
+        vector_index,
+        specification_resolver=lambda: create_indexing_specifications(settings),
+        thumbnails_dir=settings.thumbnails_dir,
+    )
     app = create_app(
         settings=settings,
         repository=repository,
         processing_queue=RecordingQueue(),
+        search_service=search,
     )
 
     with TestClient(app) as client:
