@@ -1,6 +1,9 @@
 from .schema import (
     DATASET_SCHEMA_VERSION,
+    LEGACY_UNMEASURED_PROTOCOL_IDENTITY,
     MAX_RESULT_EVIDENCE_PER_CASE,
+    MEASUREMENT_PROTOCOL_COMPONENT_ID,
+    NOT_MEASURED_PROTOCOL_IDENTITY,
     RUN_SCHEMA_VERSION,
     AssetProvenance,
     BenchmarkAsset,
@@ -15,6 +18,14 @@ from .schema import (
     HardwareProfile,
     MetricValue,
     QueryCase,
+)
+from .profiles import (
+    EVALUATION_SEARCH_PLAN_SCHEMA_VERSION,
+    FROZEN_PROFILES,
+    BenchmarkProfile,
+    EvaluationModalityWeight,
+    EvaluationSearchPlan,
+    get_profile,
 )
 from .catalog import (
     AssetResolutionError,
@@ -37,7 +48,12 @@ from .storage import (
 
 __all__ = [
     "DATASET_SCHEMA_VERSION",
+    "EVALUATION_SEARCH_PLAN_SCHEMA_VERSION",
+    "FROZEN_PROFILES",
+    "LEGACY_UNMEASURED_PROTOCOL_IDENTITY",
     "MAX_RESULT_EVIDENCE_PER_CASE",
+    "MEASUREMENT_PROTOCOL_COMPONENT_ID",
+    "NOT_MEASURED_PROTOCOL_IDENTITY",
     "RUN_SCHEMA_VERSION",
     "AssetProvenance",
     "AssetResolutionError",
@@ -47,6 +63,7 @@ __all__ = [
     "BenchmarkDataset",
     "BenchmarkDurabilityError",
     "BenchmarkInterval",
+    "BenchmarkProfile",
     "BenchmarkRunManifest",
     "BenchmarkResultEvidence",
     "BenchmarkRunRegistry",
@@ -57,12 +74,15 @@ __all__ = [
     "ImportedDataset",
     "LocalAssetResolver",
     "MetricValue",
+    "EvaluationSearchPlan",
+    "EvaluationModalityWeight",
     "QueryCase",
     "RepositoryAsset",
     "RepositoryAssetLookup",
     "ResolvedAsset",
     "RunRegistryEntry",
     "dataset_revision",
+    "get_profile",
     "load_dataset",
     "write_dataset",
 ]

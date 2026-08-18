@@ -42,26 +42,47 @@ def _run(
         for index in range(case_count)
     )
     return BenchmarkRunManifest(
-        schema_version=1,
+        schema_version=2,
         run_id=run_id,
-        created_at="2026-08-18T12:30:00Z",
+        created_at="2026-08-18T12:30:02Z",
+        started_at="2026-08-18T12:30:00Z",
+        finished_at="2026-08-18T12:30:01Z",
+        run_status=(
+            "complete"
+            if failed_cases == 0
+            else "failed"
+            if failed_cases == case_count
+            else "partial"
+        ),
         code_sha="a" * 40,
         dataset_revision=dataset_revision,
         model_identities=(ComponentIdentity("model", f"model-for-{run_id}"),),
         index_identities=(ComponentIdentity("index", "generation-1"),),
         config_identities=(
             ComponentIdentity("benchmark_profile", f"{run_id}@1"),
+            ComponentIdentity(
+                "benchmark_search_plan",
+                f"evaluation-search-plan@1:{run_id}",
+            ),
             ComponentIdentity("benchmark_methodology", "portable-retrieval@1"),
         ),
         hardware=HardwareProfile("macOS", "arm64", "Apple M4 Pro", 1024, "Metal"),
         execution_mode=execution_mode,  # type: ignore[arg-type]
-        metrics=(
+        quality_metrics=(
             MetricValue("completed_case_count", case_count - failed_cases, "count"),
             MetricValue("error_count", failed_cases, "count"),
             MetricValue("recall_at_5", recall_at_5, "ratio"),
             MetricValue("false_positive_rate", false_positive_rate, "ratio"),
             MetricValue("mean_latency_ms", mean_latency_ms, "milliseconds"),
         ),
+        system_metrics=(),
+        measurement_protocol=ComponentIdentity(
+            "benchmark_measurement_protocol",
+            "not-measured@1",
+        ),
+        measurement_status="not_measured",
+        measurement_started_at=None,
+        measurement_finished_at=None,
         case_outcomes=outcomes,
     )
 
@@ -232,7 +253,7 @@ def test_missing_required_metric_fails_its_guardrail() -> None:
     )
     candidate = replace(
         candidate,
-        metrics=tuple(
+        quality_metrics=tuple(
             metric for metric in candidate.metrics if metric.name != "recall_at_5"
         ),
     )
@@ -303,7 +324,7 @@ def test_comparison_rejects_metric_unit_mismatch() -> None:
     )
     candidate = replace(
         candidate,
-        metrics=tuple(
+        quality_metrics=tuple(
             MetricValue(metric.name, metric.value, "seconds")
             if metric.name == "mean_latency_ms"
             else metric
@@ -386,3 +407,172 @@ def test_comparison_fails_closed_when_both_methodology_identities_are_missing() 
     comparison = compare_runs(baseline, candidate, _policy())
 
     assert comparison.status == "incomparable"
+
+
+def test_comparison_requires_declared_search_plan_but_allows_ablation_difference() -> None:
+    baseline = _run(
+        "baseline",
+        case_count=20,
+        recall_at_5=0.8,
+        false_positive_rate=0.15,
+        mean_latency_ms=100,
+    )
+    candidate = _run(
+        "candidate",
+        case_count=20,
+        recall_at_5=0.9,
+        false_positive_rate=0.1,
+        mean_latency_ms=90,
+    )
+
+    assert compare_runs(baseline, candidate, _policy()).status == "eligible"
+
+    candidate = replace(
+        candidate,
+        config_identities=tuple(
+            identity
+            for identity in candidate.config_identities
+            if identity.component_id != "benchmark_search_plan"
+        ),
+    )
+    comparison = compare_runs(baseline, candidate, _policy())
+
+    assert comparison.status == "incomparable"
+    assert "search-plan" in comparison.caveat
+
+
+def test_comparison_requires_same_measurement_protocol_and_status() -> None:
+    baseline = replace(
+        _run(
+        "baseline",
+        case_count=20,
+        recall_at_5=0.8,
+        false_positive_rate=0.15,
+            mean_latency_ms=100,
+        ),
+        measurement_protocol=ComponentIdentity(
+            "benchmark_measurement_protocol",
+            "process-tree-sampling@1",
+        ),
+        measurement_status="complete",
+        measurement_started_at="2026-08-18T12:30:00Z",
+        measurement_finished_at="2026-08-18T12:30:01Z",
+        system_metrics=(MetricValue("peak_rss_bytes", 1_000, "bytes"),),
+    )
+    candidate = replace(
+        _run(
+        "candidate",
+        case_count=20,
+        recall_at_5=0.9,
+        false_positive_rate=0.1,
+            mean_latency_ms=90,
+        ),
+        measurement_protocol=baseline.measurement_protocol,
+        measurement_status="complete",
+        measurement_started_at="2026-08-18T12:30:00Z",
+        measurement_finished_at="2026-08-18T12:30:01Z",
+        system_metrics=(MetricValue("peak_rss_bytes", 900, "bytes"),),
+    )
+
+    protocol_mismatch = replace(
+        candidate,
+        measurement_protocol=ComponentIdentity(
+            "benchmark_measurement_protocol",
+            "different-protocol@1",
+        ),
+    )
+    status_mismatch = replace(
+        candidate,
+        measurement_status="failed",
+        system_metrics=(),
+    )
+
+    assert compare_runs(baseline, protocol_mismatch, _policy()).status == "incomparable"
+    assert compare_runs(baseline, status_mismatch, _policy()).status == "incomparable"
+
+
+def test_legacy_unmeasured_runs_are_readable_but_not_promotion_comparable() -> None:
+    baseline = _run(
+        "baseline",
+        case_count=20,
+        recall_at_5=0.8,
+        false_positive_rate=0.15,
+        mean_latency_ms=100,
+    )
+    candidate = _run(
+        "candidate",
+        case_count=20,
+        recall_at_5=0.9,
+        false_positive_rate=0.1,
+        mean_latency_ms=90,
+    )
+    legacy_protocol = ComponentIdentity(
+        "benchmark_measurement_protocol",
+        "legacy-unmeasured@1",
+    )
+
+    comparison = compare_runs(
+        replace(baseline, measurement_protocol=legacy_protocol),
+        replace(candidate, measurement_protocol=legacy_protocol),
+        _policy(),
+    )
+
+    assert comparison.status == "incomparable"
+    assert "Legacy v1" in comparison.caveat
+
+
+def test_system_metrics_are_guardrail_addressable_but_not_quality_metrics() -> None:
+    baseline = replace(
+        _run(
+            "baseline",
+            case_count=20,
+            recall_at_5=0.8,
+            false_positive_rate=0.15,
+            mean_latency_ms=100,
+        ),
+        measurement_status="complete",
+        measurement_protocol=ComponentIdentity(
+            "benchmark_measurement_protocol",
+            "process-tree-sampling@1",
+        ),
+        measurement_started_at="2026-08-18T12:30:00Z",
+        measurement_finished_at="2026-08-18T12:30:01Z",
+        system_metrics=(
+            MetricValue("sampled_peak_process_tree_rss_bytes", 1_000, "bytes"),
+        ),
+    )
+    candidate = replace(
+        _run(
+            "candidate",
+            case_count=20,
+            recall_at_5=0.9,
+            false_positive_rate=0.1,
+            mean_latency_ms=90,
+        ),
+        measurement_status="complete",
+        measurement_protocol=ComponentIdentity(
+            "benchmark_measurement_protocol",
+            "process-tree-sampling@1",
+        ),
+        measurement_started_at="2026-08-18T12:30:00Z",
+        measurement_finished_at="2026-08-18T12:30:01Z",
+        system_metrics=(
+            MetricValue("sampled_peak_process_tree_rss_bytes", 900, "bytes"),
+        ),
+    )
+    policy = PromotionPolicy(
+        "memory",
+        10,
+        True,
+        (
+            MetricGuardrail(
+                "sampled_peak_process_tree_rss_bytes",
+                "lower_is_better",
+            ),
+        ),
+    )
+
+    comparison = compare_runs(baseline, candidate, policy)
+
+    assert comparison.status == "eligible"
+    assert comparison.guardrails[0].candidate_value == 900
