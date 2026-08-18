@@ -54,6 +54,7 @@ from videoscope.media.ffmpeg import FFmpeg
 from videoscope.media.uploads import UploadRejected, validate_upload
 from videoscope.providers.base import ProviderRegistry, ProviderState, StaticProvider
 from videoscope.repository import Repository, VideoRecord
+from videoscope.runtime_lifecycle import ExclusiveRuntimeLock
 from videoscope.search.service import SearchService
 from videoscope.search.service import thumbnail_url_for_path
 from videoscope.search.text_matching import SearchLexicon
@@ -84,20 +85,26 @@ def create_app(
     provider_registry: ProviderRegistry | None = None,
 ) -> FastAPI:
     resolved_settings = settings or AppSettings()
-    resolved_settings.ensure_directories()
-    resolved_repository = repository or Repository(resolved_settings.database_path)
-    resolved_repository.initialize()
-    if processing_queue is None:
-        from videoscope.runtime import build_runtime
+    owns_runtime = processing_queue is None
+    owned_runtime = None
+    ownership_lock: ExclusiveRuntimeLock | None = None
+    resolved_repository: Repository | None = None
+    resolved_queue: ProcessingQueue | None = None
+    resolved_search: SearchService | None = None
+    resolved_clips: ClipService | None = None
+    resolved_providers: ProviderRegistry | None = None
+    evaluation_service: EvaluationService | None = None
+    evaluation_store = EvaluationStore(
+        resolved_settings.evaluation_cases_path,
+        resolved_settings.evaluation_report_path,
+    )
 
-        runtime = build_runtime(resolved_settings, resolved_repository)
-        resolved_queue = runtime.queue
-        resolved_search = search_service or runtime.search
-        resolved_clips = clip_service or runtime.clips
-        resolved_providers = provider_registry or runtime.providers
-    else:
+    if not owns_runtime:
         from videoscope.runtime import create_indexing_specifications
 
+        resolved_settings.ensure_directories()
+        resolved_repository = repository or Repository(resolved_settings.database_path)
+        resolved_repository.initialize()
         resolved_queue = processing_queue
         resolved_search = search_service or SearchService(
             resolved_repository,
@@ -118,10 +125,140 @@ def create_app(
             [StaticProvider("ffmpeg", "FFmpeg", ProviderState.READY, "test runtime")]
         )
 
+    def bind_components(
+        target_app: FastAPI,
+        *,
+        active_repository: Repository,
+        active_queue: ProcessingQueue,
+        active_search: SearchService,
+        active_clips: ClipService,
+        active_providers: ProviderRegistry,
+    ) -> None:
+        nonlocal resolved_repository, resolved_queue, resolved_search
+        nonlocal resolved_clips, resolved_providers, evaluation_service
+        resolved_repository = active_repository
+        resolved_queue = active_queue
+        resolved_search = active_search
+        resolved_clips = active_clips
+        resolved_providers = active_providers
+        resolved_lexicon = active_search.lexicon or SearchLexicon(
+            resolved_settings.glossary_path
+        )
+        active_search.lexicon = resolved_lexicon
+        evaluation_providers = evaluation_provider_snapshot(active_providers)
+        evaluation_service = EvaluationService(
+            active_search,
+            evaluation_store,
+            repository=active_repository,
+            runtime_revision=lambda: evaluation_runtime_revision(
+                active_search,
+                evaluation_providers,
+                resolved_settings,
+            ),
+        )
+        target_app.state.repository = active_repository
+        target_app.state.processing_queue = active_queue
+        target_app.state.search_service = active_search
+        target_app.state.search_lexicon = resolved_lexicon
+        target_app.state.evaluation_service = evaluation_service
+        target_app.state.clip_service = active_clips
+        target_app.state.provider_registry = active_providers
+
+    def active_repository() -> Repository:
+        if resolved_repository is None:
+            raise RuntimeError("VideoScope runtime is not started")
+        return resolved_repository
+
+    def active_queue() -> ProcessingQueue:
+        if resolved_queue is None:
+            raise RuntimeError("VideoScope runtime is not started")
+        return resolved_queue
+
+    def active_search() -> SearchService:
+        if resolved_search is None:
+            raise RuntimeError("VideoScope runtime is not started")
+        return resolved_search
+
+    def active_lexicon() -> SearchLexicon:
+        lexicon = active_search().lexicon
+        if lexicon is None:
+            raise RuntimeError("VideoScope search lexicon is not initialized")
+        return lexicon
+
+    def active_clips() -> ClipService:
+        if resolved_clips is None:
+            raise RuntimeError("VideoScope runtime is not started")
+        return resolved_clips
+
+    def active_providers() -> ProviderRegistry:
+        if resolved_providers is None:
+            raise RuntimeError("VideoScope runtime is not started")
+        return resolved_providers
+
+    def active_evaluation_service() -> EvaluationService:
+        if evaluation_service is None:
+            raise RuntimeError("VideoScope runtime is not started")
+        return evaluation_service
+
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
-        yield
-        resolved_queue.close()
+        nonlocal owned_runtime, ownership_lock
+        if owns_runtime:
+            ownership_lock = ExclusiveRuntimeLock(resolved_settings.data_dir)
+            ownership_lock.acquire()
+            try:
+                resolved_settings.ensure_directories()
+                active_repository = repository or Repository(
+                    resolved_settings.database_path
+                )
+                active_repository.initialize()
+                from videoscope.runtime import build_runtime
+
+                owned_runtime = build_runtime(resolved_settings, active_repository)
+                owned_runtime.runtime_lock = ownership_lock
+                bind_components(
+                    _app,
+                    active_repository=active_repository,
+                    active_queue=owned_runtime.queue,
+                    active_search=search_service or owned_runtime.search,
+                    active_clips=clip_service or owned_runtime.clips,
+                    active_providers=provider_registry or owned_runtime.providers,
+                )
+                owned_runtime.start()
+            except Exception:
+                if owned_runtime is None:
+                    ownership_lock.close()
+                else:
+                    try:
+                        stopped = owned_runtime.close()
+                    except Exception:
+                        logger.exception("VideoScope runtime startup cleanup failed")
+                        stopped = False
+                    if stopped:
+                        ownership_lock.close()
+                raise
+        try:
+            yield
+        finally:
+            if owned_runtime is not None:
+                try:
+                    stopped = owned_runtime.close()
+                except Exception:
+                    logger.exception("VideoScope runtime shutdown failed")
+                    stopped = False
+                if stopped:
+                    if ownership_lock is not None:
+                        try:
+                            ownership_lock.close()
+                        except Exception:
+                            logger.exception("VideoScope ownership lock release failed")
+                else:
+                    logger.warning(
+                        "VideoScope runtime is finishing current work in its ownership reaper"
+                    )
+            else:
+                assert resolved_queue is not None
+                resolved_queue.close()
 
     app = FastAPI(
         title="VideoScope API",
@@ -152,30 +289,20 @@ def create_app(
         ),
     )
     app.state.settings = resolved_settings
-    app.state.repository = resolved_repository
-    app.state.processing_queue = resolved_queue
-    app.state.search_service = resolved_search
-    resolved_lexicon = resolved_search.lexicon or SearchLexicon(resolved_settings.glossary_path)
-    resolved_search.lexicon = resolved_lexicon
-    app.state.search_lexicon = resolved_lexicon
-    evaluation_store = EvaluationStore(
-        resolved_settings.evaluation_cases_path,
-        resolved_settings.evaluation_report_path,
-    )
-    evaluation_providers = evaluation_provider_snapshot(resolved_providers)
-    evaluation_service = EvaluationService(
-        resolved_search,
-        evaluation_store,
-        repository=resolved_repository,
-        runtime_revision=lambda: evaluation_runtime_revision(
-            resolved_search,
-            evaluation_providers,
-            resolved_settings,
-        ),
-    )
-    app.state.evaluation_service = evaluation_service
-    app.state.clip_service = resolved_clips
-    app.state.provider_registry = resolved_providers
+    if not owns_runtime:
+        assert resolved_repository is not None
+        assert resolved_queue is not None
+        assert resolved_search is not None
+        assert resolved_clips is not None
+        assert resolved_providers is not None
+        bind_components(
+            app,
+            active_repository=resolved_repository,
+            active_queue=resolved_queue,
+            active_search=resolved_search,
+            active_clips=resolved_clips,
+            active_providers=resolved_providers,
+        )
     limiter = SlidingWindowLimiter()
     trusted_origins = {
         f"http://{resolved_settings.host}:{resolved_settings.port}",
@@ -246,24 +373,25 @@ def create_app(
 
     @app.get("/api/videos", response_model=list[VideoResponse])
     def list_videos() -> list[dict[str, object]]:
-        return [video_payload(record) for record in resolved_repository.list_videos()]
+        return [video_payload(record) for record in active_repository().list_videos()]
 
     @app.get("/api/videos/{video_id}", response_model=VideoResponse)
     def get_video(video_id: str) -> dict[str, object]:
-        record = resolved_repository.get_video(video_id)
+        record = active_repository().get_video(video_id)
         if record is None:
             raise HTTPException(status_code=404, detail="Video not found")
         return video_payload(record)
 
     @app.patch("/api/videos/{video_id}", response_model=VideoResponse)
     def rename_video(video_id: str, request: RenameVideoRequest) -> dict[str, object]:
-        record = resolved_repository.get_video(video_id)
+        repository = active_repository()
+        record = repository.get_video(video_id)
         if record is None:
             raise HTTPException(status_code=404, detail="Video not found")
         name = " ".join(request.name.split()).strip(" .")
         if not name:
             raise HTTPException(status_code=422, detail="Video name is empty")
-        updated = resolved_repository.update_video(video_id, display_name=name)
+        updated = repository.update_video(video_id, display_name=name)
         return video_payload(updated)
 
     @app.post(
@@ -350,7 +478,7 @@ def create_app(
             await form.close()
 
         try:
-            record = resolved_repository.create_video_with_asset(
+            record = active_repository().create_video_with_asset(
                 video_id=video_id,
                 original_name=filename,
                 stored_name=stored_name,
@@ -361,7 +489,7 @@ def create_app(
         except Exception:
             destination.unlink(missing_ok=True)
             raise
-        resolved_queue.submit(video_id)
+        active_queue().submit(video_id)
         return video_payload(record)
 
     @app.get(
@@ -376,7 +504,7 @@ def create_app(
         },
     )
     def video_media(video_id: str) -> FileResponse:
-        record = resolved_repository.get_video(video_id)
+        record = active_repository().get_video(video_id)
         if record is None:
             raise HTTPException(status_code=404, detail="Video not found")
         media_root = resolved_settings.media_dir.resolve()
@@ -441,16 +569,17 @@ def create_app(
         response_model=ReindexResponse,
     )
     def reindex_video(video_id: str) -> dict[str, str]:
-        if resolved_repository.get_video(video_id) is None:
+        repository = active_repository()
+        if repository.get_video(video_id) is None:
             raise HTTPException(status_code=404, detail="Video not found")
-        resolved_repository.update_video(video_id, status="queued", progress=0.0, stage="queued", error=None)
-        resolved_queue.submit(video_id)
+        repository.update_video(video_id, status="queued", progress=0.0, stage="queued", error=None)
+        active_queue().submit(video_id)
         return {"status": "queued", "video_id": video_id}
 
     @app.post("/api/search", response_model=list[SearchResultResponse])
     def search(request: SearchRequest) -> list[dict[str, object]]:
         try:
-            results = resolved_search.search(
+            results = active_search().search(
                 request.query,
                 video_ids=request.video_ids,
                 limit=request.limit,
@@ -463,7 +592,7 @@ def create_app(
 
     @app.get("/api/search/glossary", response_model=GlossaryResponse)
     def get_search_glossary() -> dict[str, object]:
-        return {"entries": resolved_lexicon.read()}
+        return {"entries": active_lexicon().read()}
 
     @app.put("/api/search/glossary", response_model=GlossaryResponse)
     def update_search_glossary(request: GlossaryRequest) -> dict[str, object]:
@@ -476,14 +605,15 @@ def create_app(
             for term, aliases in request.entries.items()
         ):
             raise HTTPException(status_code=422, detail="Glossary entry is too large")
-        resolved_lexicon.replace(request.entries)
-        return {"entries": resolved_lexicon.read()}
+        lexicon = active_lexicon()
+        lexicon.replace(request.entries)
+        return {"entries": lexicon.read()}
 
     @app.get("/api/evaluation", response_model=EvaluationPayloadResponse)
     def get_evaluation() -> dict[str, object]:
         try:
             cases = evaluation_store.read_cases()
-            runtime_revision = evaluation_service.current_runtime_revision()
+            runtime_revision = active_evaluation_service().current_runtime_revision()
             return {
                 "cases": [asdict(case) for case in cases],
                 "runtime_revision": runtime_revision,
@@ -501,12 +631,12 @@ def create_app(
     def update_evaluation_cases(request: EvaluationCasesRequest) -> dict[str, object]:
         cases = [EvaluationCase(**item.model_dump()) for item in request.cases]
         try:
-            validate_evaluation_video_references(cases, resolved_repository)
+            validate_evaluation_video_references(cases, active_repository())
             evaluation_store.replace_cases(cases)
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
         persisted_cases = evaluation_store.read_cases()
-        runtime_revision = evaluation_service.current_runtime_revision()
+        runtime_revision = active_evaluation_service().current_runtime_revision()
         return {
             "cases": [asdict(case) for case in persisted_cases],
             "runtime_revision": runtime_revision,
@@ -519,7 +649,7 @@ def create_app(
     @app.post("/api/evaluation/run", response_model=EvaluationReportResponse)
     def run_evaluation(request: EvaluationRunRequest) -> dict[str, object]:
         try:
-            return asdict(evaluation_service.run(list(request.variants)))
+            return asdict(active_evaluation_service().run(list(request.variants)))
         except EvaluationDataError as error:
             logger.exception("Persisted evaluation cases are invalid")
             raise HTTPException(
@@ -531,7 +661,7 @@ def create_app(
 
     @app.get("/api/providers", response_model=list[ProviderResponse])
     def providers() -> list[dict[str, object]]:
-        return [asdict(provider) for provider in resolved_providers.statuses()]
+        return [asdict(provider) for provider in active_providers().statuses()]
 
     @app.post(
         "/api/exports",
@@ -540,7 +670,7 @@ def create_app(
     )
     def export_clips(request: ExportRequest, response: Response) -> dict[str, object]:
         try:
-            exported = resolved_clips.export(
+            exported = active_clips().export(
                 request.name,
                 [
                     ClipSelection(

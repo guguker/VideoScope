@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from threading import Event
 
 import pytest
 
@@ -17,6 +18,7 @@ from videoscope.processing.indexer import Indexer
 from videoscope.providers.types import ObjectTag, TimedText
 from videoscope.repository import Repository
 from videoscope.runtime import create_indexing_specifications
+from videoscope.runtime_lifecycle import TextVectorStorageGate
 from videoscope.search.service import SearchService
 from videoscope.search.vector_index import EmptyVectorIndex, MemoryVectorIndex
 
@@ -545,6 +547,165 @@ def test_failed_versioned_text_vector_build_preserves_previous_active(tmp_path) 
     latest = repository.get_latest_stage_run("video-1", StageKind.TEXT_VECTORS)
     assert latest is not None and latest.state is StageState.FAILED
     assert latest.error_code == "text_vector_index_failed"
+    assert repository.list_pending_artifact_gc_jobs()
+
+
+def test_versioned_text_vector_build_renews_its_lease_while_provider_runs(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    heartbeat_observed = Event()
+
+    class SlowMemoryIndex(MemoryVectorIndex):
+        def build_generation(self, plan):  # type: ignore[no-untyped-def]
+            assert heartbeat_observed.wait(timeout=2)
+            return super().build_generation(plan)
+
+    repository, media_root = _repository_with_legacy_video(tmp_path)
+    original_heartbeat = repository.heartbeat_text_vector_build
+
+    def recording_heartbeat(generation_id: str, *, lease_seconds: int = 900) -> str:
+        heartbeat_observed.set()
+        return original_heartbeat(generation_id, lease_seconds=lease_seconds)
+
+    monkeypatch.setattr(repository, "heartbeat_text_vector_build", recording_heartbeat)
+    indexer = Indexer(
+        repository=repository,
+        media_root=media_root,
+        thumbnails_dir=tmp_path / "thumbnails",
+        specification_resolver=_specifications,
+        ffmpeg=MutableFFmpeg(),  # type: ignore[arg-type]
+        scenes=MutableScenes(),  # type: ignore[arg-type]
+        speech=MutableSpeech(),
+        vector_index=SlowMemoryIndex(),
+        text_vector_lease_seconds=1,
+        text_vector_heartbeat_interval=0.01,
+    )
+
+    indexer.process("video-1")
+
+    latest = repository.get_latest_stage_run("video-1", StageKind.TEXT_VECTORS)
+    assert latest is not None and latest.state is StageState.COMPLETE
+
+
+def test_text_vector_storage_gate_covers_reserve_build_and_commit(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    repository, media_root = _repository_with_legacy_video(tmp_path)
+    gate = TextVectorStorageGate()
+    observed: list[str] = []
+    original_reserve = repository.reserve_text_vector_generation
+    original_commit = repository.commit_text_vector_generation
+
+    def guarded_reserve(*args, **kwargs):  # type: ignore[no-untyped-def]
+        with gate.try_maintenance() as acquired:
+            assert acquired is False
+        observed.append("reserve")
+        return original_reserve(*args, **kwargs)
+
+    def guarded_commit(*args, **kwargs):  # type: ignore[no-untyped-def]
+        with gate.try_maintenance() as acquired:
+            assert acquired is False
+        observed.append("commit")
+        return original_commit(*args, **kwargs)
+
+    monkeypatch.setattr(repository, "reserve_text_vector_generation", guarded_reserve)
+    monkeypatch.setattr(repository, "commit_text_vector_generation", guarded_commit)
+    indexer = Indexer(
+        repository=repository,
+        media_root=media_root,
+        thumbnails_dir=tmp_path / "thumbnails",
+        specification_resolver=_specifications,
+        ffmpeg=MutableFFmpeg(),  # type: ignore[arg-type]
+        scenes=MutableScenes(),  # type: ignore[arg-type]
+        speech=MutableSpeech(),
+        vector_index=MemoryVectorIndex(),
+        text_vector_storage_gate=gate,
+    )
+
+    indexer.process("video-1")
+
+    assert observed == ["reserve", "commit"]
+
+
+def test_text_vector_storage_gate_covers_failed_build_cleanup(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    class FailingMemoryIndex(MemoryVectorIndex):
+        def build_generation(self, _plan):  # type: ignore[no-untyped-def]
+            raise RuntimeError("writer failed")
+
+    repository, media_root = _repository_with_legacy_video(tmp_path)
+    gate = TextVectorStorageGate()
+    cleanup_observed = Event()
+    original_fail = repository.fail_text_vector_build
+
+    def guarded_fail(*args, **kwargs):  # type: ignore[no-untyped-def]
+        with gate.try_maintenance() as acquired:
+            assert acquired is False
+        cleanup_observed.set()
+        return original_fail(*args, **kwargs)
+
+    monkeypatch.setattr(repository, "fail_text_vector_build", guarded_fail)
+    indexer = Indexer(
+        repository=repository,
+        media_root=media_root,
+        thumbnails_dir=tmp_path / "thumbnails",
+        specification_resolver=_specifications,
+        ffmpeg=MutableFFmpeg(),  # type: ignore[arg-type]
+        scenes=MutableScenes(),  # type: ignore[arg-type]
+        speech=MutableSpeech(),
+        vector_index=FailingMemoryIndex(),
+        text_vector_storage_gate=gate,
+    )
+
+    indexer.process("video-1")
+
+    assert cleanup_observed.is_set()
+    latest = repository.get_latest_stage_run("video-1", StageKind.TEXT_VECTORS)
+    assert latest is not None and latest.state is StageState.FAILED
+
+
+def test_text_vector_heartbeat_failure_prevents_generation_activation(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    heartbeat_attempted = Event()
+
+    class SlowMemoryIndex(MemoryVectorIndex):
+        def build_generation(self, plan):  # type: ignore[no-untyped-def]
+            assert heartbeat_attempted.wait(timeout=2)
+            return super().build_generation(plan)
+
+    repository, media_root = _repository_with_legacy_video(tmp_path)
+
+    def failing_heartbeat(_generation_id: str, *, lease_seconds: int = 900) -> str:
+        del lease_seconds
+        heartbeat_attempted.set()
+        raise RuntimeError("database detail must stay private")
+
+    monkeypatch.setattr(repository, "heartbeat_text_vector_build", failing_heartbeat)
+    indexer = Indexer(
+        repository=repository,
+        media_root=media_root,
+        thumbnails_dir=tmp_path / "thumbnails",
+        specification_resolver=_specifications,
+        ffmpeg=MutableFFmpeg(),  # type: ignore[arg-type]
+        scenes=MutableScenes(),  # type: ignore[arg-type]
+        speech=MutableSpeech(),
+        vector_index=SlowMemoryIndex(),
+        text_vector_lease_seconds=1,
+        text_vector_heartbeat_interval=0.01,
+    )
+
+    indexer.process("video-1")
+
+    latest = repository.get_latest_stage_run("video-1", StageKind.TEXT_VECTORS)
+    assert latest is not None and latest.state is StageState.FAILED
+    assert latest.error_code == "text_vector_lease_lost"
+    assert repository.get_active_text_vector_generation("video-1") is None
     assert repository.list_pending_artifact_gc_jobs()
 
 
