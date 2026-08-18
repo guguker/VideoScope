@@ -7,12 +7,12 @@ flowchart LR
     U["Upload API"] --> V["FFprobe validation"]
     V --> Q["Serial processing queue"]
     Q --> S["PySceneDetect"]
-    Q --> W["Whisper MLX"]
+    Q --> W["Isolated Whisper MLX worker"]
     S --> O["PaddleOCR"]
-    S --> R["Roboflow + Supervision"]
+    S --> R["Isolated RF-DETR / explicit hosted Roboflow"]
     S --> L["Isolated Lighthouse worker"]
     S --> T["Immutable scene generations"]
-    Q --> G["Dense SigLIP 2 generation"]
+    Q --> G["Isolated SigLIP 2 → dense generation"]
     W --> DB["SQLite temporal segments"]
     O --> DB
     R --> DB
@@ -129,6 +129,15 @@ before a job completes.
 - Media, thumbnail, and export routes resolve symlinks and verify containment in
   their dedicated directories.
 - Local RF-DETR processes frames on the VideoScope machine. Only the optional Roboflow Serverless path receives frames, and only after both an API key and a non-local model ID are explicitly configured.
+- SigLIP and local RF-DETR run in one authenticated loopback-only vision worker
+  with a dedicated hashed environment and an identity-bound MPS/float32 compute
+  contract. It accepts only bounded immutable image snapshots from allowlisted
+  `data/` subdirectories; see
+  `docs/vision-worker.md`.
+- MLX Whisper runs in a separate authenticated loopback-only worker. A single
+  bounded prompt/glossary snapshot is shared by the stage identity and request,
+  and media inference uses a private verified copy; see
+  `docs/whisper-worker.md`.
 - Qwen runs locally through MLX in an authenticated loopback-only worker with a
   dedicated locked environment. The backend shares only one-use files under
   `data/tmp`, never arbitrary library paths.

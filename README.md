@@ -8,10 +8,10 @@
   проверкой контейнера через FFprobe в фоновой очереди;
 - фоновая очередь индексации и прогресс по стадиям;
 - сцены PySceneDetect и кадры-превью через FFmpeg;
-- локальная расшифровка Whisper Large v3 Turbo на Apple MLX;
+- локальная расшифровка Whisper Large v3 Turbo через изолированный Apple MLX worker;
 - PaddleOCR через актуальный Transformers engine;
-- мультиязычный поиск по кадрам через SigLIP 2 с быстрым 224 и quality-профилем 384;
-- локальный Roboflow RF-DETR Small + Supervision без API-ключа;
+- мультиязычный поиск по кадрам через изолированный SigLIP 2 worker с быстрым 224 и quality-профилем 384;
+- локальный RF-DETR Small в том же изолированном vision worker;
 - Roboflow Serverless для пользовательских Universe-моделей при наличии ключа;
 - Lighthouse QD-DETR как подтверждающий visual moment retriever с окнами до 150 секунд;
 - воспроизводимый плотный SigLIP-индекс по всей временной шкале с атомарным
@@ -30,7 +30,9 @@
 
 ## Запуск
 
-Требования: macOS на Apple Silicon, Python 3.12, Node.js 22, pnpm 11 и FFmpeg.
+Требования: macOS 14+ на Apple Silicon, Python 3.12, Node.js 22, pnpm 11 и
+FFmpeg. Изолированные Vision/Whisper workers закреплены точнее на Python
+3.12.13 и намеренно не объявляются совместимыми с Intel Mac или Linux.
 
 Минимальный запуск не требует ML-профилей:
 
@@ -44,8 +46,11 @@ make dev
 отдельно и не нужны для базового запуска:
 
 ```bash
-make install-ml
-make models-ml
+make models-base
+make install-vision
+make models-vision
+make install-whisper
+make models-whisper
 make install-ocr    # необязательно; отдельный совместимый worker
 make install-video
 make models-video
@@ -53,9 +58,10 @@ make install-lighthouse   # необязательно; отдельный Pytho
 make models-lighthouse
 ```
 
-После установки новых провайдеров перезапустите `make dev`. Qwen и Lighthouse
-запускаются отдельно командами `make qwen-worker` и `make lighthouse-worker`;
-MLX-VLM и несовместимый Lighthouse/CLIP-стек не импортируются штатным backend.
+После установки новых провайдеров перезапустите `make dev`. Vision, Whisper,
+Qwen и Lighthouse запускаются в отдельных терминалах командами
+`make vision-worker`, `make whisper-worker`, `make qwen-worker` и
+`make lighthouse-worker`; их ML-стеки не импортируются штатным backend.
 
 `make index-visual`, `make index-visual-quality` и `make index-lighthouse` —
 offline maintenance-команды для уже загруженной библиотеки. Перед их запуском
@@ -86,16 +92,21 @@ API и OpenAPI: `http://127.0.0.1:8765/api/docs`
 | --- | --- | --- |
 | FFmpeg | probe, кадры, клипы, монтаж | критический |
 | PySceneDetect | временные границы сцен | один полный сегмент |
-| Whisper MLX | речь с таймкодами | поиск работает по другим сигналам |
+| Изолированный Whisper MLX worker | речь с таймкодами | поиск работает по другим сигналам |
 | PaddleOCR worker | текст на экране в отдельном Python-окружении | этап пропускается |
-| SigLIP 2 Base | основной локальный visual encoder с плотной выборкой по всей временной шкале; 384 доступен как quality-профиль | визуальный режим отключается |
-| Roboflow + Supervision | локальный универсальный RF-DETR или облачная предметная модель | `rfdetr-small` работает без ключа |
+| Изолированный Vision worker | SigLIP 2 dense encoder + локальный RF-DETR; 384 доступен как quality-профиль | visual/object этапы отключаются |
+| Roboflow Serverless | явно выбранная облачная Universe-модель | этап объектов отключается |
 | Qdrant + MPNet | локальный семантический индекс речи, OCR и объектов с атомарным переключением поколений | остаётся точный поиск по словам |
 | Lighthouse worker | video moment retrieval в отдельном Python 3.11 процессе | нужен настроенный worker и закреплённые модели |
 | Qwen3.5 9B + MLX worker | локальная проверка коротких видеособытий по последовательности кадров в отдельном процессе | этап пропускается или используется настроенный InternVideo |
 | InternVideo 2.5 | внешний GPU-reranker лучших кандидатов | локальный поиск продолжает работать без него |
 
-Roboflow RF-DETR по умолчанию работает локально, поэтому кадры не покидают компьютер. Чтобы использовать собственную модель Roboflow Universe, задайте её `ROBOFLOW_MODEL_ID` и ключ `ROBOFLOW_API_KEY`. Статус каждого провайдера виден в интерфейсе. Режимы `Всё`, `Речь`, `Кадр` и `Текст` позволяют явно выбрать сигнал, а каждый результат показывает источник совпадения.
+Локальный RF-DETR работает только в vision worker, поэтому кадры не покидают
+компьютер. Hosted Roboflow — отдельная взаимоисключающая конфигурация: задайте
+`ROBOFLOW_MODEL_ID` в форме `project/version` и `ROBOFLOW_API_KEY`. Автоматического
+fallback из локального worker в облако нет. Статус каждого провайдера виден в
+интерфейсе. Режимы `Всё`, `Речь`, `Кадр` и `Текст` позволяют явно выбрать сигнал,
+а каждый результат показывает источник совпадения.
 
 Qwen и InternVideo подключаются на этапе выполнения запроса, а не фоновой индексации. Если локальная Qwen готова, она проверяет лучшие объединённые кандидаты; в противном случае может использоваться настроенный внешний InternVideo. Ни одна из этих моделей не блокирует основной поиск.
 
@@ -108,8 +119,8 @@ Qwen и InternVideo подключаются на этапе выполнени�
 влияет на выдачу только при временном совпадении с другим визуальным сигналом. В
 окне «Качество» доступны локальные контрольные запросы и сравнение режимов по
 Recall@1/3/5, MRR, temporal IoU и времени ответа. Для перехода на скачанный
-quality-профиль остановите `make dev`, задайте модель 384, выполните
-`make index-visual-quality`, затем снова запустите приложение.
+quality-профиль остановите `make dev`, задайте модель 384, перезапустите vision
+worker, выполните `make index-visual-quality`, затем снова запустите приложение.
 
 Словарь хранится в `data/search-glossary.json`, используется лексическим поиском и добавляется в initial prompt Whisper при следующей индексации. Контрольная выборка хранится в `data/evaluation/cases.json`. Она содержит локальные `video_id`, не входит в Git и не является переносимым встроенным датасетом.
 В новой установке кейсов нет; developer-набор загружается через
@@ -131,6 +142,35 @@ Evaluation harness вычисляет метрики только на лока�
 Универсальные и спортивные демонстрационные прогоны были слишком малы для выводов
 о качестве модели; Qwen используется как дополнительное подтверждение, а не как
 самостоятельный классификатор типа броска или номера игрока.
+
+## Vision и Whisper workers
+
+SigLIP/RF-DETR и MLX Whisper больше не устанавливаются в `.venv`. Создайте два
+разных локальных токена, заполните endpoint-пары в `.env` и запустите workers до
+индексации:
+
+```dotenv
+VIDEOSCOPE_VISION_WORKER_ENDPOINT=http://127.0.0.1:8783
+VIDEOSCOPE_VISION_WORKER_API_KEY=<отдельный URL-safe токен длиной не менее 32 символов>
+VIDEOSCOPE_WHISPER_WORKER_ENDPOINT=http://127.0.0.1:8784
+VIDEOSCOPE_WHISPER_WORKER_API_KEY=<другой токен длиной не менее 32 символов>
+```
+
+```bash
+make install-vision models-vision
+make install-whisper models-whisper
+make vision-worker   # терминал 1
+make whisper-worker  # терминал 2
+```
+
+Workers слушают только literal `127.0.0.1`, требуют bearer token, не следуют
+redirect и принимают только ограниченные относительные пути внутри своих
+подкаталогов `data/`. Backend сохраняет настроенный provider даже при временной
+недоступности worker: конкретная стадия честно получает `failed`, а прежнее
+проверенное поколение остаётся активным. После первого подключения или смены
+model/lock/preprocessing identity остановите `make dev` и явно переиндексируйте
+нужные видео. Подробности: [docs/vision-worker.md](docs/vision-worker.md) и
+[docs/whisper-worker.md](docs/whisper-worker.md).
 
 ## Qwen3.5 9B
 

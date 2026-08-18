@@ -85,6 +85,14 @@ current glossary without exposing their raw values. A saved report becomes stale
 when any of those inputs changes. Recall@K counts a result only when IoU is at
 least `0.3`; failed searches are reported separately and excluded from aggregates.
 
+Dense visual generations include the isolated SigLIP inference projection in
+their canonical specification. The RF-DETR projection is separate and therefore
+cannot silently invalidate or bless SigLIP vectors. Speech generations include
+the exact model/runtime/dependency identity and SHA-256 of the bounded effective
+prompt. Existing generations created by the former in-process providers remain
+stored but are incompatible and inert until an explicit reindex publishes the
+new specification.
+
 ## Trust boundaries
 
 The primary application is local-only: configuration accepts only loopback hosts,
@@ -96,3 +104,9 @@ a content authenticity check.
 An optional InternVideo deployment is a separate network service and must be
 treated as a private authenticated boundary. Frames and bearer credentials must
 not be sent over public plaintext HTTP.
+
+Local Vision and Whisper workers are separate authenticated loopback boundaries.
+They receive only relative paths below fixed roots, re-open every path component
+without following symlinks, infer over private bounded copies, and bind every
+response to exact model/runtime/lock identities. They never initialize the
+Repository, acquire the application data lock, or access Qdrant.
