@@ -3,7 +3,9 @@ from __future__ import annotations
 import hashlib
 import logging
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from threading import Event, Lock, Thread
+from time import sleep
 
 from videoscope.artifacts import IndexingSpecifications, StageKind, StageSpecification
 from videoscope.clips import ClipService
@@ -32,6 +34,11 @@ from videoscope.providers.roboflow import RoboflowDetector
 from videoscope.providers.scenes import SceneDetector
 from videoscope.providers.whisper import WhisperTranscriber, resolve_whisper_prompt
 from videoscope.repository import Repository
+from videoscope.runtime_lifecycle import (
+    ArtifactGarbageCollector,
+    ExclusiveRuntimeLock,
+    TextVectorStorageGate,
+)
 from videoscope.search.service import SearchService
 from videoscope.search.text_matching import SearchLexicon
 from videoscope.search.temporal_refinement import TemporalRefiner
@@ -49,6 +56,114 @@ class Runtime:
     search: SearchService
     clips: ClipService
     providers: ProviderRegistry
+    runtime_lock: ExclusiveRuntimeLock
+    artifact_gc: ArtifactGarbageCollector
+    generation_store: QdrantVectorIndex
+    resume_video_ids: tuple[str, ...] = ()
+    _started: bool = field(default=False, init=False, repr=False)
+    _closed: bool = field(default=False, init=False, repr=False)
+    _shutdown_lock: Lock = field(default_factory=Lock, init=False, repr=False)
+    _shutdown_complete: Event = field(default_factory=Event, init=False, repr=False)
+    _shutdown_reaper: Thread | None = field(default=None, init=False, repr=False)
+    _generation_store_closed: bool = field(default=False, init=False, repr=False)
+
+    def start(self) -> None:
+        if self._closed:
+            raise RuntimeError("runtime is closed")
+        if self._started:
+            raise RuntimeError("runtime is already started")
+        try:
+            if not getattr(self.runtime_lock, "is_acquired", False):
+                self.runtime_lock.acquire()
+            self.artifact_gc.recover_startup()
+            self.artifact_gc.start()
+            self.queue.start()
+            for video_id in self.resume_video_ids:
+                self.queue.submit(video_id)
+        except Exception:
+            self.close()
+            raise
+        self._started = True
+
+    @staticmethod
+    def _stop_worker(worker: object, *, timeout: float | None) -> bool:
+        try:
+            return bool(worker.close(timeout=timeout))  # type: ignore[attr-defined]
+        except Exception:
+            logger.exception("Runtime worker shutdown failed")
+            return False
+
+    def _finalize_ownership(self) -> bool:
+        if self._shutdown_complete.is_set():
+            return True
+        if not self._generation_store_closed:
+            try:
+                self.generation_store.close()
+            except Exception:
+                logger.exception(
+                    "Runtime generation store close failed; ownership retained"
+                )
+                return False
+            self._generation_store_closed = True
+        try:
+            self.runtime_lock.close()
+        except Exception:
+            logger.exception("Runtime storage lock release failed")
+            return False
+        self._closed = True
+        self._shutdown_complete.set()
+        return True
+
+    def _reap_shutdown(self) -> None:
+        while not self._stop_worker(self.queue, timeout=None):
+            sleep(0.1)
+        while not self._stop_worker(self.artifact_gc, timeout=None):
+            sleep(0.1)
+        while True:
+            with self._shutdown_lock:
+                if self._finalize_ownership():
+                    return
+            sleep(0.1)
+
+    def _start_shutdown_reaper_locked(self) -> bool:
+        try:
+            reaper = Thread(
+                target=self._reap_shutdown,
+                name="videoscope-runtime-reaper",
+                daemon=True,
+            )
+            self._shutdown_reaper = reaper
+            reaper.start()
+        except Exception:
+            self._shutdown_reaper = None
+            logger.exception("Runtime ownership reaper could not start")
+            return False
+        return True
+
+    def close(self) -> bool:
+        reap_synchronously = False
+        with self._shutdown_lock:
+            if self._shutdown_complete.is_set():
+                return True
+            if self._shutdown_reaper is not None:
+                return False
+            queue_stopped = self._stop_worker(self.queue, timeout=5)
+            gc_stopped = self._stop_worker(self.artifact_gc, timeout=5)
+            if queue_stopped and gc_stopped:
+                if self._finalize_ownership():
+                    return True
+                logger.warning(
+                    "Runtime ownership finalization will continue in the reaper"
+                )
+            else:
+                logger.warning(
+                    "Runtime workers are still stopping; ownership reaper retained storage"
+                )
+            reap_synchronously = not self._start_shutdown_reaper_locked()
+        if reap_synchronously:
+            self._reap_shutdown()
+            return True
+        return False
 
 
 def create_indexing_specifications(settings: AppSettings) -> IndexingSpecifications:
@@ -307,6 +422,7 @@ def build_runtime(settings: AppSettings, repository: Repository) -> Runtime:
         else None
     )
 
+    text_vector_storage_gate = TextVectorStorageGate()
     indexer = Indexer(
         repository=repository,
         media_root=settings.media_dir,
@@ -320,11 +436,14 @@ def build_runtime(settings: AppSettings, repository: Repository) -> Runtime:
         vector_index=vector_index,
         visual_index=visual_provider,
         moment_retriever=moment_provider,
+        text_vector_storage_gate=text_vector_storage_gate,
     )
-    queue = ThreadedProcessingQueue(indexer)
-    for video in repository.list_videos():
-        if video.status in {"queued", "processing"}:
-            queue.submit(video.id)
+    queue = ThreadedProcessingQueue(indexer, start_immediately=False)
+    resume_video_ids = tuple(
+        video.id
+        for video in repository.list_videos()
+        if video.status in {"queued", "processing"}
+    )
 
     ffmpeg_binary = shutil.which("ffmpeg")
     ffmpeg_status = StaticProvider(
@@ -364,4 +483,12 @@ def build_runtime(settings: AppSettings, repository: Repository) -> Runtime:
         ),
         clips=ClipService(repository, ffmpeg, settings.clips_dir, settings.temp_dir),
         providers=providers,
+        runtime_lock=ExclusiveRuntimeLock(settings.data_dir),
+        artifact_gc=ArtifactGarbageCollector(
+            repository,
+            qdrant,
+            storage_gate=text_vector_storage_gate,
+        ),
+        generation_store=qdrant,
+        resume_video_ids=resume_video_ids,
     )

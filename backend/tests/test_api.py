@@ -9,6 +9,7 @@ import pytest
 from videoscope.artifacts import StageState
 from videoscope.api import UPLOAD_BODY_OVERHEAD_BYTES, create_app
 from videoscope.config import AppSettings
+from videoscope.providers.base import ProviderRegistry
 from videoscope.repository import Repository
 from videoscope.runtime import create_indexing_specifications
 from videoscope.search.service import SearchService
@@ -28,6 +29,133 @@ class RecordingQueue:
 
 def settings_for(tmp_path: Path) -> AppSettings:
     return AppSettings(data_dir=tmp_path / "data", max_upload_bytes=1_024)
+
+
+def test_owned_runtime_starts_and_closes_with_the_app_lifespan(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    settings = settings_for(tmp_path)
+    repository = Repository(settings.database_path)
+    repository.initialize()
+    events: list[str] = []
+    runtime = SimpleNamespace(
+        queue=RecordingQueue(),
+        search=SearchService(repository, MemoryVectorIndex()),
+        clips=object(),
+        providers=object(),
+        start=lambda: events.append("start"),
+        close=lambda: events.append("close") or True,
+    )
+    monkeypatch.setattr(
+        "videoscope.runtime.build_runtime",
+        lambda _settings, _repository: runtime,
+    )
+
+    app = create_app(settings=settings, repository=repository)
+    assert events == []
+
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        assert events == ["start"]
+        assert client.get("/api/videos").status_code == 200
+
+    assert events == ["start", "close"]
+
+
+def test_owned_runtime_acquires_data_lock_before_initialization(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    settings = settings_for(tmp_path)
+    events: list[str] = []
+    original_ensure_directories = AppSettings.ensure_directories
+    original_initialize = Repository.initialize
+
+    class RecordingLock:
+        is_acquired = False
+
+        def __init__(self, data_dir: Path) -> None:
+            assert data_dir == settings.data_dir
+
+        def acquire(self) -> None:
+            self.is_acquired = True
+            events.append("lock")
+
+        def close(self) -> None:
+            self.is_acquired = False
+            events.append("unlock")
+
+    def ensure_directories(candidate: AppSettings) -> None:
+        events.append("directories")
+        original_ensure_directories(candidate)
+
+    def initialize(candidate: Repository) -> None:
+        events.append("repository")
+        original_initialize(candidate)
+
+    def build_runtime(_settings, repository):  # type: ignore[no-untyped-def]
+        events.append("build")
+        return SimpleNamespace(
+            queue=RecordingQueue(),
+            search=SearchService(repository, MemoryVectorIndex()),
+            clips=object(),
+            providers=ProviderRegistry([]),
+            runtime_lock=None,
+            start=lambda: events.append("start"),
+            close=lambda: events.append("close") or True,
+        )
+
+    monkeypatch.setattr(AppSettings, "ensure_directories", ensure_directories)
+    monkeypatch.setattr(Repository, "initialize", initialize)
+    monkeypatch.setattr("videoscope.api.ExclusiveRuntimeLock", RecordingLock)
+    monkeypatch.setattr("videoscope.runtime.build_runtime", build_runtime)
+
+    app = create_app(settings=settings)
+    assert events == []
+
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        assert events[:5] == ["lock", "directories", "repository", "build", "start"]
+        assert client.get("/api/videos").status_code == 200
+
+    assert events[-2:] == ["close", "unlock"]
+
+
+def test_owned_runtime_lock_refusal_prevents_data_initialization(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    settings = settings_for(tmp_path)
+    events: list[str] = []
+
+    class RefusingLock:
+        def __init__(self, _data_dir: Path) -> None:
+            return None
+
+        def acquire(self) -> None:
+            events.append("lock")
+            raise RuntimeError("already owned")
+
+        def close(self) -> None:
+            events.append("unlock")
+
+    monkeypatch.setattr("videoscope.api.ExclusiveRuntimeLock", RefusingLock)
+    monkeypatch.setattr(
+        AppSettings,
+        "ensure_directories",
+        lambda _settings: events.append("directories"),
+    )
+    monkeypatch.setattr(
+        Repository,
+        "initialize",
+        lambda _repository: events.append("repository"),
+    )
+
+    app = create_app(settings=settings)
+    with pytest.raises(RuntimeError, match="already owned"):
+        with TestClient(app, base_url="http://127.0.0.1"):
+            pass
+
+    assert events == ["lock"]
 
 
 def ready_repository(settings: AppSettings, *, duration: float = 30.0) -> Repository:

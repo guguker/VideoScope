@@ -1,4 +1,4 @@
-.PHONY: install install-ml install-ocr install-video qwen-worker lock-lighthouse install-lighthouse lighthouse-worker models models-ml models-video models-lighthouse index-objects index-visual index-visual-quality index-speech index-lighthouse dev test test-backend test-frontend build demo
+.PHONY: install install-ml install-ocr install-video qwen-worker lock-lighthouse install-lighthouse lighthouse-worker models models-ml models-video models-lighthouse index-visual index-visual-quality index-lighthouse dev test test-backend test-frontend build demo
 
 install:
 	./scripts/bootstrap.sh
@@ -36,17 +36,11 @@ lighthouse-worker:
 models-lighthouse:
 	./scripts/download-lighthouse-models.sh
 
-index-objects:
-	.venv/bin/python scripts/index-objects.py
-
 index-visual:
 	.venv/bin/python scripts/index-visual.py
 
 index-visual-quality:
 	VIDEOSCOPE_SIGLIP_MODEL=google/siglip2-base-patch16-384 .venv/bin/python scripts/index-visual.py
-
-index-speech:
-	.venv/bin/python scripts/index-speech.py
 
 index-lighthouse:
 	.venv/bin/python scripts/index-lighthouse.py

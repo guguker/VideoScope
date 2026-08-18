@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 import shutil
+from threading import Event, Thread
 from typing import Callable, Protocol
 from uuid import uuid4
 
@@ -20,6 +21,7 @@ from videoscope.media.ffmpeg import FFmpeg
 from videoscope.providers.scenes import SceneDetector
 from videoscope.providers.types import ObjectTag, TimedText
 from videoscope.repository import Repository, SegmentRecord
+from videoscope.runtime_lifecycle import TextVectorStorageGate
 
 
 logger = logging.getLogger(__name__)
@@ -27,6 +29,53 @@ logger = logging.getLogger(__name__)
 
 class IndexingSpecificationChanged(RuntimeError):
     pass
+
+
+class TextVectorLeaseLost(RuntimeError):
+    pass
+
+
+class _TextVectorBuildHeartbeat:
+    def __init__(
+        self,
+        repository: Repository,
+        generation_id: str,
+        *,
+        lease_seconds: int,
+        interval: float,
+    ) -> None:
+        self.repository = repository
+        self.generation_id = generation_id
+        self.lease_seconds = lease_seconds
+        self.interval = interval
+        self._stop = Event()
+        self._error: Exception | None = None
+        self._thread = Thread(
+            target=self._run,
+            name=f"videoscope-vector-lease-{generation_id[:8]}",
+            daemon=True,
+        )
+
+    def _run(self) -> None:
+        while not self._stop.wait(self.interval):
+            try:
+                self.repository.heartbeat_text_vector_build(
+                    self.generation_id,
+                    lease_seconds=self.lease_seconds,
+                )
+            except Exception as error:
+                self._error = error
+                return
+
+    def __enter__(self) -> _TextVectorBuildHeartbeat:
+        self._thread.start()
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:  # type: ignore[no-untyped-def]
+        self._stop.set()
+        self._thread.join()
+        if exc_type is None and self._error is not None:
+            raise TextVectorLeaseLost("text vector build lease heartbeat failed") from self._error
 
 
 def merge_timed_text(
@@ -149,7 +198,22 @@ class Indexer:
         ocr: OCRProvider | None = None,
         objects: ObjectProvider | None = None,
         moment_retriever: MomentRetriever | None = None,
+        text_vector_lease_seconds: int = 900,
+        text_vector_heartbeat_interval: float = 30.0,
+        text_vector_storage_gate: TextVectorStorageGate | None = None,
     ) -> None:
+        if (
+            isinstance(text_vector_lease_seconds, bool)
+            or not isinstance(text_vector_lease_seconds, int)
+            or not 1 <= text_vector_lease_seconds <= 86_400
+        ):
+            raise ValueError("text vector lease must be between 1 and 86400 seconds")
+        if (
+            isinstance(text_vector_heartbeat_interval, bool)
+            or not isinstance(text_vector_heartbeat_interval, (int, float))
+            or not 0 < float(text_vector_heartbeat_interval) < text_vector_lease_seconds
+        ):
+            raise ValueError("text vector heartbeat interval must be shorter than its lease")
         self.repository = repository
         self.media_root = Path(media_root)
         self.thumbnails_dir = thumbnails_dir
@@ -162,6 +226,11 @@ class Indexer:
         self.ocr = ocr
         self.objects = objects
         self.moment_retriever = moment_retriever
+        self.text_vector_lease_seconds = text_vector_lease_seconds
+        self.text_vector_heartbeat_interval = float(text_vector_heartbeat_interval)
+        self.text_vector_storage_gate = (
+            text_vector_storage_gate or TextVectorStorageGate()
+        )
 
     @staticmethod
     def _timed_text_segment(
@@ -554,65 +623,14 @@ class Indexer:
                 current,
                 StageKind.TEXT_VECTORS,
             )
-            plan: TextVectorBuildPlan | None = None
-            try:
-                index_specification = getattr(
-                    self.vector_index,
-                    "index_specification",
-                    None,
-                )
-                if not isinstance(index_specification, TextVectorIndexSpecification):
-                    raise ValueError("vector writer has no validated physical identity")
-                plan = self.repository.reserve_text_vector_generation(
-                    run.run_id,
-                    index_specification=index_specification,
-                    semantic_specifications=current.semantic_segment_specifications,
-                )
-                receipt = self.vector_index.build_generation(plan)
-                if not isinstance(receipt, TextVectorBuildReceipt):
-                    raise ValueError("vector writer returned an invalid generation receipt")
-                self._verify_run_specification(run)
-                self.repository.commit_text_vector_generation(
-                    run.run_id,
-                    receipt=receipt,
-                )
-                return
-            except Exception as error:
-                message = str(error)
-                if isinstance(error, IndexingSpecificationChanged):
-                    error_code = "text_vector_specification_changed"
-                elif "inputs changed" in message or "active text vector generation changed" in message:
-                    error_code = "text_vector_inputs_changed"
-                elif isinstance(error, ValueError) and (
-                    "receipt" in message or "manifest" in message
-                ):
-                    error_code = "text_vector_generation_invalid"
-                else:
-                    error_code = "text_vector_index_failed"
-                logger.warning(
-                    "Immutable text vector build failed for %s",
+            with self.text_vector_storage_gate.build_activity():
+                self._build_text_vector_generation(
                     video_id,
-                    exc_info=error,
+                    current,
+                    run,
+                    warnings,
                 )
-                if plan is not None:
-                    try:
-                        self.repository.fail_text_vector_build(
-                            run.run_id,
-                            error_code=error_code,
-                        )
-                    except Exception as cleanup_error:
-                        logger.warning(
-                            "Text vector build cleanup was deferred for %s",
-                            video_id,
-                            exc_info=cleanup_error,
-                        )
-                        persisted = self.repository.get_stage_run(run.run_id)
-                        if persisted is not None and persisted.state is StageState.RUNNING:
-                            self._record_failed(run, error_code)
-                else:
-                    self._record_failed(run, error_code)
-                warnings.append("text vector stage failed")
-                return
+            return
 
         # Compatibility seam for old test/in-process indexes. The write remains
         # deliberately untrusted and the run is terminal FAILED, never COMPLETE.
@@ -631,6 +649,83 @@ class Indexer:
             warnings.append("text vector generation unverified")
         except Exception as error:
             self._record_failed(run, "text_vector_index_failed", error=error)
+            warnings.append("text vector stage failed")
+
+    def _build_text_vector_generation(
+        self,
+        video_id: str,
+        specifications: IndexingSpecifications,
+        run: StageRun,
+        warnings: list[str],
+    ) -> None:
+        plan: TextVectorBuildPlan | None = None
+        try:
+            index_specification = getattr(
+                self.vector_index,
+                "index_specification",
+                None,
+            )
+            if not isinstance(index_specification, TextVectorIndexSpecification):
+                raise ValueError("vector writer has no validated physical identity")
+            plan = self.repository.reserve_text_vector_generation(
+                run.run_id,
+                index_specification=index_specification,
+                semantic_specifications=specifications.semantic_segment_specifications,
+                lease_seconds=self.text_vector_lease_seconds,
+            )
+            with _TextVectorBuildHeartbeat(
+                self.repository,
+                plan.generation_id,
+                lease_seconds=self.text_vector_lease_seconds,
+                interval=self.text_vector_heartbeat_interval,
+            ):
+                receipt = self.vector_index.build_generation(plan)
+            if not isinstance(receipt, TextVectorBuildReceipt):
+                raise ValueError("vector writer returned an invalid generation receipt")
+            self._verify_run_specification(run)
+            self.repository.commit_text_vector_generation(
+                run.run_id,
+                receipt=receipt,
+            )
+        except Exception as error:
+            message = str(error)
+            if isinstance(error, IndexingSpecificationChanged):
+                error_code = "text_vector_specification_changed"
+            elif isinstance(error, TextVectorLeaseLost):
+                error_code = "text_vector_lease_lost"
+            elif (
+                "inputs changed" in message
+                or "active text vector generation changed" in message
+            ):
+                error_code = "text_vector_inputs_changed"
+            elif isinstance(error, ValueError) and (
+                "receipt" in message or "manifest" in message
+            ):
+                error_code = "text_vector_generation_invalid"
+            else:
+                error_code = "text_vector_index_failed"
+            logger.warning(
+                "Immutable text vector build failed for %s",
+                video_id,
+                exc_info=error,
+            )
+            if plan is not None:
+                try:
+                    self.repository.fail_text_vector_build(
+                        run.run_id,
+                        error_code=error_code,
+                    )
+                except Exception as cleanup_error:
+                    logger.warning(
+                        "Text vector build cleanup was deferred for %s",
+                        video_id,
+                        exc_info=cleanup_error,
+                    )
+                    persisted = self.repository.get_stage_run(run.run_id)
+                    if persisted is not None and persisted.state is StageState.RUNNING:
+                        self._record_failed(run, error_code)
+            else:
+                self._record_failed(run, error_code)
             warnings.append("text vector stage failed")
 
     def process(self, video_id: str) -> None:
