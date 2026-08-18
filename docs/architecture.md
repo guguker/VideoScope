@@ -11,8 +11,8 @@ flowchart LR
     S --> O["PaddleOCR"]
     S --> R["Roboflow + Supervision"]
     S --> L["Lighthouse 150 s windows"]
-    S --> T["Scene thumbnails"]
-    T --> G["SigLIP 2 Base 224 / 384"]
+    S --> T["Immutable scene generations"]
+    Q --> G["Dense SigLIP 2 generation"]
     W --> DB["SQLite temporal segments"]
     O --> DB
     R --> DB
@@ -24,7 +24,7 @@ flowchart LR
     D --> F
     DB --> F
     F --> RERANK{"Local Qwen ready?"}
-    RERANK -->|yes| QV["Qwen3.5 9B event verifier"]
+    RERANK -->|yes| QV["Isolated Qwen3.5 9B worker"]
     RERANK -->|no| IVREADY{"InternVideo configured?"}
     IVREADY -->|yes| I["InternVideo 2.5 GPU reranker"]
     IVREADY -->|no| P["Player at exact timestamp"]
@@ -57,10 +57,16 @@ temporal evidence.
 
 1. The query router chooses speech, OCR, object, visual, or mixed retrieval and assigns modality weights.
 2. Qdrant retrieves semantic text, OCR, and object evidence; SQLite adds exact, inflected, transliterated, and phonetic matches.
-3. SigLIP 2 retrieves scenes and densely refines the two best visual intervals.
+3. SigLIP 2 retrieves across a dense, specification-versioned timeline for each
+   video; incomplete, corrupt, or specification-incompatible generations fail
+   closed. The source digest is recorded, and mutation during generation build
+   aborts activation.
 4. Lighthouse windows are retained only when corroborated by visual or object evidence.
 5. Scores are calibrated within each modality and temporally overlapping hits are clustered per video.
-6. A ready local Qwen3.5 9B model verifies only the best fused short-event candidates.
+6. A ready local Qwen3.5 9B worker verifies only the best fused short-event
+   candidates; in the target worker configuration MLX-VLM does not import into
+   the backend process. A deprecated in-process opt-in exists only for rollback
+   diagnostics.
 7. If Qwen is unavailable, a configured InternVideo 2.5 endpoint can rerank the best candidates; otherwise the fused result is returned without a heavy reranker.
 
 This makes the final score explainable: the API returns the evidence and modality list for every result.
@@ -81,7 +87,11 @@ or retrieval configuration no longer matches the current runtime.
 
 ## Failure isolation
 
-FFmpeg probing is critical. Speech, OCR, Roboflow, Lighthouse, dense refinement, Qwen, and InternVideo are isolated optional stages. A failed optional stage is saved as a warning or logged at query time, while completed evidence remains searchable.
+FFmpeg probing is critical, while optional failures are isolated. SQLite segment
+stages record explicit failed/not-configured runs and preserve compatible active
+generations; dense visual activation preserves its previous pointer. Dense and
+Lighthouse failures become video warnings, while Qwen and InternVideo failures
+are logged at query time.
 
 ## Security boundary
 
@@ -99,4 +109,8 @@ FFmpeg probing is critical. Speech, OCR, Roboflow, Lighthouse, dense refinement,
 - Media, thumbnail, and export routes resolve symlinks and verify containment in
   their dedicated directories.
 - Local RF-DETR processes frames on the VideoScope machine. Only the optional Roboflow Serverless path receives frames, and only after both an API key and a non-local model ID are explicitly configured.
-- Qwen runs locally through MLX. A configured external InternVideo endpoint receives only selected downscaled frames from the best fused candidates, never the complete source video.
+- Qwen runs locally through MLX in an authenticated loopback-only worker with a
+  dedicated locked environment. The backend shares only one-use files under
+  `data/tmp`, never arbitrary library paths. A configured external InternVideo
+  endpoint receives only selected downscaled frames from the best fused
+  candidates, never the complete source video.
