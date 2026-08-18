@@ -32,6 +32,19 @@ class StageState(StrEnum):
     CANCELLED = "cancelled"
 
 
+class ArtifactGCOutcome(StrEnum):
+    SUCCESS = "success"
+    TRANSIENT_FAILURE = "transient_failure"
+    PERMANENT_FAILURE = "permanent_failure"
+
+
+class ArtifactGCAttemptOutcome(StrEnum):
+    SUCCESS = "success"
+    TRANSIENT_FAILURE = "transient_failure"
+    PERMANENT_FAILURE = "permanent_failure"
+    LEASE_EXPIRED = "lease_expired"
+
+
 SEGMENT_STAGE_KINDS = frozenset(
     {
         StageKind.SCENES,
@@ -805,6 +818,12 @@ class ArtifactGCJob:
     reason: str
     state: str
     attempt: int
+    backoff_level: int
+    available_at: str
+    worker_id: str | None
+    lease_token: str | None
+    lease_expires_at: str | None
+    error_code: str | None
     created_at: str
     updated_at: str
 
@@ -826,11 +845,207 @@ class ArtifactGCJob:
             raise ValueError("unsupported artifact GC state")
         if isinstance(self.attempt, bool) or not isinstance(self.attempt, int) or self.attempt < 0:
             raise ValueError("artifact GC attempt must be non-negative")
+        if (
+            isinstance(self.backoff_level, bool)
+            or not isinstance(self.backoff_level, int)
+            or not 0 <= self.backoff_level <= 7
+        ):
+            raise ValueError("artifact GC backoff level is invalid")
         created = _validate_timestamp(self.created_at, field_name="created_at", required=True)
         updated = _validate_timestamp(self.updated_at, field_name="updated_at", required=True)
-        assert created is not None and updated is not None
+        available = _validate_timestamp(
+            self.available_at,
+            field_name="available_at",
+            required=True,
+        )
+        lease_expires = _validate_timestamp(
+            self.lease_expires_at,
+            field_name="lease_expires_at",
+            required=False,
+        )
+        assert created is not None and updated is not None and available is not None
         if updated < created:
             raise ValueError("artifact GC update cannot precede creation")
+        if available < created:
+            raise ValueError("artifact GC availability cannot precede creation")
+        validate_error_code(self.error_code)
+        if self.state == "running":
+            if self.attempt < 1:
+                raise ValueError("running artifact GC job requires an attempt")
+            if self.worker_id is None or self.lease_token is None or lease_expires is None:
+                raise ValueError("running artifact GC job requires a complete lease")
+            validate_artifact_identifier(
+                self.worker_id,
+                field_name="artifact GC worker id",
+            )
+            validate_artifact_identifier(
+                self.lease_token,
+                field_name="artifact GC lease token",
+            )
+            if lease_expires <= updated:
+                raise ValueError("artifact GC lease must expire after its update")
+            if self.error_code is not None:
+                raise ValueError("running artifact GC job cannot contain an error")
+        else:
+            if any(
+                value is not None
+                for value in (self.worker_id, self.lease_token, self.lease_expires_at)
+            ):
+                raise ValueError("non-running artifact GC job cannot retain a lease")
+            if self.state == "complete" and self.error_code is not None:
+                raise ValueError("complete artifact GC job cannot contain an error")
+            if self.state == "failed" and self.error_code is None:
+                raise ValueError("failed artifact GC job requires an error code")
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactGCAttempt:
+    job_id: str
+    attempt: int
+    worker_id: str
+    lease_token: str
+    claimed_at: str
+    lease_expires_at: str
+    finished_at: str | None
+    outcome: str | None
+    error_code: str | None
+
+    def __post_init__(self) -> None:
+        validate_artifact_identifier(self.job_id, field_name="artifact GC audit job id")
+        validate_artifact_identifier(
+            self.worker_id,
+            field_name="artifact GC audit worker id",
+        )
+        validate_artifact_identifier(
+            self.lease_token,
+            field_name="artifact GC audit lease token",
+        )
+        if (
+            isinstance(self.attempt, bool)
+            or not isinstance(self.attempt, int)
+            or self.attempt < 1
+        ):
+            raise ValueError("artifact GC audit attempt must be positive")
+        claimed = _validate_timestamp(
+            self.claimed_at,
+            field_name="claimed_at",
+            required=True,
+        )
+        lease_expires = _validate_timestamp(
+            self.lease_expires_at,
+            field_name="lease_expires_at",
+            required=True,
+        )
+        finished = _validate_timestamp(
+            self.finished_at,
+            field_name="finished_at",
+            required=False,
+        )
+        assert claimed is not None and lease_expires is not None
+        if lease_expires <= claimed:
+            raise ValueError("artifact GC audit lease must expire after claim")
+        if finished is not None and finished < claimed:
+            raise ValueError("artifact GC audit finish cannot precede claim")
+        validate_error_code(self.error_code)
+        if self.outcome is None:
+            if finished is not None or self.error_code is not None:
+                raise ValueError("unfinished artifact GC audit cannot have an outcome")
+            return
+        try:
+            outcome = ArtifactGCAttemptOutcome(self.outcome)
+        except (TypeError, ValueError) as error:
+            raise ValueError("unsupported artifact GC audit outcome") from error
+        if finished is None:
+            raise ValueError("finished artifact GC audit requires a timestamp")
+        if outcome is ArtifactGCAttemptOutcome.SUCCESS:
+            if self.error_code is not None:
+                raise ValueError("successful artifact GC audit cannot contain an error")
+        elif self.error_code is None:
+            raise ValueError("failed artifact GC audit requires an error code")
+        if (
+            outcome is ArtifactGCAttemptOutcome.LEASE_EXPIRED
+            and finished < lease_expires
+        ):
+            raise ValueError("expired artifact GC audit finished before lease expiry")
+        object.__setattr__(self, "outcome", outcome.value)
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactGCQuarantine:
+    sequence: int
+    error_code: str
+    quarantined_at: str
+
+    def __post_init__(self) -> None:
+        if (
+            isinstance(self.sequence, bool)
+            or not isinstance(self.sequence, int)
+            or self.sequence < 1
+        ):
+            raise ValueError("artifact GC quarantine sequence must be positive")
+        validate_error_code(self.error_code)
+        if self.error_code is None:
+            raise ValueError("artifact GC quarantine requires an error code")
+        _validate_timestamp(
+            self.quarantined_at,
+            field_name="quarantined_at",
+            required=True,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class TextVectorBuildQuarantine:
+    row_id: int
+    error_code: str
+    quarantined_at: str
+
+    def __post_init__(self) -> None:
+        if (
+            isinstance(self.row_id, bool)
+            or not isinstance(self.row_id, int)
+            or self.row_id < 1
+        ):
+            raise ValueError("text vector build quarantine row id must be positive")
+        validate_error_code(self.error_code)
+        if self.error_code is None:
+            raise ValueError("text vector build quarantine requires an error code")
+        _validate_timestamp(
+            self.quarantined_at,
+            field_name="quarantined_at",
+            required=True,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class TextVectorBuildRecoveryReport:
+    examined_count: int
+    terminalized_generation_ids: tuple[str, ...]
+    quarantined_count: int
+    has_more: bool
+
+    def __post_init__(self) -> None:
+        for value, field_name in (
+            (self.examined_count, "text vector recovery examined count"),
+            (self.quarantined_count, "text vector recovery quarantine count"),
+        ):
+            _validate_non_negative_integer(value, field_name=field_name)
+        if type(self.terminalized_generation_ids) is not tuple:
+            raise ValueError("text vector recovered generation ids must be a tuple")
+        for generation_id in self.terminalized_generation_ids:
+            validate_artifact_identifier(
+                generation_id,
+                field_name="recovered text vector generation id",
+            )
+        if len(set(self.terminalized_generation_ids)) != len(
+            self.terminalized_generation_ids
+        ):
+            raise ValueError("recovered text vector generation ids must be unique")
+        if self.examined_count != (
+            len(self.terminalized_generation_ids) + self.quarantined_count
+        ):
+            raise ValueError("text vector recovery counts are inconsistent")
+        if type(self.has_more) is not bool:
+            raise ValueError("text vector recovery has_more must be boolean")
 
 
 @dataclass(frozen=True, slots=True)

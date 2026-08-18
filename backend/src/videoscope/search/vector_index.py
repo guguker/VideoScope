@@ -7,6 +7,8 @@ import json
 import math
 from pathlib import Path
 import re
+import stat
+from threading import RLock
 from uuid import NAMESPACE_URL, uuid5
 
 import numpy as np
@@ -24,6 +26,39 @@ from videoscope.repository import Repository, SegmentRecord
 from videoscope.search.embeddings import HashEmbedding, SemanticEmbedding
 from videoscope.search.fusion import EvidenceHit
 from videoscope.storage import atomic_write_json
+
+
+_TEXT_VECTOR_COLLECTION_PREFIX = "videoscope_text_v1_"
+_SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
+
+
+class QdrantStorageContractError(ValueError):
+    """A persisted GC scope is invalid and must not be retried."""
+
+
+class QdrantStorageUnavailableError(RuntimeError):
+    """Embedded Qdrant storage failed transiently and may be retried."""
+
+
+def _validate_generation_storage_scope(
+    *,
+    index_specification_hash: str,
+    collection_name: str,
+) -> None:
+    if (
+        type(index_specification_hash) is not str
+        or _SHA256_PATTERN.fullmatch(index_specification_hash) is None
+    ):
+        raise QdrantStorageContractError(
+            "text vector GC index specification must be lowercase SHA-256"
+        )
+    expected_collection_name = (
+        f"{_TEXT_VECTOR_COLLECTION_PREFIX}{index_specification_hash[:32]}"
+    )
+    if type(collection_name) is not str or collection_name != expected_collection_name:
+        raise QdrantStorageContractError(
+            "text vector GC collection does not match index specification"
+        )
 
 
 class QdrantVectorIndex:
@@ -48,6 +83,8 @@ class QdrantVectorIndex:
         self.collection_name = self.index_specification.collection_name
         self.marker_path = self.path.parent / f".{self.path.name}-{self.collection_name}.json"
         self._client = None
+        self._client_lock = RLock()
+        self._current_collection_ready = False
         self._rebuild_failed = False
         self._validated_generation_cache: OrderedDict[
             tuple[str, str, str, str, int], None
@@ -94,23 +131,88 @@ class QdrantVectorIndex:
             detail,
         )
 
-    def _get_client(self):  # type: ignore[no-untyped-def]
-        if self._client is not None:
-            return self._client
-        from qdrant_client import QdrantClient, models
+    def _get_storage_client(self, *, create_path: bool):  # type: ignore[no-untyped-def]
+        with self._client_lock:
+            if self._client is not None:
+                return self._client
+            if not self.path.exists():
+                if not create_path:
+                    return None
+                self.path.mkdir(parents=True, exist_ok=True)
+            elif not self.path.is_dir():
+                raise RuntimeError("Qdrant storage path is not a directory")
+            from qdrant_client import QdrantClient
 
-        self.path.mkdir(parents=True, exist_ok=True)
-        client = QdrantClient(path=str(self.path))
-        if not client.collection_exists(self.collection_name):
-            client.create_collection(
-                collection_name=self.collection_name,
-                vectors_config=models.VectorParams(
-                    size=self.dimensions,
-                    distance=models.Distance.COSINE,
-                ),
-            )
-        self._client = client
-        return client
+            try:
+                client = QdrantClient(path=str(self.path))
+            except ValueError as error:
+                raise QdrantStorageUnavailableError(
+                    "Qdrant storage client could not be opened"
+                ) from error
+            self._client = client
+            return client
+
+    def _reject_symlinked_storage_path(self) -> None:
+        """Fail closed before destructive access through any existing symlink."""
+        candidate = self.path.absolute()
+        current = Path(candidate.anchor)
+        for component in candidate.parts[1:]:
+            current /= component
+            try:
+                metadata = current.lstat()
+            except FileNotFoundError:
+                break
+            except OSError as error:
+                raise RuntimeError("Qdrant storage path could not be validated") from error
+            if stat.S_ISLNK(metadata.st_mode):
+                raise RuntimeError("Qdrant storage path must not contain a symlink")
+
+    def _get_client(self):  # type: ignore[no-untyped-def]
+        with self._client_lock:
+            if self._client is not None and self._current_collection_ready:
+                return self._client
+            from qdrant_client import models
+
+            client = self._get_storage_client(create_path=True)
+            if client is None:  # pragma: no cover - create_path=True guarantees a client
+                raise RuntimeError("Qdrant storage client was not created")
+            collection_exists = getattr(client, "collection_exists", None)
+            if collection_exists is None:
+                # A narrow compatibility seam for injected test clients. Real storage
+                # clients always expose collection_exists.
+                self._current_collection_ready = True
+                return client
+            try:
+                if not collection_exists(self.collection_name):
+                    client.create_collection(
+                        collection_name=self.collection_name,
+                        vectors_config=models.VectorParams(
+                            size=self.dimensions,
+                            distance=models.Distance.COSINE,
+                        ),
+                    )
+            except ValueError as error:
+                raise QdrantStorageUnavailableError(
+                    "Qdrant collection could not be prepared"
+                ) from error
+            self._current_collection_ready = True
+            return client
+
+    def close(self) -> None:
+        with self._client_lock:
+            client = self._client
+            if client is None:
+                return
+            close = getattr(client, "close", None)
+            if close is not None:
+                try:
+                    close()
+                except ValueError as error:
+                    raise QdrantStorageUnavailableError(
+                        "Qdrant storage client could not be closed"
+                    ) from error
+            self._client = None
+            self._current_collection_ready = False
 
     def needs_rebuild(self) -> bool:
         if not self.marker_path.is_file():
@@ -126,11 +228,8 @@ class QdrantVectorIndex:
         if not self.path.is_dir():
             return True
         try:
-            if self._client is None:
-                from qdrant_client import QdrantClient
-
-                self._client = QdrantClient(path=str(self.path))
-            return not self._client.collection_exists(self.collection_name)
+            client = self._get_storage_client(create_path=False)
+            return client is None or not client.collection_exists(self.collection_name)
         except Exception:
             return True
 
@@ -668,11 +767,31 @@ class QdrantVectorIndex:
         *,
         index_specification_hash: str,
     ) -> None:
-        from qdrant_client import models
-
         validate_artifact_identifier(generation_id, field_name="text vector generation id")
         if index_specification_hash != self.index_specification.specification_hash:
             raise ValueError("text vector GC index specification does not match writer")
+        self.delete_generation_from_storage(
+            generation_id,
+            index_specification_hash=index_specification_hash,
+            collection_name=self.collection_name,
+        )
+
+    def delete_generation_from_storage(
+        self,
+        generation_id: str,
+        *,
+        index_specification_hash: str,
+        collection_name: str,
+    ) -> None:
+        """Delete one persisted generation without consulting the current embedder."""
+        validate_artifact_identifier(generation_id, field_name="text vector generation id")
+        _validate_generation_storage_scope(
+            index_specification_hash=index_specification_hash,
+            collection_name=collection_name,
+        )
+        self._reject_symlinked_storage_path()
+        from qdrant_client import models
+
         generation_filter = models.Filter(
             must=[
                 models.FieldCondition(
@@ -681,11 +800,32 @@ class QdrantVectorIndex:
                 )
             ]
         )
-        self._get_client().delete(
-            collection_name=self.collection_name,
-            points_selector=models.FilterSelector(filter=generation_filter),
-            wait=True,
-        )
+        try:
+            client = self._get_storage_client(create_path=False)
+            if client is None or not client.collection_exists(collection_name):
+                self._evict_generation_validation_cache(generation_id)
+                return
+            client.delete(
+                collection_name=collection_name,
+                points_selector=models.FilterSelector(filter=generation_filter),
+                wait=True,
+            )
+            remaining = client.count(
+                collection_name=collection_name,
+                count_filter=generation_filter,
+                exact=True,
+            ).count
+        except QdrantStorageUnavailableError:
+            raise
+        except ValueError as error:
+            raise QdrantStorageUnavailableError(
+                "Qdrant generation storage is unavailable"
+            ) from error
+        if remaining != 0:
+            raise RuntimeError("text vector generation still contains points after GC")
+        self._evict_generation_validation_cache(generation_id)
+
+    def _evict_generation_validation_cache(self, generation_id: str) -> None:
         for cache_key in tuple(self._validated_generation_cache):
             if cache_key[0] == generation_id:
                 self._validated_generation_cache.pop(cache_key, None)
@@ -1045,7 +1185,36 @@ class MemoryVectorIndex:
         validate_artifact_identifier(generation_id, field_name="text vector generation id")
         if index_specification_hash != self.index_specification.specification_hash:
             raise ValueError("text vector GC index specification does not match writer")
-        self._generation_records.pop(generation_id, None)
+        self.delete_generation_from_storage(
+            generation_id,
+            index_specification_hash=index_specification_hash,
+            collection_name=self.index_specification.collection_name,
+        )
+
+    def delete_generation_from_storage(
+        self,
+        generation_id: str,
+        *,
+        index_specification_hash: str,
+        collection_name: str,
+    ) -> None:
+        validate_artifact_identifier(generation_id, field_name="text vector generation id")
+        _validate_generation_storage_scope(
+            index_specification_hash=index_specification_hash,
+            collection_name=collection_name,
+        )
+        record = self._generation_records.get(generation_id)
+        if record is None:
+            return
+        plan, _receipt, _vectors = record
+        if (
+            plan.index_specification.specification_hash != index_specification_hash
+            or plan.index_specification.collection_name != collection_name
+        ):
+            raise ValueError("stored text vector generation does not match GC scope")
+        self._generation_records.pop(generation_id)
+        if generation_id in self._generation_records:  # pragma: no cover - dict invariant
+            raise RuntimeError("text vector generation still exists after GC")
 
     def replace_video(self, video_id: str, segments: list[SegmentRecord]) -> None:
         self._segments = {

@@ -5,6 +5,7 @@ import sqlite3
 
 import pytest
 
+import videoscope.repository as repository_module
 from videoscope.artifacts import (
     StageKind,
     StageSpecification,
@@ -170,8 +171,26 @@ def test_text_vector_index_specification_rejects_ambiguous_identity(changes) -> 
         TextVectorIndexSpecification(**values)
 
 
-def test_schema_v6_migration_preserves_v5_rows_and_is_idempotent(tmp_path) -> None:
-    source = _repository_with_video(tmp_path / "source")
+def test_schema_v8_migration_preserves_v5_rows_and_is_idempotent(tmp_path) -> None:
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    source_path = source_dir / "videoscope.sqlite3"
+    with sqlite3.connect(source_path) as connection:
+        connection.row_factory = sqlite3.Row
+        connection.execute("BEGIN IMMEDIATE")
+        for version, migration in repository_module._SCHEMA_MIGRATIONS[:5]:
+            migration(connection)
+            connection.execute(f"PRAGMA user_version = {version}")
+        connection.commit()
+    source = Repository(source_path)
+    source.create_video_with_asset(
+        video_id="video-1",
+        original_name="match.mp4",
+        stored_name="video-1.mp4",
+        media_path=str(source_dir / "video-1.mp4"),
+        size_bytes=1024,
+        source_sha256="a" * 64,
+    )
     semantic = _semantic_specifications()
     _publish_segment_generation(
         source,
@@ -183,24 +202,11 @@ def test_schema_v6_migration_preserves_v5_rows_and_is_idempotent(tmp_path) -> No
     migrated_path = tmp_path / "migrated.sqlite3"
     with source._connect() as source_connection, sqlite3.connect(migrated_path) as target:
         source_connection.backup(target)
-    with sqlite3.connect(migrated_path) as connection:
-        connection.execute("PRAGMA user_version = 5")
-        for table in (
-            "text_vector_index_specifications",
-            "text_vector_builds",
-            "text_vector_build_inputs",
-            "text_vector_generations",
-            "text_vector_generation_inputs",
-            "active_text_vector_generations",
-            "artifact_gc_jobs",
-        ):
-            connection.execute(f"DROP TABLE IF EXISTS {table}")
-
     migrated = Repository(migrated_path)
     migrated.initialize()
     migrated.initialize()
 
-    assert migrated.schema_version() == LATEST_SCHEMA_VERSION == 6
+    assert migrated.schema_version() == LATEST_SCHEMA_VERSION == 8
     assert migrated.get_video("video-1") is not None
     assert [item.id for item in migrated.list_active_segments("video-1", StageKind.SPEECH)] == [
         "speech-1"
