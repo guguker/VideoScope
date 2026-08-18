@@ -100,6 +100,39 @@ class AppSettings(BaseSettings):
         default=Path("data/models/lighthouse/clip_qd_detr_qvhighlight.ckpt"),
         validation_alias=AliasChoices("LIGHTHOUSE_CHECKPOINT", "VIDEOSCOPE_LIGHTHOUSE_CHECKPOINT"),
     )
+    lighthouse_clip_checkpoint: Path | None = Field(
+        default=Path("data/models/lighthouse/ViT-B-32.pt"),
+        validation_alias=AliasChoices(
+            "LIGHTHOUSE_CLIP_CHECKPOINT",
+            "VIDEOSCOPE_LIGHTHOUSE_CLIP_CHECKPOINT",
+        ),
+    )
+    lighthouse_endpoint: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "LIGHTHOUSE_ENDPOINT",
+            "VIDEOSCOPE_LIGHTHOUSE_ENDPOINT",
+        ),
+    )
+    lighthouse_api_key: str | None = Field(
+        default=None,
+        min_length=32,
+        max_length=256,
+        pattern=r"^[A-Za-z0-9._~-]+$",
+        repr=False,
+        validation_alias=AliasChoices(
+            "LIGHTHOUSE_API_KEY",
+            "VIDEOSCOPE_LIGHTHOUSE_API_KEY",
+        ),
+    )
+    lighthouse_timeout: float = Field(default=300.0, gt=0, le=3600)
+    lighthouse_allow_in_process: bool = Field(
+        default=False,
+        validation_alias=AliasChoices(
+            "LIGHTHOUSE_ALLOW_IN_PROCESS",
+            "VIDEOSCOPE_LIGHTHOUSE_ALLOW_IN_PROCESS",
+        ),
+    )
     whisper_model: str = Field(
         default=WHISPER_MODEL,
         validation_alias=AliasChoices("WHISPER_MODEL", "VIDEOSCOPE_WHISPER_MODEL"),
@@ -197,6 +230,46 @@ class AppSettings(BaseSettings):
         if self.qwen_video_endpoint and self.qwen_video_allow_in_process:
             raise ValueError(
                 "qwen_video_endpoint cannot be combined with qwen_video_allow_in_process"
+            )
+        if self.lighthouse_endpoint:
+            if not self.lighthouse_api_key:
+                raise ValueError(
+                    "lighthouse_api_key is required when lighthouse_endpoint is set"
+                )
+            parsed_lighthouse = urlsplit(self.lighthouse_endpoint)
+            if (
+                parsed_lighthouse.scheme != "http"
+                or not parsed_lighthouse.hostname
+                or parsed_lighthouse.username is not None
+                or parsed_lighthouse.password is not None
+                or parsed_lighthouse.query
+                or parsed_lighthouse.fragment
+                or parsed_lighthouse.path not in {"", "/"}
+            ):
+                raise ValueError(
+                    "lighthouse_endpoint must be a plain loopback HTTP origin"
+                )
+            try:
+                lighthouse_address = ip_address(
+                    parsed_lighthouse.hostname.casefold()
+                )
+            except ValueError:
+                lighthouse_address = None
+            if (
+                lighthouse_address is None
+                or str(lighthouse_address) != "127.0.0.1"
+            ):
+                raise ValueError("lighthouse_endpoint must use 127.0.0.1")
+            try:
+                parsed_lighthouse.port
+            except ValueError as error:
+                raise ValueError(
+                    "lighthouse_endpoint contains an invalid port"
+                ) from error
+        if self.lighthouse_endpoint and self.lighthouse_allow_in_process:
+            raise ValueError(
+                "lighthouse_endpoint cannot be combined with "
+                "lighthouse_allow_in_process"
             )
         if self.internvideo_endpoint:
             if not self.internvideo_api_key:

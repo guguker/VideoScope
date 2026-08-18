@@ -1,4 +1,4 @@
-.PHONY: install install-ml install-ocr install-video qwen-worker models models-ml models-video install-lighthouse index-objects index-visual index-visual-quality index-speech index-lighthouse dev test test-backend test-frontend build demo
+.PHONY: install install-ml install-ocr install-video qwen-worker lock-lighthouse install-lighthouse lighthouse-worker models models-ml models-video models-lighthouse index-objects index-visual index-visual-quality index-speech index-lighthouse dev test test-backend test-frontend build demo
 
 install:
 	./scripts/bootstrap.sh
@@ -23,8 +23,18 @@ models-ml:
 models-video:
 	.venv-qwen/bin/python scripts/download-models.py --profile video
 
+lock-lighthouse:
+	.venv/bin/uv pip compile workers/lighthouse/pyproject.toml --overrides workers/lighthouse/overrides.txt --python-version 3.11.14 --python-platform aarch64-apple-darwin --generate-hashes --output-file workers/lighthouse/requirements.lock --custom-compile-command 'make lock-lighthouse' --no-python-downloads
+
 install-lighthouse:
-	./scripts/install-lighthouse.sh
+	.venv/bin/uv venv --python 3.11.14 --managed-python .venv-lighthouse
+	.venv/bin/uv pip sync --python .venv-lighthouse/bin/python --require-hashes workers/lighthouse/requirements.lock
+
+lighthouse-worker:
+	PYTHONPATH="$(CURDIR)/backend/src" .venv-lighthouse/bin/python -m videoscope.providers.lighthouse_worker
+
+models-lighthouse:
+	./scripts/download-lighthouse-models.sh
 
 index-objects:
 	.venv/bin/python scripts/index-objects.py
