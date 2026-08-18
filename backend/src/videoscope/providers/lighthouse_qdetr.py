@@ -103,10 +103,6 @@ class QDDETRPredictor:
         if feature_name != "clip":
             raise ValueError("VideoScope's Lighthouse adapter supports feature_name='clip' only")
 
-        import clip
-        import torch
-        from lighthouse.common.qd_detr import build_model
-
         with TemporaryDirectory(prefix="videoscope-lighthouse-model-") as temporary:
             snapshot_root = Path(temporary)
             checkpoint_snapshot = snapshot_root / "qd-detr.ckpt"
@@ -126,6 +122,12 @@ class QDDETRPredictor:
                     label="Lighthouse CLIP checkpoint",
                 )
                 clip_reference = str(clip_snapshot)
+
+            # Untrusted pickle/CLIP artifacts must be rejected before optional
+            # decoder packages are imported or given any path to open.
+            import clip
+            import torch
+            from lighthouse.common.qd_detr import build_model
 
             with checkpoint_snapshot.open("rb") as checkpoint_handle:
                 checkpoint = torch.load(
