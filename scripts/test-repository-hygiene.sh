@@ -16,6 +16,10 @@ for path in \
   data/video.mp4 \
   .venv/pyvenv.cfg \
   .venv-ocr/pyvenv.cfg \
+  .venv-qwen/pyvenv.cfg \
+  .venv-lighthouse/pyvenv.cfg \
+  .venv-vision/pyvenv.cfg \
+  .venv-whisper/pyvenv.cfg \
   frontend/dist/index.html \
   test-results/result.json \
   playwright-report/index.html \
