@@ -31,20 +31,6 @@ dev = [
   "torch>=2.6,<3",
   "uv==0.12.3",
 ]
-apple = [
-  "mlx-whisper>=0.4,<1",
-]
-roboflow = [
-  "rfdetr>=1.7.1,<1.8",
-  "supervision>=0.27,<1",
-]
-vision = [
-  "easydict>=1.13,<2",
-  "torch>=2.6,<3",
-  "torchvision>=0.21,<1",
-  "transformers>=5.8,<6",
-  "open-clip-torch>=2.31,<4",
-]
 video = [
   "mlx-vlm==0.6.7",
 ]

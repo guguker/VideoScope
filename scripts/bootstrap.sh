@@ -32,4 +32,4 @@ UV_PROJECT_ENVIRONMENT="$ROOT/.venv" .venv/bin/uv sync \
   --extra dev
 pnpm --dir frontend install --frozen-lockfile
 
-echo "Base environment is ready. Reinstall optional providers with 'make install-ml', 'make install-video', 'make install-ocr', or 'make install-lighthouse'."
+echo "Base environment is ready. Install isolated providers with 'make install-vision', 'make install-whisper', 'make install-video', 'make install-ocr', or 'make install-lighthouse'."

@@ -13,7 +13,8 @@ while IFS= read -r -d '' path; do
     .env.example)
       ;;
     .artifact-work/*|.codex-tmp/*|.playwright-cli/*|output/*|outputs/*|\
-    data/*|.venv/*|.venv-ocr/*|*/.venv/*|node_modules|*/node_modules|*/node_modules/*|\
+    data/*|.venv/*|.venv-ocr/*|.venv-qwen/*|.venv-lighthouse/*|\
+    .venv-vision/*|.venv-whisper/*|*/.venv/*|node_modules|*/node_modules|*/node_modules/*|\
     dist/*|*/dist/*|frontend/.vite/*|.pnpm-store/*|*/.pnpm-store/*|\
     playwright-report/*|*/playwright-report/*|test-results/*|*/test-results/*|\
     __pycache__/*|*/__pycache__/*|*.pyc|*.pyo|*.egg-info/*|\

@@ -1,10 +1,34 @@
-.PHONY: install install-ml install-ocr install-video qwen-worker lock-lighthouse install-lighthouse lighthouse-worker models models-ml models-video models-lighthouse index-visual index-visual-quality index-lighthouse dev test test-backend test-frontend build demo
+.PHONY: install install-ml install-vision install-whisper install-ocr install-video vision-worker whisper-worker qwen-worker worker-platform-check lock-vision lock-whisper lock-lighthouse install-lighthouse lighthouse-worker models models-base models-ml models-vision models-whisper models-video models-lighthouse index-visual index-visual-quality index-lighthouse dev test test-backend test-frontend build demo
 
 install:
 	./scripts/bootstrap.sh
 
-install-ml:
-	UV_PROJECT_ENVIRONMENT="$(CURDIR)/.venv" .venv/bin/uv sync --project backend --locked --inexact --extra dev --extra apple --extra roboflow --extra vision
+install-ml: install-vision install-whisper
+
+worker-platform-check:
+	.venv/bin/python scripts/check-worker-platform.py
+
+lock-vision: worker-platform-check
+	.venv/bin/uv pip compile workers/vision/pyproject.toml --python .venv/bin/python --generate-hashes --output-file workers/vision/requirements.lock --custom-compile-command 'make lock-vision'
+
+install-vision:
+	.venv/bin/uv venv --python 3.12.13 --managed-python .venv-vision
+	.venv-vision/bin/python scripts/check-worker-platform.py
+	.venv/bin/uv pip sync --python .venv-vision/bin/python --require-hashes workers/vision/requirements.lock
+
+vision-worker:
+	PYTHONPATH="$(CURDIR)/backend/src" .venv-vision/bin/python -m videoscope.providers.vision_worker
+
+lock-whisper: worker-platform-check
+	.venv/bin/uv pip compile workers/whisper/pyproject.toml --python .venv/bin/python --generate-hashes --output-file workers/whisper/requirements.lock --custom-compile-command 'make lock-whisper'
+
+install-whisper:
+	.venv/bin/uv venv --python 3.12.13 --managed-python .venv-whisper
+	.venv-whisper/bin/python scripts/check-worker-platform.py
+	.venv/bin/uv pip sync --python .venv-whisper/bin/python --require-hashes workers/whisper/requirements.lock
+
+whisper-worker:
+	PYTHONPATH="$(CURDIR)/backend/src" .venv-whisper/bin/python -m videoscope.providers.whisper_worker
 
 install-ocr:
 	./scripts/install-ocr.sh
@@ -15,10 +39,18 @@ install-video:
 qwen-worker:
 	.venv-qwen/bin/python -m videoscope.providers.qwen_worker
 
-models: models-ml models-video
+models: models-base models-vision models-whisper models-video
 
-models-ml:
-	.venv/bin/python scripts/download-models.py --profile ml
+models-base:
+	.venv/bin/python scripts/download-models.py --profile base
+
+models-ml: models-vision models-whisper
+
+models-vision:
+	PYTHONPATH="$(CURDIR)/backend/src" .venv-vision/bin/python scripts/download-models.py --profile vision
+
+models-whisper:
+	PYTHONPATH="$(CURDIR)/backend/src" .venv-whisper/bin/python scripts/download-models.py --profile whisper
 
 models-video:
 	.venv-qwen/bin/python scripts/download-models.py --profile video
