@@ -17,13 +17,17 @@ from videoscope.benchmark import (
     HardwareProfile,
     MetricValue,
 )
+from videoscope.benchmark.serialization import run_from_dict, run_to_dict
 
 
 def _run(run_id: str = "run-001") -> BenchmarkRunManifest:
     return BenchmarkRunManifest(
-        schema_version=1,
+        schema_version=2,
         run_id=run_id,
         created_at="2026-08-18T12:30:00Z",
+        started_at="2026-08-18T12:29:58Z",
+        finished_at="2026-08-18T12:29:59Z",
+        run_status="partial",
         code_sha="a" * 40,
         dataset_revision="b" * 64,
         model_identities=(
@@ -43,10 +47,18 @@ def _run(run_id: str = "run-001") -> BenchmarkRunManifest:
             accelerator="Metal",
         ),
         execution_mode="warm",
-        metrics=(
+        quality_metrics=(
             MetricValue("recall_at_5", 0.75, "ratio"),
             MetricValue("mean_latency_ms", 125.5, "milliseconds"),
         ),
+        system_metrics=(),
+        measurement_protocol=ComponentIdentity(
+            "benchmark_measurement_protocol",
+            "not-measured@1",
+        ),
+        measurement_status="not_measured",
+        measurement_started_at=None,
+        measurement_finished_at=None,
         case_outcomes=(
             BenchmarkCaseOutcome(
                 case_id="made-shot",
@@ -383,12 +395,111 @@ def test_registry_keeps_post_commit_state_consistent_when_directory_fsync_fails(
     assert registry.read("run-002") == _run("run-002")
 
 
+def test_run_schema_v2_separates_quality_and_system_measurements() -> None:
+    run = _run()
+    payload = run_to_dict(run)
+
+    assert run.schema_version == 2
+    assert run.run_status == "partial"
+    assert run.started_at <= run.finished_at <= run.created_at
+    assert run.measurement_status == "not_measured"
+    assert run.measurement_started_at is None
+    assert run.measurement_finished_at is None
+    assert run.system_metrics == ()
+    assert payload["quality_metrics"] == [
+        {"name": metric.name, "value": metric.value, "unit": metric.unit}
+        for metric in run.quality_metrics
+    ]
+    assert "metrics" not in payload
+    assert run_from_dict(payload) == run
+
+
+def test_run_v2_rejects_inconsistent_status_timestamps_and_metric_names() -> None:
+    run = _run()
+
+    with pytest.raises(BenchmarkDataError, match="run_status"):
+        replace(run, run_status="complete")
+    with pytest.raises(BenchmarkDataError, match="timestamp"):
+        replace(
+            run,
+            started_at="2026-08-18T12:30:02Z",
+            finished_at="2026-08-18T12:30:01Z",
+        )
+    with pytest.raises(BenchmarkDataError, match="not_measured"):
+        replace(
+            run,
+            system_metrics=(MetricValue("rss", 100, "bytes"),),
+        )
+    with pytest.raises(BenchmarkDataError, match="concrete protocol"):
+        replace(
+            run,
+            measurement_status="complete",
+            measurement_started_at=run.started_at,
+            measurement_finished_at=run.finished_at,
+            system_metrics=(MetricValue("rss", 100, "bytes"),),
+        )
+    with pytest.raises(BenchmarkDataError, match="unique"):
+        replace(
+            run,
+            measurement_status="complete",
+            measurement_protocol=ComponentIdentity(
+                "benchmark_measurement_protocol",
+                "process-tree-sampling@1",
+            ),
+            measurement_started_at=run.started_at,
+            measurement_finished_at=run.finished_at,
+            system_metrics=(run.quality_metrics[0],),
+        )
+
+
+def test_legacy_v1_run_is_readable_but_migrates_to_non_measured_v2() -> None:
+    run = _run()
+    legacy = run_to_dict(run)
+    legacy["schema_version"] = 1
+    legacy["metrics"] = legacy.pop("quality_metrics")
+    for field in (
+        "started_at",
+        "finished_at",
+        "run_status",
+        "measurement_status",
+        "measurement_started_at",
+        "measurement_finished_at",
+        "measurement_protocol",
+        "system_metrics",
+    ):
+        legacy.pop(field)
+
+    migrated = run_from_dict(legacy)
+
+    assert migrated.schema_version == 2
+    assert migrated.created_at == run.created_at
+    assert migrated.quality_metrics == run.quality_metrics
+    assert migrated.measurement_status == "not_measured"
+    assert migrated.measurement_protocol.identity == "legacy-unmeasured@1"
+
+
+def test_run_loader_rejects_boolean_or_mixed_version_shapes() -> None:
+    payload = run_to_dict(_run())
+    payload["schema_version"] = True
+
+    with pytest.raises(BenchmarkDataError, match="schema_version"):
+        run_from_dict(payload)
+
+    payload = run_to_dict(_run())
+    payload["schema_version"] = 1
+    with pytest.raises(BenchmarkDataError, match="fields"):
+        run_from_dict(payload)
+
+
 def _run_values() -> dict[str, object]:
     run = _run()
     return {
         "schema_version": run.schema_version,
         "run_id": run.run_id,
         "created_at": run.created_at,
+        "started_at": run.started_at,
+        "finished_at": run.finished_at,
+        "run_status": run.run_status,
         "code_sha": run.code_sha,
         "dataset_revision": run.dataset_revision,
         "model_identities": run.model_identities,
@@ -396,6 +507,11 @@ def _run_values() -> dict[str, object]:
         "config_identities": run.config_identities,
         "hardware": run.hardware,
         "execution_mode": run.execution_mode,
-        "metrics": run.metrics,
+        "quality_metrics": run.quality_metrics,
+        "system_metrics": run.system_metrics,
+        "measurement_protocol": run.measurement_protocol,
+        "measurement_status": run.measurement_status,
+        "measurement_started_at": run.measurement_started_at,
+        "measurement_finished_at": run.measurement_finished_at,
         "case_outcomes": run.case_outcomes,
     }

@@ -25,9 +25,11 @@ from videoscope.benchmark.runner import (
     BenchmarkExecutionError,
     BenchmarkRunner,
     BenchmarkSearchHit,
+    BenchmarkSearchSession,
     ExecutionIdentities,
     audit_run_manifest,
 )
+from videoscope.benchmark.profiles import get_profile
 
 
 def _asset(asset_id: str, digest: str, duration: float) -> BenchmarkAsset:
@@ -134,33 +136,52 @@ class FakeSearchAdapter:
         self.states: dict[tuple[str, str], str | Exception] = {}
         self.results: dict[str, tuple[BenchmarkSearchHit, ...] | Exception] = {}
         self.calls: list[tuple[str, str, tuple[str, ...]]] = []
+        self.profile = None
+        self.opened_assets = ()
+        self.closed = False
 
-    def identities(self, profile) -> ExecutionIdentities:  # type: ignore[no-untyped-def]
+    def open_session(self, profile, assets):  # type: ignore[no-untyped-def]
+        self.profile = profile
+        self.opened_assets = assets
+        return self
+
+    def identities(self) -> ExecutionIdentities:
+        assert self.profile is not None
         return ExecutionIdentities(
             model_identities=(ComponentIdentity("siglip", "siglip@revision"),),
             index_identities=(
                 ComponentIdentity("visual_dense", "generation-7@specification"),
             ),
             config_identities=(
-                ComponentIdentity("search_stack", f"stack-for-{profile.profile_id}"),
+                ComponentIdentity(
+                    "search_stack",
+                    f"stack-for-{self.profile.profile_id}",
+                ),
             ),
         )
 
-    def capability_state(self, profile, asset, capability):  # type: ignore[no-untyped-def]
-        del profile
+    def capability_state(self, asset, capability):  # type: ignore[no-untyped-def]
         state = self.states.get((asset.asset_id, capability), "complete")
         if isinstance(state, Exception):
             raise state
         return state
 
-    def search(self, profile, query, assets, *, limit):  # type: ignore[no-untyped-def]
+    def search(self, query, assets, *, limit):  # type: ignore[no-untyped-def]
+        assert self.profile is not None
         self.calls.append(
-            (profile.profile_id, query, tuple(asset.asset_id for asset in assets))
+            (
+                self.profile.profile_id,
+                query,
+                tuple(asset.asset_id for asset in assets),
+            )
         )
         result = self.results.get(query, ())
         if isinstance(result, Exception):
             raise result
         return result[:limit]
+
+    def close(self) -> None:
+        self.closed = True
 
 
 class DeterministicTimer:
@@ -176,7 +197,7 @@ def _hardware() -> HardwareProfile:
     return HardwareProfile("macOS 15.6", "arm64", "Apple M4 Pro", 24 * 1024**3, "Metal")
 
 
-def _runner(tmp_path, adapter: FakeSearchAdapter, repository=None) -> BenchmarkRunner:  # type: ignore[no-untyped-def]
+def _runner(tmp_path, adapter, repository=None) -> BenchmarkRunner:  # type: ignore[no-untyped-def]
     dataset = _dataset()
     repository = repository or FakeAssetRepository(dataset)
     return BenchmarkRunner(
@@ -341,6 +362,10 @@ def test_runner_sanitizes_provider_and_capability_exceptions(tmp_path) -> None:
     assert "/Users/person" not in manifest_text
     assert _metric_map(run)["error_count"] == 3
     assert "recall_at_5" not in _metric_map(run)
+    outcomes = {outcome.case_id: outcome for outcome in run.case_outcomes}
+    assert outcomes["multi-positive"].latency_ms == pytest.approx(100.0)
+    assert outcomes["negative"].latency_ms == 0.0
+    assert outcomes["one-positive"].latency_ms == 0.0
 
 
 def test_runner_persists_asset_resolution_failure_without_searching(tmp_path) -> None:
@@ -400,8 +425,7 @@ def test_runner_rejects_out_of_scope_or_out_of_duration_results(
 
 def test_runner_requires_a_stable_execution_identity_before_search(tmp_path) -> None:
     class FailingIdentityAdapter(FakeSearchAdapter):
-        def identities(self, profile):  # type: ignore[no-untyped-def]
-            del profile
+        def identities(self):
             raise RuntimeError("identity unavailable")
 
     runner = _runner(tmp_path, FailingIdentityAdapter())
@@ -475,8 +499,8 @@ def test_runner_bounds_provider_iterables_before_rejecting_excess_results(
             super().__init__()
             self.yield_count = 0
 
-        def search(self, profile, query, assets, *, limit):  # type: ignore[no-untyped-def]
-            del profile, query, assets, limit
+        def search(self, query, assets, *, limit):  # type: ignore[no-untyped-def]
+            del query, assets, limit
 
             def results():  # type: ignore[no-untyped-def]
                 for index in range(1_000):
@@ -564,3 +588,187 @@ def test_audit_recomputes_metrics_from_ranked_evidence(tmp_path) -> None:
 
     with pytest.raises(BenchmarkExecutionError, match="audit"):
         audit_run_manifest(_dataset(), tampered_run)
+
+    tampered_plan = replace(
+        run,
+        config_identities=tuple(
+            replace(identity, identity="evaluation-search-plan@1:" + "0" * 64)
+            if identity.component_id == "benchmark_search_plan"
+            else identity
+            for identity in run.config_identities
+        ),
+    )
+    with pytest.raises(BenchmarkExecutionError, match="search plan"):
+        audit_run_manifest(_dataset(), tampered_plan)
+
+
+def test_runner_opens_one_pinned_session_after_asset_resolution_and_closes_it(
+    tmp_path,
+) -> None:
+    dataset = _dataset()
+
+    class Session:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def identities(self) -> ExecutionIdentities:
+            identity = ComponentIdentity("component", "identity")
+            return ExecutionIdentities((identity,), (identity,), (identity,))
+
+        def capability_state(self, asset, capability):  # type: ignore[no-untyped-def]
+            del asset, capability
+            return "complete"
+
+        def search(self, query, assets, *, limit):  # type: ignore[no-untyped-def]
+            del query, assets, limit
+            return ()
+
+        def close(self) -> None:
+            self.closed = True
+
+    class Adapter:
+        def __init__(self) -> None:
+            self.opened_with = None
+            self.session = Session()
+
+        def open_session(self, profile, assets):  # type: ignore[no-untyped-def]
+            self.opened_with = (profile.profile_id, tuple(asset.asset_id for asset in assets))
+            return self.session
+
+    adapter = Adapter()
+    runner = _runner(tmp_path, adapter)  # type: ignore[arg-type]
+
+    run = runner.run(
+        dataset,
+        profile_id="dense_siglip",
+        run_id="run-pinned-session",
+        execution_mode="warm",
+    )
+
+    assert adapter.opened_with == ("dense_siglip", ("asset-a", "asset-b"))
+    assert adapter.session.closed is True
+    assert run.measurement_status == "not_measured"
+    assert run.system_metrics == ()
+    assert ComponentIdentity(
+        "benchmark_search_plan",
+        get_profile("dense_siglip").search_plan.identity,
+    ) in run.config_identities
+
+
+def test_runner_closes_invalid_or_failing_sessions_without_publishing(tmp_path) -> None:
+    class InvalidSession:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    class InvalidAdapter:
+        def __init__(self) -> None:
+            self.session = InvalidSession()
+
+        def open_session(self, profile, assets):  # type: ignore[no-untyped-def]
+            del profile, assets
+            return self.session
+
+    invalid = InvalidAdapter()
+    runner = _runner(tmp_path / "invalid", invalid)
+    with pytest.raises(BenchmarkExecutionError, match="invalid contract"):
+        runner.run(
+            _dataset(),
+            profile_id="dense_siglip",
+            run_id="invalid-session",
+            execution_mode="warm",
+        )
+    assert invalid.session.closed is True
+    assert runner.registry.list() == ()
+
+    class CloseFailureAdapter(FakeSearchAdapter):
+        def close(self) -> None:
+            raise RuntimeError("private close failure")
+
+    runner = _runner(tmp_path / "close", CloseFailureAdapter())
+    with pytest.raises(BenchmarkExecutionError, match="could not be closed"):
+        runner.run(
+            _dataset(),
+            profile_id="dense_siglip",
+            run_id="close-failure",
+            execution_mode="warm",
+        )
+    assert runner.registry.list() == ()
+
+
+def test_latency_excludes_capability_checks_and_scoring(tmp_path) -> None:
+    events: list[str] = []
+
+    class Timer:
+        def __call__(self) -> float:
+            events.append("timer")
+            return float(len(events))
+
+    class Session:
+        def identities(self) -> ExecutionIdentities:
+            identity = ComponentIdentity("component", "identity")
+            return ExecutionIdentities((identity,), (identity,), (identity,))
+
+        def capability_state(self, asset, capability):  # type: ignore[no-untyped-def]
+            del asset, capability
+            events.append("capability")
+            return "complete"
+
+        def search(self, query, assets, *, limit):  # type: ignore[no-untyped-def]
+            del query, limit
+            events.append("search")
+
+            def materialized():  # type: ignore[no-untyped-def]
+                events.append("materialize")
+                yield BenchmarkSearchHit(
+                    assets[0].asset_id,
+                    1.0,
+                    2.0,
+                    0.5,
+                )
+
+            return materialized()
+
+        def close(self) -> None:
+            events.append("close")
+
+    class Adapter:
+        def open_session(self, profile, assets):  # type: ignore[no-untyped-def]
+            del profile, assets
+            return Session()
+
+    def score_overlap(*_values: float) -> float:
+        events.append("score")
+        return 0.0
+
+    runner = BenchmarkRunner(
+        registry=BenchmarkRunRegistry(tmp_path / "runs"),
+        asset_resolver=LocalAssetResolver(FakeAssetRepository(_dataset())),
+        search=Adapter(),  # type: ignore[arg-type]
+        hardware=_hardware(),
+        code_sha="c" * 40,
+        clock=lambda: datetime(2026, 8, 18, 12, 0, tzinfo=UTC),
+        timer=Timer(),
+        overlap=score_overlap,
+    )
+    runner.run(
+        _dataset(),
+        profile_id="dense_siglip",
+        run_id="run-latency-boundary",
+        execution_mode="warm",
+    )
+
+    first_timer = events.index("timer")
+    last_capability = max(
+        index for index, event in enumerate(events) if event == "capability"
+    )
+    assert last_capability < first_timer
+    assert events[first_timer : first_timer + 4] == [
+        "timer",
+        "search",
+        "materialize",
+        "timer",
+    ]
+    assert events.index("score") > first_timer + 3

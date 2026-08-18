@@ -105,23 +105,36 @@ class _Repository:
 class _SearchAdapter:
     def __init__(self, hits: tuple[BenchmarkSearchHit, ...]) -> None:
         self.hits = hits
+        self.profile = None
 
-    def identities(self, profile) -> ExecutionIdentities:  # type: ignore[no-untyped-def]
+    def open_session(self, profile, assets):  # type: ignore[no-untyped-def]
+        del assets
+        self.profile = profile
+        return self
+
+    def identities(self) -> ExecutionIdentities:
+        assert self.profile is not None
         return ExecutionIdentities(
             model_identities=(ComponentIdentity("model", "model@revision"),),
             index_identities=(ComponentIdentity("index", "generation-1"),),
             config_identities=(
-                ComponentIdentity("search", f"search-for-{profile.profile_id}"),
+                ComponentIdentity(
+                    "search",
+                    f"search-for-{self.profile.profile_id}",
+                ),
             ),
         )
 
-    def capability_state(self, profile, asset, capability):  # type: ignore[no-untyped-def]
-        del profile, asset, capability
+    def capability_state(self, asset, capability):  # type: ignore[no-untyped-def]
+        del asset, capability
         return "complete"
 
-    def search(self, profile, query, assets, *, limit):  # type: ignore[no-untyped-def]
-        del profile, query, assets
+    def search(self, query, assets, *, limit):  # type: ignore[no-untyped-def]
+        del query, assets
         return self.hits[:limit]
+
+    def close(self) -> None:
+        pass
 
 
 class _Timer:

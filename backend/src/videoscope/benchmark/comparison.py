@@ -6,6 +6,7 @@ import math
 from typing import Literal
 
 from .schema import (
+    LEGACY_UNMEASURED_PROTOCOL_IDENTITY,
     BenchmarkDataError,
     BenchmarkRunManifest,
     MetricValue,
@@ -186,8 +187,14 @@ def compare_runs(
             guardrails=(),
         )
 
-    baseline_metrics = {metric.name: metric for metric in baseline.metrics}
-    candidate_metrics = {metric.name: metric for metric in candidate.metrics}
+    baseline_metrics = {
+        metric.name: metric
+        for metric in (*baseline.quality_metrics, *baseline.system_metrics)
+    }
+    candidate_metrics = {
+        metric.name: metric
+        for metric in (*candidate.quality_metrics, *candidate.system_metrics)
+    }
     checks = tuple(
         _check_guardrail(guardrail, baseline_metrics, candidate_metrics)
         for guardrail in sorted(policy.guardrails, key=lambda item: item.metric_name)
@@ -298,6 +305,31 @@ def _incompatibility(
         return "Runs use different cold/warm execution modes and are not comparable."
     if baseline.hardware != candidate.hardware:
         return "Runs use different hardware profiles and are not comparable."
+    if baseline.measurement_protocol != candidate.measurement_protocol:
+        return "Runs use different measurement protocols and are not comparable."
+    if baseline.measurement_status != candidate.measurement_status:
+        return "Runs have different measurement statuses and are not comparable."
+    if baseline.measurement_protocol.identity == LEGACY_UNMEASURED_PROTOCOL_IDENTITY:
+        return (
+            "Legacy v1 runs lack an explicit measurement contract and are not "
+            "promotion-comparable."
+        )
+    if baseline.measurement_status == "failed":
+        return "Runs contain failed system measurements and are not comparable."
+    if baseline.run_status in {"cancelled", "failed"}:
+        return "The baseline run did not produce a comparable result set."
+    if candidate.run_status in {"cancelled", "failed"}:
+        return "The candidate run did not produce a comparable result set."
+    if (
+        _config_identity(baseline, "benchmark_profile") is None
+        or _config_identity(candidate, "benchmark_profile") is None
+    ):
+        return "Runs must declare named benchmark profiles to be comparable."
+    if (
+        _config_identity(baseline, "benchmark_search_plan") is None
+        or _config_identity(candidate, "benchmark_search_plan") is None
+    ):
+        return "Runs must declare frozen search-plan identities to be comparable."
     baseline_methodology = _config_identity(baseline, "benchmark_methodology")
     candidate_methodology = _config_identity(candidate, "benchmark_methodology")
     if (
@@ -396,7 +428,7 @@ def _config_identity(run: BenchmarkRunManifest, component_id: str) -> str | None
 
 
 def _aggregate_count_inconsistency(run: BenchmarkRunManifest) -> str | None:
-    metrics = {metric.name: metric.value for metric in run.metrics}
+    metrics = {metric.name: metric.value for metric in run.quality_metrics}
     completed = sum(outcome.status == "complete" for outcome in run.case_outcomes)
     errors = sum(outcome.status != "complete" for outcome in run.case_outcomes)
     expected = {

@@ -7,13 +7,15 @@ from itertools import islice
 import math
 from statistics import mean
 from time import perf_counter
-from typing import Callable, Literal, Protocol, Sequence
+from typing import Callable, Iterable, Literal, Protocol
 
 from videoscope.evaluation import RELEVANCE_IOU_THRESHOLD, temporal_iou
 
 from .catalog import AssetResolutionError, LocalAssetResolver, ResolvedAsset
 from .profiles import BenchmarkProfile, get_profile
 from .schema import (
+    MEASUREMENT_PROTOCOL_COMPONENT_ID,
+    NOT_MEASURED_PROTOCOL_IDENTITY,
     RUN_SCHEMA_VERSION,
     BenchmarkCaseOutcome,
     BenchmarkDataError,
@@ -28,12 +30,13 @@ from .schema import (
     _require_finite_float,
     _require_id,
     _require_tuple,
+    _run_status_for_outcomes,
 )
 from .serialization import dataset_revision
 from .storage import BenchmarkRunRegistry
 
 
-BENCHMARK_METHODOLOGY_VERSION = 1
+BENCHMARK_METHODOLOGY_VERSION = 2
 _COMPLETE_CAPABILITY_STATE = "complete"
 _KNOWN_INCOMPLETE_STATES = frozenset(
     {"queued", "running", "cancelled", "failed", "stale", "not_configured"}
@@ -102,31 +105,43 @@ class ExecutionIdentities:
                 raise BenchmarkDataError(f"{field_name} must contain unique identities")
 
 
-class BenchmarkSearchAdapter(Protocol):
-    """Boundary between the portable runner and the product search stack.
+class BenchmarkSearchSession(Protocol):
+    """One immutable execution snapshot pinned for an entire benchmark run."""
 
-    A concrete adapter is responsible for mapping ``ResolvedAsset.video_id``
-    to the current search service and translating results back to portable
-    asset aliases.  It must use the fail-closed evaluation search path.
-    """
-
-    def identities(self, profile: BenchmarkProfile) -> ExecutionIdentities: ...
+    def identities(self) -> ExecutionIdentities: ...
 
     def capability_state(
         self,
-        profile: BenchmarkProfile,
         asset: ResolvedAsset,
         capability: str,
     ) -> str: ...
 
     def search(
         self,
-        profile: BenchmarkProfile,
         query: str,
         assets: tuple[ResolvedAsset, ...],
         *,
         limit: int,
-    ) -> Sequence[BenchmarkSearchHit]: ...
+    ) -> Iterable[BenchmarkSearchHit]: ...
+
+    def close(self) -> None: ...
+
+
+class BenchmarkSearchAdapter(Protocol):
+    """Factory boundary between the portable runner and product search.
+
+    A concrete adapter is responsible for mapping ``ResolvedAsset.video_id``
+    to the current search service and translating results back to portable
+    asset aliases.  ``open_session`` must pin model/index/config identities and
+    capabilities for the complete run; it must not silently follow mutable
+    active pointers between cases.
+    """
+
+    def open_session(
+        self,
+        profile: BenchmarkProfile,
+        assets: tuple[ResolvedAsset, ...],
+    ) -> BenchmarkSearchSession: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,8 +158,9 @@ class _CaseScore:
 
 
 class _CaseFailure(RuntimeError):
-    def __init__(self, code: str) -> None:
+    def __init__(self, code: str, *, latency_ms: float = 0.0) -> None:
         self.code = code
+        self.latency_ms = latency_ms
         super().__init__(code)
 
 
@@ -196,60 +212,42 @@ class BenchmarkRunner:
         profile = get_profile(profile_id)
         if any(entry.run_id == run_id for entry in self.registry.list()):
             raise FileExistsError(f"benchmark run {run_id!r} already exists")
-        created_at = self._created_at()
-        identities = self._execution_identities(profile)
+        started_at = self._timestamp()
         resolved, resolution_failures = self._resolve_assets(dataset)
-
-        outcomes: list[BenchmarkCaseOutcome] = []
-        scores: list[_CaseScore] = []
-        for case in sorted(dataset.cases, key=lambda item: item.case_id):
-            started = self._read_timer()
-            score: _CaseScore | None = None
-            diagnostic_code: str | None = None
-            try:
-                case_assets = self._assets_for_case(
-                    case,
-                    resolved,
-                    resolution_failures,
-                )
-                self._require_capabilities(profile, case_assets)
-                hits = self._search_case(profile, case, case_assets)
-                self._validate_hits(profile, case, case_assets, hits)
-                score = self._score_case(case, hits, latency_ms=0.0)
-            except _CaseFailure as exc:
-                diagnostic_code = exc.code
-            latency_ms = self._elapsed_ms(started)
-            if score is None:
-                outcomes.append(
-                    BenchmarkCaseOutcome(
-                        case_id=case.case_id,
-                        status="failed",
-                        latency_ms=latency_ms,
-                        result_count=0,
-                        diagnostic_code=diagnostic_code or "execution_failed",
-                    )
-                )
-                continue
-            score = _CaseScore(
-                case=score.case,
-                latency_ms=latency_ms,
-                result_count=score.result_count,
-                relevant_rank=score.relevant_rank,
-                best_temporal_iou=score.best_temporal_iou,
-                false_positive_count=score.false_positive_count,
-                negative_false_positive=score.negative_false_positive,
-                hard_negative_hit=score.hard_negative_hit,
-                hits=score.hits,
+        session = self._open_session(
+            profile,
+            tuple(resolved[key] for key in sorted(resolved)),
+        )
+        try:
+            identities = self._execution_identities(session, profile)
+            capability_failures = self._preflight_capabilities(
+                session,
+                profile,
+                resolved,
             )
-            scores.append(score)
-            outcomes.append(self._complete_outcome(score))
+            outcomes, scores = self._execute_cases(
+                session,
+                dataset,
+                profile,
+                resolved,
+                resolution_failures,
+                capability_failures,
+            )
+        except BaseException:
+            self._close_session(session, suppress_error=True)
+            raise
+        self._close_session(session, suppress_error=False)
 
         ordered_outcomes = tuple(sorted(outcomes, key=lambda item: item.case_id))
         metrics = self._run_metrics(dataset, ordered_outcomes, tuple(scores))
+        finished_at = self._timestamp()
         run = BenchmarkRunManifest(
             schema_version=RUN_SCHEMA_VERSION,
             run_id=run_id,
-            created_at=created_at,
+            created_at=finished_at,
+            started_at=started_at,
+            finished_at=finished_at,
+            run_status=_run_status_for_outcomes(ordered_outcomes),
             code_sha=self._code_sha,
             dataset_revision=dataset_revision(dataset),
             model_identities=identities.model_identities,
@@ -257,15 +255,65 @@ class BenchmarkRunner:
             config_identities=identities.config_identities,
             hardware=self._hardware,
             execution_mode=execution_mode,
-            metrics=metrics,
+            quality_metrics=metrics,
+            system_metrics=(),
+            measurement_protocol=ComponentIdentity(
+                MEASUREMENT_PROTOCOL_COMPONENT_ID,
+                NOT_MEASURED_PROTOCOL_IDENTITY,
+            ),
+            measurement_status="not_measured",
+            measurement_started_at=None,
+            measurement_finished_at=None,
             case_outcomes=ordered_outcomes,
         )
         self.registry.add(run)
         return run
 
-    def _execution_identities(self, profile: BenchmarkProfile) -> ExecutionIdentities:
+    def _open_session(
+        self,
+        profile: BenchmarkProfile,
+        assets: tuple[ResolvedAsset, ...],
+    ) -> BenchmarkSearchSession:
         try:
-            identities = self._search.identities(profile)
+            session = self._search.open_session(profile, assets)
+        except Exception:
+            raise BenchmarkExecutionError(
+                "pinned benchmark search session is unavailable"
+            ) from None
+        methods = ("identities", "capability_state", "search", "close")
+        if any(not callable(getattr(session, name, None)) for name in methods):
+            close = getattr(session, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    pass
+            raise BenchmarkExecutionError(
+                "pinned benchmark search session has an invalid contract"
+            )
+        return session
+
+    @staticmethod
+    def _close_session(
+        session: BenchmarkSearchSession,
+        *,
+        suppress_error: bool,
+    ) -> None:
+        try:
+            session.close()
+        except Exception:
+            if not suppress_error:
+                raise BenchmarkExecutionError(
+                    "pinned benchmark search session could not be closed"
+                ) from None
+
+    def _execution_identities(
+        self,
+        session: BenchmarkSearchSession,
+        profile: BenchmarkProfile,
+    ) -> ExecutionIdentities:
+        try:
+            identities = session.identities()
         except Exception:
             raise BenchmarkExecutionError(
                 "stable benchmark execution identity is unavailable"
@@ -274,7 +322,11 @@ class BenchmarkRunner:
             raise BenchmarkExecutionError(
                 "stable benchmark execution identity has an invalid contract"
             )
-        reserved = {"benchmark_profile", "benchmark_methodology"}
+        reserved = {
+            "benchmark_profile",
+            "benchmark_methodology",
+            "benchmark_search_plan",
+        }
         if reserved & {
             identity.component_id for identity in identities.config_identities
         }:
@@ -284,6 +336,10 @@ class BenchmarkRunner:
         config_identities = (
             *identities.config_identities,
             ComponentIdentity("benchmark_profile", profile.identity),
+            ComponentIdentity(
+                "benchmark_search_plan",
+                profile.search_plan.identity,
+            ),
             ComponentIdentity(
                 "benchmark_methodology",
                 _methodology_identity(),
@@ -325,51 +381,128 @@ class BenchmarkRunner:
         except KeyError:
             raise _CaseFailure("asset_resolution_failed") from None
 
-    def _require_capabilities(
+    def _preflight_capabilities(
         self,
+        session: BenchmarkSearchSession,
         profile: BenchmarkProfile,
-        assets: tuple[ResolvedAsset, ...],
-    ) -> None:
-        for asset in assets:
+        assets: dict[str, ResolvedAsset],
+    ) -> dict[tuple[str, str], str]:
+        failures: dict[tuple[str, str], str] = {}
+        for asset_id in sorted(assets):
+            asset = assets[asset_id]
             for capability in profile.required_capabilities:
                 try:
-                    state = self._search.capability_state(
-                        profile,
+                    state = session.capability_state(
                         asset,
                         capability,
                     )
                 except Exception:
-                    raise _CaseFailure("capability_check_failed") from None
+                    failures[(asset.asset_id, capability)] = (
+                        "capability_check_failed"
+                    )
+                    continue
                 if state == _COMPLETE_CAPABILITY_STATE:
                     continue
                 if state == "stale":
-                    raise _CaseFailure("capability_stale")
-                if state == "missing":
-                    raise _CaseFailure("capability_missing")
-                if state == "failed":
-                    raise _CaseFailure("capability_failed")
-                if state == "not_configured":
-                    raise _CaseFailure("capability_not_configured")
-                if state in _KNOWN_INCOMPLETE_STATES:
-                    raise _CaseFailure("capability_incomplete")
-                raise _CaseFailure("capability_invalid_state")
+                    diagnostic = "capability_stale"
+                elif state == "missing":
+                    diagnostic = "capability_missing"
+                elif state == "failed":
+                    diagnostic = "capability_failed"
+                elif state == "not_configured":
+                    diagnostic = "capability_not_configured"
+                elif isinstance(state, str) and state in _KNOWN_INCOMPLETE_STATES:
+                    diagnostic = "capability_incomplete"
+                else:
+                    diagnostic = "capability_invalid_state"
+                failures[(asset.asset_id, capability)] = diagnostic
+        return failures
+
+    @staticmethod
+    def _require_capabilities(
+        profile: BenchmarkProfile,
+        assets: tuple[ResolvedAsset, ...],
+        failures: dict[tuple[str, str], str],
+    ) -> None:
+        for asset in assets:
+            for capability in profile.required_capabilities:
+                diagnostic = failures.get((asset.asset_id, capability))
+                if diagnostic is not None:
+                    raise _CaseFailure(diagnostic)
+
+    def _execute_cases(
+        self,
+        session: BenchmarkSearchSession,
+        dataset: BenchmarkDataset,
+        profile: BenchmarkProfile,
+        resolved: dict[str, ResolvedAsset],
+        resolution_failures: dict[str, str],
+        capability_failures: dict[tuple[str, str], str],
+    ) -> tuple[list[BenchmarkCaseOutcome], list[_CaseScore]]:
+        outcomes: list[BenchmarkCaseOutcome] = []
+        scores: list[_CaseScore] = []
+        for case in sorted(dataset.cases, key=lambda item: item.case_id):
+            score: _CaseScore | None = None
+            diagnostic_code: str | None = None
+            latency_ms = 0.0
+            try:
+                case_assets = self._assets_for_case(
+                    case,
+                    resolved,
+                    resolution_failures,
+                )
+                self._require_capabilities(
+                    profile,
+                    case_assets,
+                    capability_failures,
+                )
+                hits, latency_ms = self._search_case(
+                    session,
+                    profile,
+                    case,
+                    case_assets,
+                )
+                self._validate_hits(profile, case, case_assets, hits)
+                score = self._score_case(case, hits, latency_ms=latency_ms)
+            except _CaseFailure as exc:
+                diagnostic_code = exc.code
+                latency_ms = max(latency_ms, exc.latency_ms)
+            if score is None:
+                outcomes.append(
+                    BenchmarkCaseOutcome(
+                        case_id=case.case_id,
+                        status="failed",
+                        latency_ms=latency_ms,
+                        result_count=0,
+                        diagnostic_code=diagnostic_code or "execution_failed",
+                    )
+                )
+                continue
+            scores.append(score)
+            outcomes.append(self._complete_outcome(score))
+        return outcomes, scores
 
     def _search_case(
         self,
+        session: BenchmarkSearchSession,
         profile: BenchmarkProfile,
         case: QueryCase,
         assets: tuple[ResolvedAsset, ...],
-    ) -> tuple[BenchmarkSearchHit, ...]:
+    ) -> tuple[tuple[BenchmarkSearchHit, ...], float]:
+        started = self._read_timer()
         try:
-            value = self._search.search(
-                profile,
+            value = session.search(
                 case.query,
                 assets,
                 limit=profile.result_limit,
             )
-            return tuple(islice(iter(value), profile.result_limit + 1))
+            hits = tuple(islice(iter(value), profile.result_limit + 1))
         except Exception:
-            raise _CaseFailure("provider_failed") from None
+            raise _CaseFailure(
+                "provider_failed",
+                latency_ms=self._elapsed_ms(started),
+            ) from None
+        return hits, self._elapsed_ms(started)
 
     @staticmethod
     def _validate_hits(
@@ -555,7 +688,7 @@ class BenchmarkRunner:
             metrics.extend(_quality_metrics(selected_scores, prefix=prefix))
         return tuple(metrics)
 
-    def _created_at(self) -> str:
+    def _timestamp(self) -> str:
         try:
             value = self._clock()
         except Exception:
@@ -623,6 +756,14 @@ def audit_run_manifest(
         ),
         None,
     )
+    search_plan_identity = next(
+        (
+            identity.identity
+            for identity in run.config_identities
+            if identity.component_id == "benchmark_search_plan"
+        ),
+        None,
+    )
     if profile_identity is None or methodology_identity != _methodology_identity():
         raise BenchmarkExecutionError(
             "benchmark run audit failed: methodology identity mismatch"
@@ -641,6 +782,10 @@ def audit_run_manifest(
     if profile.identity != profile_identity:
         raise BenchmarkExecutionError(
             "benchmark run audit failed: profile identity mismatch"
+        )
+    if search_plan_identity != profile.search_plan.identity:
+        raise BenchmarkExecutionError(
+            "benchmark run audit failed: search plan identity mismatch"
         )
 
     cases_by_id = {case.case_id: case for case in dataset.cases}
@@ -687,7 +832,7 @@ def audit_run_manifest(
         run.case_outcomes,
         tuple(scores),
     )
-    if expected_metrics != run.metrics:
+    if expected_metrics != run.quality_metrics:
         raise BenchmarkExecutionError(
             "benchmark run audit failed: aggregate metrics mismatch"
         )

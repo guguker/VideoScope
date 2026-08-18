@@ -5,6 +5,9 @@ import json
 from typing import Callable
 
 from .schema import (
+    MEASUREMENT_PROTOCOL_COMPONENT_ID,
+    LEGACY_UNMEASURED_PROTOCOL_IDENTITY,
+    RUN_SCHEMA_VERSION,
     AssetProvenance,
     BenchmarkAsset,
     BenchmarkCaseOutcome,
@@ -18,6 +21,7 @@ from .schema import (
     HardwareProfile,
     MetricValue,
     QueryCase,
+    _run_status_for_outcomes,
 )
 
 
@@ -131,6 +135,9 @@ def run_to_dict(run: BenchmarkRunManifest) -> JsonObject:
         "schema_version": run.schema_version,
         "run_id": run.run_id,
         "created_at": run.created_at,
+        "started_at": run.started_at,
+        "finished_at": run.finished_at,
+        "run_status": run.run_status,
         "code_sha": run.code_sha,
         "dataset_revision": run.dataset_revision,
         "model_identities": [_identity_to_dict(item) for item in run.model_identities],
@@ -144,16 +151,37 @@ def run_to_dict(run: BenchmarkRunManifest) -> JsonObject:
             "accelerator": run.hardware.accelerator,
         },
         "execution_mode": run.execution_mode,
-        "metrics": [_metric_to_dict(metric) for metric in run.metrics],
+        "quality_metrics": [
+            _metric_to_dict(metric) for metric in run.quality_metrics
+        ],
+        "system_metrics": [
+            _metric_to_dict(metric) for metric in run.system_metrics
+        ],
+        "measurement_protocol": _identity_to_dict(run.measurement_protocol),
+        "measurement_status": run.measurement_status,
+        "measurement_started_at": run.measurement_started_at,
+        "measurement_finished_at": run.measurement_finished_at,
         "case_outcomes": [_outcome_to_dict(outcome) for outcome in run.case_outcomes],
     }
 
 
 def run_from_dict(value: JsonObject) -> BenchmarkRunManifest:
+    schema_version = value.get("schema_version")
+    if type(schema_version) is not int:
+        raise BenchmarkDataError("run manifest schema_version must be an integer")
+    if schema_version == 1:
+        return _legacy_run_from_dict(value)
+    if schema_version != RUN_SCHEMA_VERSION:
+        raise BenchmarkDataError(
+            f"run manifest schema_version must be 1 or {RUN_SCHEMA_VERSION}"
+        )
     fields = {
         "schema_version",
         "run_id",
         "created_at",
+        "started_at",
+        "finished_at",
+        "run_status",
         "code_sha",
         "dataset_revision",
         "model_identities",
@@ -161,20 +189,27 @@ def run_from_dict(value: JsonObject) -> BenchmarkRunManifest:
         "config_identities",
         "hardware",
         "execution_mode",
-        "metrics",
+        "quality_metrics",
+        "system_metrics",
+        "measurement_protocol",
+        "measurement_status",
+        "measurement_started_at",
+        "measurement_finished_at",
         "case_outcomes",
     }
     expect_fields(value, fields, "run manifest")
-    hardware = expect_object(value["hardware"], "hardware")
-    expect_fields(
-        hardware,
-        {"operating_system", "architecture", "processor", "memory_bytes", "accelerator"},
-        "hardware",
+    outcomes = _parse_tuple(
+        value["case_outcomes"],
+        "case_outcomes",
+        _outcome_from_dict,
     )
     return BenchmarkRunManifest(
-        schema_version=value["schema_version"],  # type: ignore[arg-type]
+        schema_version=RUN_SCHEMA_VERSION,
         run_id=value["run_id"],  # type: ignore[arg-type]
         created_at=value["created_at"],  # type: ignore[arg-type]
+        started_at=value["started_at"],  # type: ignore[arg-type]
+        finished_at=value["finished_at"],  # type: ignore[arg-type]
+        run_status=value["run_status"],  # type: ignore[arg-type]
         code_sha=value["code_sha"],  # type: ignore[arg-type]
         dataset_revision=value["dataset_revision"],  # type: ignore[arg-type]
         model_identities=_parse_tuple(
@@ -192,20 +227,123 @@ def run_from_dict(value: JsonObject) -> BenchmarkRunManifest:
             "config_identities",
             _identity_from_dict,
         ),
-        hardware=HardwareProfile(
-            operating_system=hardware["operating_system"],  # type: ignore[arg-type]
-            architecture=hardware["architecture"],  # type: ignore[arg-type]
-            processor=hardware["processor"],  # type: ignore[arg-type]
-            memory_bytes=hardware["memory_bytes"],  # type: ignore[arg-type]
-            accelerator=hardware["accelerator"],  # type: ignore[arg-type]
+        hardware=_hardware_from_dict(
+            expect_object(value["hardware"], "hardware")
         ),
         execution_mode=value["execution_mode"],  # type: ignore[arg-type]
-        metrics=_parse_tuple(value["metrics"], "metrics", _metric_from_dict),
-        case_outcomes=_parse_tuple(
-            value["case_outcomes"],
-            "case_outcomes",
-            _outcome_from_dict,
+        quality_metrics=_parse_tuple(
+            value["quality_metrics"],
+            "quality_metrics",
+            _metric_from_dict,
         ),
+        system_metrics=_parse_tuple(
+            value["system_metrics"],
+            "system_metrics",
+            _metric_from_dict,
+        ),
+        measurement_protocol=_identity_from_dict(
+            expect_object(value["measurement_protocol"], "measurement_protocol")
+        ),
+        measurement_status=value["measurement_status"],  # type: ignore[arg-type]
+        measurement_started_at=value["measurement_started_at"],  # type: ignore[arg-type]
+        measurement_finished_at=value["measurement_finished_at"],  # type: ignore[arg-type]
+        case_outcomes=outcomes,
+    )
+
+
+def _legacy_run_from_dict(value: JsonObject) -> BenchmarkRunManifest:
+    """Read the exact released v1 shape without rewriting immutable bytes.
+
+    A v1 manifest has no explicit run/measurement timeline.  It is therefore
+    represented in memory as a conservative v2 ``not_measured`` run.  New
+    writes always use v2; callers must not treat this compatibility read as an
+    evidence-preserving upgrade of the old methodology.
+    """
+
+    fields = {
+        "schema_version",
+        "run_id",
+        "created_at",
+        "code_sha",
+        "dataset_revision",
+        "model_identities",
+        "index_identities",
+        "config_identities",
+        "hardware",
+        "execution_mode",
+        "metrics",
+        "case_outcomes",
+    }
+    expect_fields(value, fields, "run manifest")
+    outcomes = _parse_tuple(
+        value["case_outcomes"],
+        "case_outcomes",
+        _outcome_from_dict,
+    )
+    created_at = value["created_at"]
+    return BenchmarkRunManifest(
+        schema_version=RUN_SCHEMA_VERSION,
+        run_id=value["run_id"],  # type: ignore[arg-type]
+        created_at=created_at,  # type: ignore[arg-type]
+        started_at=created_at,  # type: ignore[arg-type]
+        finished_at=created_at,  # type: ignore[arg-type]
+        run_status=_run_status_for_outcomes(outcomes),
+        code_sha=value["code_sha"],  # type: ignore[arg-type]
+        dataset_revision=value["dataset_revision"],  # type: ignore[arg-type]
+        model_identities=_parse_tuple(
+            value["model_identities"],
+            "model_identities",
+            _identity_from_dict,
+        ),
+        index_identities=_parse_tuple(
+            value["index_identities"],
+            "index_identities",
+            _identity_from_dict,
+        ),
+        config_identities=_parse_tuple(
+            value["config_identities"],
+            "config_identities",
+            _identity_from_dict,
+        ),
+        hardware=_hardware_from_dict(
+            expect_object(value["hardware"], "hardware")
+        ),
+        execution_mode=value["execution_mode"],  # type: ignore[arg-type]
+        quality_metrics=_parse_tuple(
+            value["metrics"],
+            "metrics",
+            _metric_from_dict,
+        ),
+        system_metrics=(),
+        measurement_protocol=ComponentIdentity(
+            MEASUREMENT_PROTOCOL_COMPONENT_ID,
+            LEGACY_UNMEASURED_PROTOCOL_IDENTITY,
+        ),
+        measurement_status="not_measured",
+        measurement_started_at=None,
+        measurement_finished_at=None,
+        case_outcomes=outcomes,
+    )
+
+
+def _hardware_from_dict(value: JsonObject) -> HardwareProfile:
+    expect_fields(
+        value,
+        {
+            "operating_system",
+            "architecture",
+            "processor",
+            "memory_bytes",
+            "accelerator",
+        },
+        "hardware",
+    )
+    return HardwareProfile(
+        operating_system=value["operating_system"],  # type: ignore[arg-type]
+        architecture=value["architecture"],  # type: ignore[arg-type]
+        processor=value["processor"],  # type: ignore[arg-type]
+        memory_bytes=value["memory_bytes"],  # type: ignore[arg-type]
+        accelerator=value["accelerator"],  # type: ignore[arg-type]
     )
 
 

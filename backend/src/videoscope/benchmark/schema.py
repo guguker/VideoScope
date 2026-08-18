@@ -10,8 +10,11 @@ from urllib.parse import urlsplit
 
 
 DATASET_SCHEMA_VERSION = 1
-RUN_SCHEMA_VERSION = 1
+RUN_SCHEMA_VERSION = 2
 MAX_RESULT_EVIDENCE_PER_CASE = 100
+MEASUREMENT_PROTOCOL_COMPONENT_ID = "benchmark_measurement_protocol"
+NOT_MEASURED_PROTOCOL_IDENTITY = "not-measured@1"
+LEGACY_UNMEASURED_PROTOCOL_IDENTITY = "legacy-unmeasured@1"
 
 _SAFE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -553,6 +556,9 @@ class BenchmarkRunManifest:
     schema_version: int
     run_id: str
     created_at: str
+    started_at: str
+    finished_at: str
+    run_status: Literal["complete", "partial", "cancelled", "failed"]
     code_sha: str
     dataset_revision: str
     model_identities: tuple[ComponentIdentity, ...]
@@ -560,7 +566,12 @@ class BenchmarkRunManifest:
     config_identities: tuple[ComponentIdentity, ...]
     hardware: HardwareProfile
     execution_mode: Literal["cold", "warm"]
-    metrics: tuple[MetricValue, ...]
+    quality_metrics: tuple[MetricValue, ...]
+    system_metrics: tuple[MetricValue, ...]
+    measurement_protocol: ComponentIdentity
+    measurement_status: Literal["not_measured", "complete", "failed"]
+    measurement_started_at: str | None
+    measurement_finished_at: str | None
     case_outcomes: tuple[BenchmarkCaseOutcome, ...]
 
     def __post_init__(self) -> None:
@@ -569,7 +580,13 @@ class BenchmarkRunManifest:
                 f"schema_version must be the supported version {RUN_SCHEMA_VERSION}"
             )
         _require_id(self.run_id, "run_id")
-        _validate_utc_timestamp(self.created_at)
+        created_at = _parse_utc_timestamp(self.created_at, "created_at")
+        started_at = _parse_utc_timestamp(self.started_at, "started_at")
+        finished_at = _parse_utc_timestamp(self.finished_at, "finished_at")
+        if not started_at <= finished_at <= created_at:
+            raise BenchmarkDataError(
+                "run timestamps must satisfy started_at <= finished_at <= created_at"
+            )
         if not isinstance(self.code_sha, str) or not _CODE_SHA_RE.fullmatch(self.code_sha):
             raise BenchmarkDataError("code_sha must be a lowercase 40- or 64-character commit SHA")
         if (
@@ -597,23 +614,138 @@ class BenchmarkRunManifest:
             raise BenchmarkDataError("hardware must be a HardwareProfile value")
         if self.execution_mode not in {"cold", "warm"}:
             raise BenchmarkDataError("execution_mode must be cold or warm")
-        metrics = _validate_typed_tuple(self.metrics, MetricValue, "metrics")
-        _require_unique(tuple(metric.name for metric in metrics), "metrics")
+        quality_metrics = _validate_typed_tuple(
+            self.quality_metrics,
+            MetricValue,
+            "quality_metrics",
+        )
+        system_metrics = _validate_typed_tuple(
+            self.system_metrics,
+            MetricValue,
+            "system_metrics",
+        )
+        quality_names = tuple(metric.name for metric in quality_metrics)
+        system_names = tuple(metric.name for metric in system_metrics)
+        _require_unique(quality_names, "quality_metrics")
+        _require_unique(system_names, "system_metrics")
+        _require_unique((*quality_names, *system_names), "run metric names")
+        if not isinstance(self.measurement_protocol, ComponentIdentity):
+            raise BenchmarkDataError(
+                "measurement_protocol must be a ComponentIdentity value"
+            )
+        if (
+            self.measurement_protocol.component_id
+            != MEASUREMENT_PROTOCOL_COMPONENT_ID
+        ):
+            raise BenchmarkDataError(
+                "measurement_protocol must use the reserved benchmark component id"
+            )
+        if self.measurement_status not in {"not_measured", "complete", "failed"}:
+            raise BenchmarkDataError(
+                "measurement_status must be not_measured, complete or failed"
+            )
+        measurement_times = (
+            self.measurement_started_at,
+            self.measurement_finished_at,
+        )
+        if self.measurement_status == "not_measured":
+            if self.measurement_protocol.identity not in {
+                NOT_MEASURED_PROTOCOL_IDENTITY,
+                LEGACY_UNMEASURED_PROTOCOL_IDENTITY,
+            }:
+                raise BenchmarkDataError(
+                    "not_measured runs must use an explicit unmeasured protocol identity"
+                )
+            if any(value is not None for value in measurement_times) or system_metrics:
+                raise BenchmarkDataError(
+                    "not_measured runs must not contain measurement timestamps or "
+                    "system_metrics"
+                )
+        else:
+            if self.measurement_protocol.identity in {
+                NOT_MEASURED_PROTOCOL_IDENTITY,
+                LEGACY_UNMEASURED_PROTOCOL_IDENTITY,
+            }:
+                raise BenchmarkDataError(
+                    "complete or failed measurements require a concrete protocol identity"
+                )
+            if any(value is None for value in measurement_times):
+                raise BenchmarkDataError(
+                    "complete or failed measurements require start and finish timestamps"
+                )
+            measurement_started = _parse_utc_timestamp(
+                self.measurement_started_at,
+                "measurement_started_at",
+            )
+            measurement_finished = _parse_utc_timestamp(
+                self.measurement_finished_at,
+                "measurement_finished_at",
+            )
+            if not (
+                started_at
+                <= measurement_started
+                <= measurement_finished
+                <= finished_at
+            ):
+                raise BenchmarkDataError(
+                    "measurement timestamps must fall inside the run timestamps"
+                )
+            if self.measurement_status == "complete" and not system_metrics:
+                raise BenchmarkDataError(
+                    "a complete measurement requires system_metrics"
+                )
+            if self.measurement_status == "failed" and system_metrics:
+                raise BenchmarkDataError(
+                    "a failed measurement must not publish partial system_metrics"
+                )
         outcomes = _validate_typed_tuple(
             self.case_outcomes,
             BenchmarkCaseOutcome,
             "case_outcomes",
         )
+        if not outcomes:
+            raise BenchmarkDataError("case_outcomes must not be empty")
         _require_unique(tuple(outcome.case_id for outcome in outcomes), "case_outcomes")
+        expected_status = _run_status_for_outcomes(outcomes)
+        if self.run_status != expected_status:
+            raise BenchmarkDataError(
+                f"run_status must be {expected_status} for the persisted case outcomes"
+            )
+
+    @property
+    def metrics(self) -> tuple[MetricValue, ...]:
+        """Compatibility alias for callers that consume recomputable aggregates."""
+
+        return self.quality_metrics
+
+
+def _run_status_for_outcomes(
+    outcomes: tuple[BenchmarkCaseOutcome, ...],
+) -> Literal["complete", "partial", "cancelled", "failed"]:
+    if any(outcome.status == "skipped" for outcome in outcomes):
+        return "cancelled"
+    completed = sum(outcome.status == "complete" for outcome in outcomes)
+    if completed == len(outcomes):
+        return "complete"
+    if completed:
+        return "partial"
+    return "failed"
 
 
 def _validate_utc_timestamp(value: object) -> None:
-    timestamp = _require_string(value, "created_at", max_length=64)
+    _parse_utc_timestamp(value, "created_at")
+
+
+def _parse_utc_timestamp(value: object, field: str) -> datetime:
+    timestamp = _require_string(value, field, max_length=64)
     if not timestamp.endswith("Z"):
-        raise BenchmarkDataError("created_at must be an RFC 3339 UTC timestamp ending in Z")
+        raise BenchmarkDataError(
+            f"{field} must be an RFC 3339 UTC timestamp ending in Z"
+        )
     try:
         parsed = datetime.fromisoformat(f"{timestamp[:-1]}+00:00")
     except ValueError as exc:
-        raise BenchmarkDataError("created_at must be a valid RFC 3339 timestamp") from exc
+        raise BenchmarkDataError(f"{field} must be a valid RFC 3339 timestamp") from exc
     if parsed.utcoffset() is None or parsed.utcoffset().total_seconds() != 0:
-        raise BenchmarkDataError("created_at must use UTC")
+        raise BenchmarkDataError(f"{field} must use UTC")
+    return parsed
