@@ -163,9 +163,13 @@ Per-video readiness is represented independently for segment stages, text
 vectors, dense visual indexing and Lighthouse. Schema v5 introduced
 source/specification-linked generations for scenes, speech, OCR and objects;
 schema v6 adds immutable text-vector generations with exact upstream lineage,
-verified Qdrant manifests and an atomic SQLite active pointer. SigLIP and
-Lighthouse retain their own validated immutable manifests. A unified probe-stage
-readiness record remains follow-up work.
+verified Qdrant manifests and an atomic SQLite active pointer. Schema v7 adds
+global generation tombstones and leased GC jobs; schema v8 adds monotonic fenced
+total attempts, a bounded window of 256 immutable recent audit rows,
+indefinitely recoverable transient retries with capped backoff and quarantine for
+corrupt recovery metadata. SigLIP and Lighthouse retain their own validated
+immutable manifests. A unified probe-stage readiness record remains follow-up
+work.
 
 Search requirements are derived from the actual query plan. Evaluation variants
 declare stronger deterministic requirements. Missing speech/OCR/object artifacts
@@ -186,6 +190,14 @@ the last proven active generation and produce explicit `failed` or
 `not_configured` runs. Startup does not enqueue already-ready legacy videos or
 rebuild their text evidence automatically; migration requires an explicit
 per-video reindex so model work and user-visible changes remain intentional.
+
+The API acquires an exclusive data-directory lock before migration or recovery.
+Indexer and GC share one storage gate: reservation, Qdrant build and SQLite
+commit/failure cleanup cannot overlap expiry or deletion. GC deletes only an
+uncommitted exact generation, verifies a zero remaining point count and records
+every leased attempt. Stale leases and transient storage failures return to the
+bounded-backoff queue; permanent contract failures are terminal. Corrupt build
+or job metadata is quarantined without exposing it as a trusted deletion target.
 
 ## Environment isolation
 
@@ -255,16 +267,18 @@ Approved ablations run an identical frozen benchmark through explicit profiles:
 
 ## Reliability scope
 
-After artifact/provenance/benchmark foundations:
+Crash-safe text-vector ownership, recovery and GC are implemented. Remaining
+reliability work covers user-facing resources and long-running product jobs:
 
 - video and export deletion with validated cascade plans;
 - free-space checks, quotas, retention and temporary-file scavenging;
+- expose recovery quarantine/degraded state and audit/storage growth in health metrics;
 - durable job progress, cancellation, retry and deduplication;
 - background evaluation/export and bounded heavy reranking;
 - generated OpenAPI-to-TypeScript contracts plus runtime response validation;
 - real frontend-to-FastAPI integration test with a deterministic demo asset;
 - frontend coverage gates focused on critical flows;
-- numbered SQLite migrations and backup/restore verification;
+- backup/restore verification for the numbered SQLite migrations;
 - local serving of the built frontend without macOS application packaging.
 
 ## GitHub scope
@@ -289,7 +303,8 @@ Design and nonessential product features remain last priority.
 5. **Benchmark registry** — portable manifests, immutable runs and baseline.
 6. **Ablations** — evidence-based provider retention decisions.
 7. **Sports engine** — detector/tracker/OCR/rules, then learned fusion if justified.
-8. **Lifecycle/jobs/contracts/E2E** — reliability and maintainability work.
+8. **Lifecycle/jobs/contracts/E2E** — text-vector crash recovery is complete;
+   user jobs, retention, contracts and integration coverage remain.
 9. **GitHub/release** — protected, documented release baseline.
 
 No phase may claim completion only because unit tests are green. Relevant data
