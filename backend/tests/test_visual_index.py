@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 import sys
 import types
 
@@ -7,7 +8,6 @@ import pytest
 
 import videoscope.search.visual_index as visual_index_module
 from videoscope.media.ffmpeg import SampledFrame
-from videoscope.repository import SegmentRecord
 from videoscope.search.sports_events import classify_basketball_event_query
 from videoscope.search.visual_index import (
     SiglipVisualIndex,
@@ -16,28 +16,18 @@ from videoscope.search.visual_index import (
 )
 
 
-def scene(tmp_path, segment_id: str, start: float, vector: np.ndarray) -> SegmentRecord:
-    thumbnail = tmp_path / f"{segment_id}.jpg"
-    thumbnail.write_bytes(b"frame")
-    return SegmentRecord(
-        id=segment_id,
-        video_id="video-1",
-        start=start,
-        end=start + 5,
-        modality="scene",
-        text="scene",
-        confidence=1,
-        metadata={"test_vector": vector.tolist()},
-        thumbnail_path=str(thumbnail),
-    )
+def active_generation_path(tmp_path: Path, index: SiglipVisualIndex) -> Path:
+    generation_id = index.active_generation_id("video-1")
+    assert generation_id is not None
+    return tmp_path / "index" / "video-1" / "generations" / generation_id
 
 
 def test_visual_index_persists_frames_and_returns_closest_scene(tmp_path, monkeypatch) -> None:
-    index = SiglipVisualIndex(tmp_path / "index", model_name="test", batch_size=2)
-    segments = [
-        scene(tmp_path, "left", 0, np.array([1.0, 0.0], dtype=np.float32)),
-        scene(tmp_path, "right", 10, np.array([0.0, 1.0], dtype=np.float32)),
-    ]
+    index = SiglipVisualIndex(
+        tmp_path / "index", model_name="test", batch_size=2, sample_step=10.0
+    )
+    source = tmp_path / "video.mp4"
+    source.write_bytes(b"video")
     monkeypatch.setattr(
         index,
         "_image_vectors",
@@ -47,15 +37,19 @@ def test_visual_index_persists_frames_and_returns_closest_scene(tmp_path, monkey
 
     assert index.index_is_current("video-1") is False
 
-    index.replace_video("video-1", segments)
+    index.replace_video_source(
+        "video-1", source, 15.0, DenseFrameExtractor()
+    )
     hits = index.search("right", video_ids=["video-1"], limit=2)
 
     assert hits[0].start == 10
     assert hits[0].modality == "visual"
     assert hits[0].metadata["source"] == "siglip2"
-    metadata = json.loads((tmp_path / "index" / "video-1" / "metadata.json").read_text())
+    generation = active_generation_path(tmp_path, index)
+    metadata = json.loads((generation / "metadata.json").read_text())
+    manifest = json.loads((generation / "manifest.json").read_text())
     assert len(metadata) == 2
-    assert (tmp_path / "index" / "video-1" / "model.txt").read_text() == "test"
+    assert manifest["specification_hash"] == index.specification.identity
     assert index.index_is_current("video-1") is True
 
 
@@ -79,7 +73,7 @@ def test_visual_index_readiness_rejects_stale_or_malformed_artifacts(tmp_path) -
     assert index.index_is_current("video-1") is False
 
     model_path.write_text("current", encoding="utf-8")
-    assert index.index_is_current("video-1") is True
+    assert index.index_is_current("video-1") is False
 
     metadata_path.write_text('{"not":"a-list"}', encoding="utf-8")
     assert index.index_is_current("video-1") is False
@@ -98,9 +92,10 @@ def test_visual_index_readiness_rejects_stale_or_malformed_artifacts(tmp_path) -
 
 def test_visual_index_ignores_vectors_from_another_model(tmp_path, monkeypatch) -> None:
     first = SiglipVisualIndex(tmp_path / "index", model_name="first")
-    segments = [scene(tmp_path, "scene", 0, np.array([1.0], dtype=np.float32))]
+    source = tmp_path / "video.mp4"
+    source.write_bytes(b"video")
     monkeypatch.setattr(first, "_image_vectors", lambda _paths: np.array([[1.0]], dtype=np.float32))
-    first.replace_video("video-1", segments)
+    first.replace_video_source("video-1", source, 1.0, DenseFrameExtractor())
 
     second = SiglipVisualIndex(tmp_path / "index", model_name="second")
     monkeypatch.setattr(second, "_text_vector", lambda _query: np.array([1.0], dtype=np.float32))
@@ -108,15 +103,18 @@ def test_visual_index_ignores_vectors_from_another_model(tmp_path, monkeypatch) 
     assert second.search("query", video_ids=["video-1"]) == []
 
 
-def test_visual_index_invalidates_marker_before_partial_replacement(tmp_path, monkeypatch) -> None:
+def test_visual_index_keeps_active_generation_after_partial_replacement(tmp_path, monkeypatch) -> None:
     index = SiglipVisualIndex(tmp_path / "index", model_name="test")
-    segments = [scene(tmp_path, "scene", 0, np.array([1.0], dtype=np.float32))]
+    source = tmp_path / "video.mp4"
+    source.write_bytes(b"video")
     monkeypatch.setattr(
         index,
         "_image_vectors",
         lambda _paths: np.array([[1.0]], dtype=np.float32),
     )
-    index.replace_video("video-1", segments)
+    first_generation = index.replace_video_source(
+        "video-1", source, 1.0, DenseFrameExtractor()
+    )
 
     monkeypatch.setattr(
         visual_index_module,
@@ -124,16 +122,15 @@ def test_visual_index_invalidates_marker_before_partial_replacement(tmp_path, mo
         lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("disk full")),
     )
     with pytest.raises(OSError, match="disk full"):
-        index.replace_video("video-1", segments)
+        index.replace_video_source("video-1", source, 1.0, DenseFrameExtractor())
 
-    video_dir = tmp_path / "index" / "video-1"
-    assert not (video_dir / "model.txt").exists()
+    assert index.active_generation_id("video-1") == first_generation
     monkeypatch.setattr(
         index,
         "_text_vectors",
         lambda _query: np.array([[1.0]], dtype=np.float32),
     )
-    assert index.search("query", video_ids=["video-1"]) == []
+    assert index.search("query", video_ids=["video-1"])
 
 
 def test_visual_index_requires_identity_marker_even_for_default_model(tmp_path, monkeypatch) -> None:
@@ -163,12 +160,14 @@ def test_visual_index_revision_is_part_of_persisted_identity(tmp_path, monkeypat
         model_name="organization/model",
         model_revision="a" * 40,
     )
-    segments = [scene(tmp_path, "scene", 0, np.array([1.0], dtype=np.float32))]
+    source = tmp_path / "video.mp4"
+    source.write_bytes(b"video")
     monkeypatch.setattr(first, "_image_vectors", lambda _paths: np.array([[1.0]], dtype=np.float32))
-    first.replace_video("video-1", segments)
+    first.replace_video_source("video-1", source, 1.0, DenseFrameExtractor())
 
-    model_file = tmp_path / "index" / "video-1" / "model.txt"
-    assert model_file.read_text(encoding="utf-8") == "organization/model@" + "a" * 40
+    manifest_file = active_generation_path(tmp_path, first) / "manifest.json"
+    manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
+    assert manifest["specification"]["model_revision"] == "a" * 40
 
     second = SiglipVisualIndex(
         tmp_path / "index",
@@ -355,7 +354,11 @@ class DenseFrameExtractor:
 
 
 def test_dense_visual_index_persists_fixed_step_frames(tmp_path, monkeypatch) -> None:
-    index = SiglipVisualIndex(tmp_path / "index", model_name="test", batch_size=2)
+    index = SiglipVisualIndex(
+        tmp_path / "index", model_name="test", batch_size=2, sample_step=2.0
+    )
+    source = tmp_path / "video.mp4"
+    source.write_bytes(b"video")
     monkeypatch.setattr(
         index,
         "_image_vectors",
@@ -364,14 +367,14 @@ def test_dense_visual_index_persists_fixed_step_frames(tmp_path, monkeypatch) ->
 
     index.replace_video_source(
         "video-1",
-        tmp_path / "video.mp4",
+        source,
         5.0,
         DenseFrameExtractor(),
-        step=2.0,
     )
 
+    generation = active_generation_path(tmp_path, index)
     metadata = json.loads(
-        (tmp_path / "index" / "video-1" / "metadata.json").read_text()
+        (generation / "metadata.json").read_text()
     )
     assert [item["start"] for item in metadata] == [0.0, 2.0, 4.0]
     assert [item["end"] for item in metadata] == [2.0, 4.0, 5.0]
@@ -383,6 +386,8 @@ def test_made_three_point_search_returns_chronological_event_window(
     monkeypatch,
 ) -> None:
     index = SiglipVisualIndex(tmp_path / "index", model_name="test", batch_size=4)
+    source = tmp_path / "video.mp4"
+    source.write_bytes(b"video")
     release_prompts, outcome_prompts, followup_prompts = (
         made_three_point_prompt_stages()
     )
@@ -405,10 +410,9 @@ def test_made_three_point_search_returns_chronological_event_window(
     monkeypatch.setattr(index, "_text_vector", text_vector)
     index.replace_video_source(
         "video-1",
-        tmp_path / "video.mp4",
+        source,
         12.0,
         DenseFrameExtractor(),
-        step=1.0,
     )
 
     hits = index.search(
@@ -458,6 +462,8 @@ def test_made_basketball_search_exposes_candidate_stage_evidence(
     stage_order: list[str],
 ) -> None:
     index = SiglipVisualIndex(tmp_path / "index", model_name="test", batch_size=4)
+    source = tmp_path / "video.mp4"
+    source.write_bytes(b"video")
     specification = classify_basketball_event_query(query)
     assert specification is not None
     frame_vectors = np.zeros((12, 3), dtype=np.float32)
@@ -478,10 +484,9 @@ def test_made_basketball_search_exposes_candidate_stage_evidence(
     monkeypatch.setattr(index, "_text_vector", text_vector)
     index.replace_video_source(
         "video-1",
-        tmp_path / "video.mp4",
+        source,
         12.0,
         DenseFrameExtractor(),
-        step=1.0,
     )
 
     hits = index.search(query, video_ids=["video-1"], limit=5)

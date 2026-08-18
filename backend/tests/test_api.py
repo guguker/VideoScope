@@ -1,12 +1,16 @@
+import hashlib
 from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import quote
 
 from fastapi.testclient import TestClient
+import pytest
 
+from videoscope.artifacts import StageState
 from videoscope.api import UPLOAD_BODY_OVERHEAD_BYTES, create_app
 from videoscope.config import AppSettings
 from videoscope.repository import Repository
+from videoscope.runtime import create_indexing_specifications
 
 
 class RecordingQueue:
@@ -65,6 +69,101 @@ def test_upload_creates_library_item_and_queues_processing(tmp_path) -> None:
     assert stored_files[0].suffix == ".mp4"
 
 
+def test_upload_hashes_stream_while_writing_and_persists_asset_identity(
+    tmp_path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    settings = settings_for(tmp_path)
+    repository = Repository(settings.database_path)
+    repository.initialize()
+    payload = b"content whose digest identifies the asset"
+    opened_media_modes: list[str] = []
+    original_open = Path.open
+
+    def tracking_open(path, mode="r", *args, **kwargs):  # type: ignore[no-untyped-def]
+        try:
+            path.resolve().relative_to(settings.data_dir.resolve())
+        except (FileNotFoundError, ValueError):
+            pass
+        else:
+            opened_media_modes.append(mode)
+        return original_open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", tracking_open)
+    app = create_app(
+        settings=settings,
+        repository=repository,
+        processing_queue=RecordingQueue(),
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/videos",
+            files={"file": ("match.mp4", payload, "video/mp4")},
+        )
+
+    assert response.status_code == 202
+    video_id = response.json()["id"]
+    asset = repository.get_video_asset(video_id)
+    assert asset is not None
+    assert asset.sha256 == hashlib.sha256(payload).hexdigest()
+    assert asset.size_bytes == len(payload)
+    assert not any("r" in mode for mode in opened_media_modes)
+
+
+def test_upload_removes_moved_media_when_asset_transaction_is_rejected(tmp_path) -> None:
+    class RejectingAssetRepository(Repository):
+        def create_video_with_asset(self, **kwargs):  # type: ignore[no-untyped-def]
+            kwargs["source_sha256"] = "invalid-digest"
+            return super().create_video_with_asset(**kwargs)
+
+    settings = settings_for(tmp_path)
+    repository = RejectingAssetRepository(settings.database_path)
+    repository.initialize()
+    app = create_app(
+        settings=settings,
+        repository=repository,
+        processing_queue=RecordingQueue(),
+    )
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.post(
+            "/api/videos",
+            files={"file": ("match.mp4", b"moved before database failure", "video/mp4")},
+        )
+
+    assert response.status_code == 500
+    assert list(settings.media_dir.iterdir()) == []
+    assert list(settings.temp_dir.iterdir()) == []
+    assert repository.list_videos() == []
+
+
+def test_upload_removes_temporary_media_when_atomic_move_fails(
+    tmp_path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    settings = settings_for(tmp_path)
+    original_replace = Path.replace
+
+    def reject_upload_move(path, target):  # type: ignore[no-untyped-def]
+        if path.suffix == ".upload":
+            raise OSError("simulated atomic move failure")
+        return original_replace(path, target)
+
+    monkeypatch.setattr(Path, "replace", reject_upload_move)
+    app = create_app(settings=settings, processing_queue=RecordingQueue())
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.post(
+            "/api/videos",
+            files={"file": ("match.mp4", b"temporary upload", "video/mp4")},
+        )
+
+    assert response.status_code == 500
+    assert list(settings.media_dir.iterdir()) == []
+    assert list(settings.temp_dir.iterdir()) == []
+
+
 def test_video_api_contract_does_not_expose_storage_implementation(tmp_path) -> None:
     app = create_app(settings=settings_for(tmp_path), processing_queue=RecordingQueue())
 
@@ -79,6 +178,7 @@ def test_video_api_contract_does_not_expose_storage_implementation(tmp_path) -> 
     assert "stored_name" not in payload
     assert "media_path" not in payload
     assert "thumbnail_path" not in payload
+    assert "asset_id" not in payload
     assert payload["media_url"].startswith("/api/videos/")
 
 
@@ -146,7 +246,7 @@ def test_openapi_describes_structured_response_contracts(tmp_path) -> None:
     assert "429" in schema["paths"]["/api/search"]["post"]["responses"]
     for path in (
         "/api/videos/{video_id}/media",
-        "/api/thumbnails/{video_id}/{filename}",
+        "/api/thumbnails/{video_id}/{relative_path}",
         "/api/exports/{filename}",
     ):
         content = schema["paths"][path]["get"]["responses"]["200"]["content"]
@@ -263,6 +363,95 @@ def test_thumbnail_route_cannot_escape_with_encoded_video_id(tmp_path) -> None:
 
     assert response.status_code == 404
     assert response.content != b"not public"
+
+
+def test_thumbnail_route_serves_nested_generation_and_legacy_flat_paths(tmp_path) -> None:
+    settings = settings_for(tmp_path)
+    settings.ensure_directories()
+    repository = ready_repository(settings)
+    generation = settings.thumbnails_dir / "video-1" / "generations" / "generation-1"
+    generation.mkdir(parents=True)
+    nested = generation / "scene name.jpg"
+    nested.write_bytes(b"nested jpeg")
+    flat = settings.thumbnails_dir / "video-1" / "legacy.jpg"
+    flat.write_bytes(b"legacy jpeg")
+    repository.update_video("video-1", thumbnail_path=str(nested))
+    app = create_app(
+        settings=settings,
+        repository=repository,
+        processing_queue=RecordingQueue(),
+    )
+
+    with TestClient(app) as client:
+        nested_response = client.get(
+            "/api/thumbnails/video-1/generations/generation-1/scene%20name.jpg"
+        )
+        flat_response = client.get("/api/thumbnails/video-1/legacy.jpg")
+        video = client.get("/api/videos/video-1")
+
+    assert nested_response.status_code == 200
+    assert nested_response.content == b"nested jpeg"
+    assert flat_response.status_code == 200
+    assert flat_response.content == b"legacy jpeg"
+    assert video.json()["thumbnail_url"] == (
+        "/api/thumbnails/video-1/generations/generation-1/scene%20name.jpg"
+    )
+
+
+@pytest.mark.parametrize(
+    "relative_path",
+    [
+        "%2e%2e/secret.jpg",
+        "generations/%2e%2e/secret.jpg",
+        "%2Fetc%2Fpasswd",
+        "generations%5Csecret.jpg",
+        "generations//secret.jpg",
+        ".",
+    ],
+)
+def test_thumbnail_route_rejects_unsafe_nested_relative_paths(
+    tmp_path,
+    relative_path: str,
+) -> None:
+    settings = settings_for(tmp_path)
+    settings.ensure_directories()
+    secret = settings.data_dir / "secret.jpg"
+    secret.write_bytes(b"not public")
+    app = create_app(settings=settings, processing_queue=RecordingQueue())
+
+    with TestClient(app) as client:
+        response = client.get(f"/api/thumbnails/video-1/{relative_path}")
+
+    assert response.status_code == 404
+    assert response.content != b"not public"
+
+
+def test_thumbnail_route_rejects_symlink_in_any_nested_component(tmp_path) -> None:
+    settings = settings_for(tmp_path)
+    settings.ensure_directories()
+    secret_dir = settings.data_dir / "private"
+    secret_dir.mkdir()
+    (secret_dir / "secret.jpg").write_bytes(b"not public")
+    video_root = settings.thumbnails_dir / "video-1"
+    video_root.mkdir()
+    (video_root / "linked-dir").symlink_to(secret_dir, target_is_directory=True)
+    safe_dir = video_root / "generations" / "generation-1"
+    safe_dir.mkdir(parents=True)
+    (safe_dir / "linked-file.jpg").symlink_to(secret_dir / "secret.jpg")
+    app = create_app(settings=settings, processing_queue=RecordingQueue())
+
+    with TestClient(app) as client:
+        directory_link = client.get(
+            "/api/thumbnails/video-1/linked-dir/secret.jpg"
+        )
+        file_link = client.get(
+            "/api/thumbnails/video-1/generations/generation-1/linked-file.jpg"
+        )
+
+    assert directory_link.status_code == 404
+    assert file_link.status_code == 404
+    assert directory_link.content != b"not public"
+    assert file_link.content != b"not public"
 
 
 def test_export_route_rejects_symlink_outside_clips_directory(tmp_path) -> None:
@@ -402,7 +591,17 @@ def test_search_glossary_can_be_updated_and_read(tmp_path) -> None:
 
 def test_evaluation_cases_and_report_are_available_via_api(tmp_path) -> None:
     settings = settings_for(tmp_path)
+    settings.ensure_directories()
     repository = ready_repository(settings)
+    media = settings.media_dir / "match.mp4"
+    media.write_bytes(b"x")
+    repository.ensure_asset_identity("video-1", media_root=settings.media_dir)
+    speech_run = repository.create_stage_run(
+        video_id="video-1",
+        specification=create_indexing_specifications(settings).speech,
+    )
+    repository.transition_stage_run(speech_run.run_id, StageState.RUNNING)
+    repository.commit_segment_generation(speech_run.run_id, segments=[])
     app = create_app(
         settings=settings,
         repository=repository,

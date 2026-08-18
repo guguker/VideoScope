@@ -1,18 +1,46 @@
 from pathlib import Path
 
+from videoscope.artifacts import StageKind, StageState
+from videoscope.config import AppSettings
 from videoscope.media.ffmpeg import MediaProbe
+from videoscope.media.ffmpeg import SampledFrame
 from videoscope.processing.indexer import Indexer, merge_timed_text
 from videoscope.providers.types import ObjectTag, TimedText
 from videoscope.repository import Repository
+from videoscope.runtime import create_indexing_specifications
+
+
+def _specification_resolver(tmp_path: Path):  # type: ignore[no-untyped-def]
+    settings = AppSettings(data_dir=tmp_path / "data")
+    return lambda: create_indexing_specifications(settings)
 
 
 class FakeFFmpeg:
+    def __init__(self) -> None:
+        self.dense_calls: list[tuple[float, int]] = []
+
     def probe(self, _source: Path) -> MediaProbe:
         return MediaProbe(duration=20.0, width=1280, height=720, fps=25.0)
 
     def extract_frame(self, _source: Path, destination: Path, _timestamp: float) -> None:
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(b"jpeg")
+
+    def extract_frames(
+        self,
+        _source: Path,
+        destination: Path,
+        start: float,
+        end: float,
+        *,
+        step: float,
+        max_width: int = 640,
+    ) -> list[SampledFrame]:
+        self.dense_calls.append((step, max_width))
+        destination.mkdir(parents=True, exist_ok=True)
+        path = destination / "sample-0000.jpg"
+        path.write_bytes(b"dense")
+        return [SampledFrame(start, path)]
 
 
 class FakeScenes:
@@ -94,7 +122,9 @@ def test_indexer_collects_each_available_modality(tmp_path) -> None:
     vector_index = RecordingIndex()
     indexer = Indexer(
         repository=repository,
+        media_root=tmp_path,
         thumbnails_dir=tmp_path / "thumbs",
+        specification_resolver=_specification_resolver(tmp_path),
         ffmpeg=FakeFFmpeg(),  # type: ignore[arg-type]
         scenes=FakeScenes(),  # type: ignore[arg-type]
         speech=FakeSpeech(),  # type: ignore[arg-type]
@@ -111,8 +141,57 @@ def test_indexer_collects_each_available_modality(tmp_path) -> None:
     assert video.status == "ready"
     assert video.progress == 1.0
     assert {segment.modality for segment in segments} == {"scene", "speech", "ocr", "objects"}
-    assert len(vector_index.segment_ids) == len(segments)
+    assert set(vector_index.segment_ids) == {
+        segment.id for segment in segments if segment.modality != "scene"
+    }
     assert Path(video.thumbnail_path or "").is_file()
+
+
+def test_ingest_and_reindex_use_the_same_dense_visual_source_path(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from videoscope.search.visual_index import SiglipVisualIndex
+
+    repository = Repository(tmp_path / "db.sqlite3")
+    repository.initialize()
+    media = tmp_path / "video.mp4"
+    media.write_bytes(b"video")
+    repository.create_video(
+        video_id="video-1",
+        original_name="match.mp4",
+        stored_name="video.mp4",
+        media_path=str(media),
+        size_bytes=5,
+    )
+    ffmpeg = FakeFFmpeg()
+    visual = SiglipVisualIndex(
+        tmp_path / "visual",
+        model_name="test",
+        sample_step=2.5,
+        max_width=384,
+    )
+    monkeypatch.setattr(
+        visual,
+        "_image_vectors",
+        lambda paths: __import__("numpy").ones((len(paths), 2), dtype="float32"),
+    )
+    indexer = Indexer(
+        repository=repository,
+        media_root=tmp_path,
+        thumbnails_dir=tmp_path / "thumbs",
+        specification_resolver=_specification_resolver(tmp_path),
+        ffmpeg=ffmpeg,  # type: ignore[arg-type]
+        scenes=FakeScenes(),  # type: ignore[arg-type]
+        vector_index=RecordingIndex(),  # type: ignore[arg-type]
+        visual_index=visual,
+    )
+
+    indexer.process("video-1")
+    indexer.process("video-1")
+
+    assert ffmpeg.dense_calls == [(2.5, 384), (2.5, 384)]
+    assert visual.index_is_current("video-1") is True
 
 
 def test_indexer_keeps_working_when_optional_provider_fails(tmp_path) -> None:
@@ -133,7 +212,9 @@ def test_indexer_keeps_working_when_optional_provider_fails(tmp_path) -> None:
     )
     indexer = Indexer(
         repository=repository,
+        media_root=tmp_path,
         thumbnails_dir=tmp_path / "thumbs",
+        specification_resolver=_specification_resolver(tmp_path),
         ffmpeg=FakeFFmpeg(),  # type: ignore[arg-type]
         scenes=FakeScenes(),  # type: ignore[arg-type]
         speech=None,
@@ -150,7 +231,7 @@ def test_indexer_keeps_working_when_optional_provider_fails(tmp_path) -> None:
     assert "ocr" in (video.error or "")
 
 
-def test_indexer_recovers_after_transient_ocr_error(tmp_path) -> None:
+def test_indexer_does_not_publish_partial_ocr_after_transient_error(tmp_path) -> None:
     class TransientOCR:
         def __init__(self) -> None:
             self.calls = 0
@@ -174,7 +255,9 @@ def test_indexer_recovers_after_transient_ocr_error(tmp_path) -> None:
     )
     indexer = Indexer(
         repository=repository,
+        media_root=tmp_path,
         thumbnails_dir=tmp_path / "thumbs",
+        specification_resolver=_specification_resolver(tmp_path),
         ffmpeg=FakeFFmpeg(),  # type: ignore[arg-type]
         scenes=FakeScenes(),  # type: ignore[arg-type]
         speech=None,
@@ -185,10 +268,8 @@ def test_indexer_recovers_after_transient_ocr_error(tmp_path) -> None:
 
     indexer.process("video-1")
 
-    ocr_segments = [
-        segment
-        for segment in repository.list_segments("video-1")
-        if segment.modality == "ocr"
-    ]
-    assert len(ocr_segments) == 1
-    assert ocr_segments[0].text == "HOME 90 GUEST 87"
+    assert repository.list_active_segments("video-1", StageKind.OCR) == []
+    run = repository.get_latest_stage_run("video-1", StageKind.OCR)
+    assert run is not None
+    assert run.state is StageState.FAILED
+    assert run.error_code == "ocr_provider_failed"

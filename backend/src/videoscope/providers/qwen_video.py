@@ -26,6 +26,7 @@ MADE_BASKET_PROMPT_VERSION = "made-basket-facts-v3"
 LEGACY_MADE_THREE_PROMPT_VERSION = "made-three-facts-v2"
 GENERIC_PROMPT_VERSION = "generic-storyboard-v2"
 QWEN_INPUT_SCHEMA_VERSION = "qwen-video-input-v1"
+QWEN_INFERENCE_RUNTIME_IDENTITY = "mlx-vlm==0.6.7"
 
 
 class FrameExtractor(Protocol):
@@ -47,6 +48,35 @@ class FrameExtractor(Protocol):
         step: float,
         max_width: int = 640,
     ) -> list[SampledFrame]: ...
+
+
+@dataclass(frozen=True, slots=True)
+class QwenInferenceStatus:
+    ready: bool
+    detail: str
+
+
+class QwenInferenceClient(Protocol):
+    @property
+    def identity(self) -> dict[str, object]: ...
+
+    def status(self) -> QwenInferenceStatus: ...
+
+    def judge_video(
+        self,
+        source: Path,
+        *,
+        fps: float,
+        max_tokens: int,
+    ) -> QwenVideoJudgement: ...
+
+    def judge_storyboard(
+        self,
+        source: Path,
+        query: str,
+        *,
+        max_tokens: int,
+    ) -> QwenVideoJudgement: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -225,6 +255,8 @@ class QwenVideoReranker:
         frame_count: int = 12,
         video_fps: float = 2.0,
         max_tokens: int = 320,
+        inference_client: QwenInferenceClient | None = None,
+        allow_in_process: bool = False,
     ) -> None:
         self.model_name = model_name.strip() if model_name else None
         self.model_revision = model_revision
@@ -246,6 +278,8 @@ class QwenVideoReranker:
         self.frame_count = max(4, frame_count)
         self.video_fps = max(0.5, video_fps)
         self.max_tokens = max(64, max_tokens)
+        self.inference_client = inference_client
+        self.allow_in_process = allow_in_process
         self._model = None
         self._processor = None
         self._load_lock = Lock()
@@ -259,6 +293,26 @@ class QwenVideoReranker:
     def model_identity(self) -> str:
         return model_identity(self.display_model_name, self.model_revision)
 
+    @property
+    def identity(self) -> dict[str, object]:
+        if self.inference_client is not None:
+            boundary: dict[str, object] = self.inference_client.identity
+        elif self.allow_in_process:
+            boundary = {
+                "mode": "deprecated-in-process",
+                "runtime_identity": QWEN_INFERENCE_RUNTIME_IDENTITY,
+            }
+        else:
+            boundary = {"mode": "disabled"}
+        return {
+            "provider": self.id,
+            "model": self.model_identity,
+            "input_schema": QWEN_INPUT_SCHEMA_VERSION,
+            "boundary": boundary,
+            "video_fps": self.video_fps,
+            "max_tokens": self.max_tokens,
+        }
+
     def status(self) -> ProviderStatus:
         if not self.model_name:
             return ProviderStatus(
@@ -267,6 +321,24 @@ class QwenVideoReranker:
                 ProviderState.NEEDS_CONFIGURATION,
                 "Необязательная проверка действий и номеров игроков; "
                 "задайте QWEN_VIDEO_MODEL",
+                optional=True,
+            )
+        if self.inference_client is not None:
+            worker = self.inference_client.status()
+            return ProviderStatus(
+                self.id,
+                "Qwen Video",
+                ProviderState.READY if worker.ready else ProviderState.UNAVAILABLE,
+                worker.detail,
+                optional=True,
+            )
+        if not self.allow_in_process:
+            return ProviderStatus(
+                self.id,
+                "Qwen Video",
+                ProviderState.NEEDS_CONFIGURATION,
+                "Запустите изолированный Qwen worker и задайте QWEN_VIDEO_ENDPOINT; "
+                "внутрипроцессный режим доступен только как устаревающий opt-in",
                 optional=True,
             )
         if importlib.util.find_spec("mlx_vlm") is None:
@@ -311,6 +383,8 @@ class QwenVideoReranker:
         )
 
     def _load(self):  # type: ignore[no-untyped-def]
+        if not self.allow_in_process:
+            raise RuntimeError("in-process Qwen inference is disabled")
         if self._model is not None and self._processor is not None:
             return self._model, self._processor
         with self._load_lock:
@@ -406,6 +480,14 @@ class QwenVideoReranker:
         return destination
 
     def _judge_video(self, clip: Path) -> QwenVideoJudgement:
+        if self.inference_client is not None:
+            return self.inference_client.judge_video(
+                clip,
+                fps=self.video_fps,
+                max_tokens=self.max_tokens,
+            )
+        if not self.allow_in_process:
+            raise RuntimeError("Qwen worker is not configured")
         from mlx_vlm import apply_chat_template, generate
 
         model, processor = self._load()
@@ -436,6 +518,14 @@ class QwenVideoReranker:
         storyboard: Path,
         query: str,
     ) -> QwenVideoJudgement:
+        if self.inference_client is not None:
+            return self.inference_client.judge_storyboard(
+                storyboard,
+                query,
+                max_tokens=self.max_tokens,
+            )
+        if not self.allow_in_process:
+            raise RuntimeError("Qwen worker is not configured")
         from mlx_vlm import apply_chat_template, generate
 
         model, processor = self._load()
@@ -511,6 +601,13 @@ class QwenVideoReranker:
         interval: tuple[float, float],
         prompt_version: str,
     ) -> dict[str, object]:
+        runtime_identity = QWEN_INFERENCE_RUNTIME_IDENTITY
+        if self.inference_client is not None:
+            configured_identity = self.inference_client.identity.get(
+                "runtime_identity"
+            )
+            if isinstance(configured_identity, str) and configured_identity:
+                runtime_identity = configured_identity
         return {
             "model": self.model_identity,
             "video_id": video_id,
@@ -518,6 +615,7 @@ class QwenVideoReranker:
             "prompt_version": prompt_version,
             "inference_config": {
                 "input_schema": QWEN_INPUT_SCHEMA_VERSION,
+                "runtime_identity": runtime_identity,
                 "frame_count": self.frame_count,
                 "max_tokens": self.max_tokens,
                 "video_fps": self.video_fps,
@@ -662,7 +760,11 @@ class QwenVideoReranker:
         *,
         raise_on_error: bool,
     ) -> list[FusedResult]:
-        if not self.model_name or not candidates:
+        if (
+            not self.model_name
+            or not candidates
+            or (self.inference_client is None and not self.allow_in_process)
+        ):
             return candidates
         selected_ids = {
             self._candidate_id(candidate)

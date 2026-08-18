@@ -11,6 +11,7 @@ import videoscope.providers.qwen_video as qwen_video_module
 from videoscope.media.ffmpeg import SampledFrame
 from videoscope.providers.base import ProviderState
 from videoscope.providers.qwen_video import (
+    QwenInferenceStatus,
     QwenVideoJudgement,
     QwenVideoReranker,
     parse_qwen_judgement,
@@ -55,6 +56,50 @@ class RecordingMediaExtractor:
             Image.new("RGB", (max_width, 360), "black").save(path)
             frames.append(SampledFrame(timestamp, path))
         return frames
+
+
+class FakeQwenInference:
+    identity = {
+        "mode": "isolated-worker",
+        "contract": "qwen-worker-v1",
+        "model": "test-model",
+        "runtime_identity": "mlx-vlm==0.6.7",
+    }
+
+    def __init__(self) -> None:
+        self.video_calls: list[tuple[Path, float, int]] = []
+        self.storyboard_calls: list[tuple[Path, str, int]] = []
+
+    def status(self) -> QwenInferenceStatus:
+        return QwenInferenceStatus(True, "worker ready")
+
+    def judge_video(
+        self,
+        source: Path,
+        *,
+        fps: float,
+        max_tokens: int,
+    ) -> QwenVideoJudgement:
+        self.video_calls.append((source, fps, max_tokens))
+        return QwenVideoJudgement(
+            shot_attempt=True,
+            ball_through_hoop=True,
+            evidence="ball passes through hoop",
+        )
+
+    def judge_storyboard(
+        self,
+        source: Path,
+        query: str,
+        *,
+        max_tokens: int,
+    ) -> QwenVideoJudgement:
+        self.storyboard_calls.append((source, query, max_tokens))
+        return QwenVideoJudgement(
+            matches_query=True,
+            confidence=0.9,
+            evidence="visible dunk",
+        )
 
 
 def repository_with_video(tmp_path: Path) -> Repository:
@@ -122,6 +167,7 @@ def make_reranker(
         min_clip_seconds=7,
         max_clip_seconds=12,
         video_fps=video_fps,
+        allow_in_process=True,
     )
 
 
@@ -269,10 +315,65 @@ def test_status_accepts_cached_model_with_sharded_weights(
         extractor=RecordingMediaExtractor(),
         temp_dir=tmp_path / "tmp",
         cache_dir=tmp_path / "cache",
+        allow_in_process=True,
     )
 
     assert reranker.status().state is ProviderState.READY
     assert calls == [{"revision": revision, "local_files_only": True}]
+
+
+def test_default_qwen_path_never_imports_mlx_and_requires_worker(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    reranker = QwenVideoReranker(
+        model_name="test-model",
+        repository=repository_with_video(tmp_path),
+        extractor=RecordingMediaExtractor(),
+        temp_dir=tmp_path / "tmp",
+    )
+    monkeypatch.setattr(
+        qwen_video_module.importlib.util,
+        "find_spec",
+        lambda _name: (_ for _ in ()).throw(AssertionError("MLX probe escaped")),
+    )
+    item = candidate("dunk", 10, 16, 0.7)
+
+    assert reranker.status().state is ProviderState.NEEDS_CONFIGURATION
+    assert reranker.rerank("игрок выполняет данк", [item]) == [item]
+
+
+def test_isolated_worker_preserves_native_and_storyboard_candidate_paths(
+    tmp_path: Path,
+) -> None:
+    extractor = RecordingMediaExtractor()
+    inference = FakeQwenInference()
+    reranker = QwenVideoReranker(
+        model_name="test-model",
+        repository=repository_with_video(tmp_path),
+        extractor=extractor,
+        temp_dir=tmp_path / "tmp",
+        cache_dir=tmp_path / "cache",
+        inference_client=inference,
+    )
+
+    sports = reranker.rerank_strict(
+        "игрок забивает трехочковый",
+        [candidate("three", 10, 16, 0.7, event_type="made_three_point")],
+    )
+    generic = reranker.rerank_strict(
+        "игрок выполняет данк",
+        [candidate("dunk", 30, 36, 0.65)],
+    )
+
+    assert reranker.status().state is ProviderState.READY
+    assert len(inference.video_calls) == 1
+    assert inference.video_calls[0][1:] == (2.0, 320)
+    assert len(inference.storyboard_calls) == 1
+    assert inference.storyboard_calls[0][1:] == ("игрок выполняет данк", 320)
+    assert "qwen_video" in sports[0].modalities
+    assert "qwen_video" in generic[0].modalities
+    assert reranker.identity["boundary"] == inference.identity
 
 
 def test_model_is_loaded_once_when_first_requests_arrive_concurrently(
@@ -485,6 +586,7 @@ def test_persistent_cache_avoids_second_export_and_model_call(
         min_clip_seconds=7,
         max_clip_seconds=12,
         video_fps=2,
+        allow_in_process=True,
     )
     monkeypatch.setattr(
         second,
@@ -579,6 +681,7 @@ def test_cache_key_changes_with_model_name(tmp_path: Path, monkeypatch) -> None:
         extractor=extractor,
         temp_dir=tmp_path / "tmp-2",
         cache_dir=tmp_path / "cache",
+        allow_in_process=True,
     )
     model_b_calls = 0
 
@@ -609,6 +712,7 @@ def test_cache_key_changes_with_model_revision(tmp_path: Path) -> None:
         extractor=extractor,
         temp_dir=tmp_path / "tmp-second",
         cache_dir=tmp_path / "cache",
+        allow_in_process=True,
     )
     parameters = {
         "video_id": "video-1",
@@ -638,6 +742,7 @@ def test_cache_key_includes_versioned_inference_config(tmp_path: Path) -> None:
             context_seconds=4,
             min_clip_seconds=7,
             max_clip_seconds=12,
+            allow_in_process=True,
             **kwargs,
         )
 
@@ -657,6 +762,7 @@ def test_cache_key_includes_versioned_inference_config(tmp_path: Path) -> None:
 
     assert keys[0]["inference_config"] == {
         "input_schema": "qwen-video-input-v1",
+        "runtime_identity": "mlx-vlm==0.6.7",
         "frame_count": 12,
         "max_tokens": 320,
         "video_fps": 2,

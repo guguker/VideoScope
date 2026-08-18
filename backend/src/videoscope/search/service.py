@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
 import logging
 import math
@@ -7,8 +8,10 @@ from numbers import Real
 from pathlib import Path
 import re
 from typing import Protocol
+from urllib.parse import quote
 
-from videoscope.repository import Repository
+from videoscope.artifacts import IndexingSpecifications, StageKind, StageSpecification
+from videoscope.repository import Repository, SegmentRecord
 from videoscope.search.fusion import EvidenceHit, calibrate_hits, fuse_hits
 from videoscope.search.query_router import QueryRouter
 from videoscope.search.text_matching import SearchLexicon, lexical_match
@@ -22,6 +25,42 @@ _TRUSTED_ENTITY_MATCHES = {"exact", "stem", "transliteration"}
 
 class SearchDependencyError(RuntimeError):
     """A dependency failed during strict, non-best-effort search."""
+
+
+def thumbnail_url_for_path(
+    video_id: str,
+    thumbnail_path: str | None,
+    thumbnails_dir: Path | None,
+) -> str | None:
+    """Convert a validated internal thumbnail path to a storage-free public URL."""
+    if thumbnail_path is None or thumbnails_dir is None:
+        return None
+    if type(thumbnail_path) is not str or not thumbnail_path or "\x00" in thumbnail_path:
+        return None
+    if "\\" in thumbnail_path:
+        return None
+    root = Path(thumbnails_dir).resolve(strict=False)
+    video_root = (root / video_id).resolve(strict=False)
+    raw_path = Path(thumbnail_path)
+    candidates = (
+        (raw_path,)
+        if raw_path.is_absolute()
+        else (raw_path, video_root / raw_path)
+    )
+    relative = None
+    for candidate in candidates:
+        try:
+            relative = candidate.resolve(strict=False).relative_to(video_root)
+        except (OSError, RuntimeError, ValueError):
+            continue
+        break
+    if relative is None:
+        return None
+    parts = relative.parts
+    if not parts or any(part in {"", ".", ".."} for part in parts):
+        return None
+    encoded_path = "/".join(quote(part, safe="") for part in parts)
+    return f"/api/thumbnails/{quote(video_id, safe='')}/{encoded_path}"
 
 
 SEARCH_MODALITIES = {
@@ -306,7 +345,12 @@ class SearchService:
         candidate_reranker: CandidateReranker | None = None,
         semantic_text_min_score: float = 0.42,
         visual_min_score: float = 0.18,
+        specification_resolver: Callable[[], IndexingSpecifications] | None = None,
+        segment_specifications: Iterable[StageSpecification] | None = None,
+        thumbnails_dir: Path | None = None,
     ) -> None:
+        if specification_resolver is not None and segment_specifications is not None:
+            raise ValueError("use one indexing specification source")
         self.repository = repository
         self.vector_index = vector_index
         self.moment_search = moment_search
@@ -317,6 +361,65 @@ class SearchService:
         self.candidate_reranker = candidate_reranker
         self.semantic_text_min_score = semantic_text_min_score
         self.visual_min_score = visual_min_score
+        self.specification_resolver = specification_resolver
+        self._static_segment_specifications = (
+            tuple(segment_specifications)
+            if segment_specifications is not None
+            else None
+        )
+        if self._static_segment_specifications is not None and any(
+            not isinstance(item, StageSpecification)
+            for item in self._static_segment_specifications
+        ):
+            raise ValueError("segment specifications must be validated")
+        self.thumbnails_dir = Path(thumbnails_dir) if thumbnails_dir is not None else None
+
+    def _current_segment_specifications(self) -> tuple[StageSpecification, ...]:
+        if self.specification_resolver is not None:
+            resolved = self.specification_resolver()
+            if not isinstance(resolved, IndexingSpecifications):
+                raise ValueError("indexing specification resolver returned invalid data")
+            return resolved.segment_specifications
+        return self._static_segment_specifications or ()
+
+    def _require_current_sqlite_artifacts(
+        self,
+        *,
+        modalities: set[str],
+        video_ids: list[str],
+        specifications: tuple[StageSpecification, ...],
+    ) -> None:
+        required = {
+            "speech": StageKind.SPEECH,
+            "ocr": StageKind.OCR,
+            "objects": StageKind.OBJECTS,
+        }
+        by_kind = {specification.kind: specification for specification in specifications}
+        for modality, kind in required.items():
+            if modality not in modalities:
+                continue
+            specification = by_kind.get(kind)
+            if specification is None:
+                raise SearchDependencyError(
+                    f"Required {modality} evidence is unavailable"
+                )
+            try:
+                missing = [
+                    video_id
+                    for video_id in video_ids
+                    if not self.repository.is_active_segment_generation_current(
+                        video_id,
+                        specification,
+                    )
+                ]
+            except Exception as error:
+                raise SearchDependencyError(
+                    f"Required {modality} evidence failed integrity validation"
+                ) from error
+            if missing:
+                raise SearchDependencyError(
+                    f"Required {modality} evidence is unavailable"
+                )
 
     def search(
         self,
@@ -354,6 +457,79 @@ class SearchService:
         semantic_modalities = allowed_modalities & {"speech", "ocr", "objects"}
         query_variants = self.lexicon.expand(normalized_query) if self.lexicon else [normalized_query]
 
+        current_specifications: tuple[StageSpecification, ...] = ()
+        selected_specifications: tuple[StageSpecification, ...] = ()
+        try:
+            current_specifications = self._current_segment_specifications()
+            if raise_on_provider_error:
+                self._require_current_sqlite_artifacts(
+                    modalities=allowed_modalities,
+                    video_ids=ready_video_ids,
+                    specifications=current_specifications,
+                )
+            modality_by_kind = {
+                StageKind.SPEECH: "speech",
+                StageKind.OCR: "ocr",
+                StageKind.OBJECTS: "objects",
+            }
+            selected_specifications = tuple(
+                specification
+                for specification in current_specifications
+                if modality_by_kind.get(specification.kind) in semantic_modalities
+            )
+        except SearchDependencyError:
+            raise
+        except Exception as error:
+            logger.exception("Current indexing specifications are unavailable")
+            if raise_on_provider_error:
+                raise SearchDependencyError(
+                    "Current text evidence is unavailable"
+                ) from error
+        current_segments: list[SegmentRecord] = []
+        for specification in selected_specifications:
+            try:
+                current_segments.extend(
+                    self.repository.list_current_active_segments(
+                        [specification],
+                        video_ids=ready_video_ids,
+                    )
+                )
+            except Exception as error:
+                logger.warning(
+                    "Current %s segment generation is unavailable",
+                    specification.kind.value,
+                    exc_info=error,
+                )
+                if raise_on_provider_error:
+                    raise SearchDependencyError(
+                        f"Required {specification.kind.value} evidence is unavailable"
+                    ) from error
+        current_scenes: list[SegmentRecord] = []
+        scene_specification = next(
+            (
+                specification
+                for specification in current_specifications
+                if specification.kind is StageKind.SCENES
+            ),
+            None,
+        )
+        if scene_specification is not None:
+            try:
+                current_scenes = list(
+                    self.repository.list_current_active_segments(
+                        [scene_specification],
+                        video_ids=ready_video_ids,
+                    )
+                )
+            except Exception:
+                logger.warning(
+                    "Current scene thumbnails are unavailable",
+                    exc_info=True,
+                )
+        current_by_id = {
+            (segment.video_id, segment.id): segment for segment in current_segments
+        }
+
         hits: list[EvidenceHit] = []
         if semantic_modalities and ready_video_ids:
             try:
@@ -363,9 +539,31 @@ class SearchService:
                     modalities=semantic_modalities,
                     limit=max(limit * 3, 30),
                 )
-                semantic_hits = [
-                    hit for hit in semantic_hits if hit.video_id in ready_videos
-                ]
+                authoritative_semantic_hits: list[EvidenceHit] = []
+                for hit in semantic_hits:
+                    segment = current_by_id.get((hit.video_id, hit.segment_id))
+                    if (
+                        segment is None
+                        or segment.modality not in semantic_modalities
+                        or hit.modality != segment.modality
+                    ):
+                        continue
+                    authoritative_semantic_hits.append(
+                        replace(
+                            hit,
+                            start=segment.start,
+                            end=segment.end,
+                            modality=segment.modality,
+                            text=segment.text,
+                            metadata={
+                                **segment.metadata,
+                                "thumbnail_path": segment.thumbnail_path,
+                                "source": hit.metadata.get("source", "semantic"),
+                                "segment_confidence": segment.confidence,
+                            },
+                        )
+                    )
+                semantic_hits = authoritative_semantic_hits
                 semantic_threshold = max(self.semantic_text_min_score, 0.62) if named_entity_query else self.semantic_text_min_score
                 hybrid_hits = [
                     refine_speech_hit(normalized_query, _hybridize(normalized_query, hit))
@@ -383,17 +581,23 @@ class SearchService:
                 if raise_on_provider_error:
                     raise SearchDependencyError("Semantic text search failed") from error
 
-        lexical_matches = (
-            self.repository.search_segments_lexical(
-                normalized_query,
-                video_ids=ready_video_ids,
-                limit=max(limit * 2, 20),
-                query_variants=query_variants,
-            )
-            if ready_video_ids
-            else []
-        )
+        lexical_matches = sorted(
+            (
+                (
+                    segment,
+                    max(
+                        lexical_match(variant, segment.text).score
+                        for variant in query_variants
+                    ),
+                )
+                for segment in current_segments
+            ),
+            key=lambda item: item[1],
+            reverse=True,
+        )[: max(limit * 2, 20)]
         for segment, score in lexical_matches:
+            if score <= 0:
+                continue
             if segment.modality not in allowed_modalities:
                 continue
             matched_variant, match = max(
@@ -489,8 +693,8 @@ class SearchService:
                 deduplicated[key] = hit
 
         videos = ready_videos
-        scene_segments: dict[str, list[object]] = {}
-        for segment in self.repository.list_segments():
+        scene_segments: dict[str, list[SegmentRecord]] = {}
+        for segment in current_scenes:
             if segment.modality == "scene" and segment.thumbnail_path:
                 scene_segments.setdefault(segment.video_id, []).append(segment)
         calibrated = calibrate_hits(list(deduplicated.values()))
@@ -533,9 +737,11 @@ class SearchService:
                 )
                 if nearest is not None:
                     thumbnail_path = nearest.thumbnail_path
-            thumbnail_url = None
-            if thumbnail_path:
-                thumbnail_url = f"/api/thumbnails/{result.video_id}/{Path(thumbnail_path).name}"
+            thumbnail_url = thumbnail_url_for_path(
+                result.video_id,
+                thumbnail_path,
+                self.thumbnails_dir,
+            )
             output.append(
                 SearchResultView(
                     id=f"{result.video_id}:{index}:{result.start:.3f}",

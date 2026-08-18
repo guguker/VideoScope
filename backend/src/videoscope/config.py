@@ -13,6 +13,7 @@ from videoscope.model_manifest import (
     TEXT_EMBEDDING_DIMENSIONS,
     TEXT_EMBEDDING_MODEL,
     WHISPER_MODEL,
+    model_revision,
 )
 
 
@@ -57,6 +58,32 @@ class AppSettings(BaseSettings):
         validation_alias=AliasChoices(
             "QWEN_VIDEO_MODEL",
             "VIDEOSCOPE_QWEN_VIDEO_MODEL",
+        ),
+    )
+    qwen_video_endpoint: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "QWEN_VIDEO_ENDPOINT",
+            "VIDEOSCOPE_QWEN_VIDEO_ENDPOINT",
+        ),
+    )
+    qwen_video_api_key: str | None = Field(
+        default=None,
+        min_length=32,
+        max_length=256,
+        pattern=r"^[A-Za-z0-9._~-]+$",
+        repr=False,
+        validation_alias=AliasChoices(
+            "QWEN_VIDEO_API_KEY",
+            "VIDEOSCOPE_QWEN_VIDEO_API_KEY",
+        ),
+    )
+    qwen_video_timeout: float = Field(default=180.0, gt=0, le=600)
+    qwen_video_allow_in_process: bool = Field(
+        default=False,
+        validation_alias=AliasChoices(
+            "QWEN_VIDEO_ALLOW_IN_PROCESS",
+            "VIDEOSCOPE_QWEN_VIDEO_ALLOW_IN_PROCESS",
         ),
     )
     qwen_video_top_candidates: int = Field(default=12, ge=1, le=50)
@@ -129,6 +156,47 @@ class AppSettings(BaseSettings):
             raise ValueError(
                 "qwen_video_max_clip_seconds must be greater than or equal to "
                 "qwen_video_min_clip_seconds"
+            )
+        if self.qwen_video_endpoint:
+            if not self.qwen_video_api_key:
+                raise ValueError(
+                    "qwen_video_api_key is required when qwen_video_endpoint is set"
+                )
+            if not self.qwen_video_model:
+                raise ValueError(
+                    "qwen_video_model is required when qwen_video_endpoint is set"
+                )
+            parsed_qwen = urlsplit(self.qwen_video_endpoint)
+            if (
+                parsed_qwen.scheme != "http"
+                or not parsed_qwen.hostname
+                or parsed_qwen.username is not None
+                or parsed_qwen.password is not None
+                or parsed_qwen.query
+                or parsed_qwen.fragment
+                or parsed_qwen.path not in {"", "/"}
+            ):
+                raise ValueError(
+                    "qwen_video_endpoint must be a plain loopback HTTP origin"
+                )
+            qwen_hostname = parsed_qwen.hostname.casefold()
+            try:
+                qwen_address = ip_address(qwen_hostname)
+            except ValueError:
+                qwen_address = None
+            if qwen_address is None or str(qwen_address) != "127.0.0.1":
+                raise ValueError("qwen_video_endpoint must use 127.0.0.1")
+            try:
+                parsed_qwen.port
+            except ValueError as error:
+                raise ValueError("qwen_video_endpoint contains an invalid port") from error
+            if model_revision(self.qwen_video_model) is None:
+                raise ValueError(
+                    "qwen_video_model must have a pinned revision for worker mode"
+                )
+        if self.qwen_video_endpoint and self.qwen_video_allow_in_process:
+            raise ValueError(
+                "qwen_video_endpoint cannot be combined with qwen_video_allow_in_process"
             )
         if self.internvideo_endpoint:
             if not self.internvideo_api_key:
