@@ -3,9 +3,54 @@ from __future__ import annotations
 import math
 import json
 from pathlib import Path
+import stat
 
 from videoscope.providers.base import ProviderState, ProviderStatus
 from videoscope.providers.types import TimedText
+
+
+MAX_GLOSSARY_BYTES = 1024 * 1024
+
+
+def resolve_whisper_prompt(
+    initial_prompt: str | None,
+    glossary_path: Path | None,
+) -> tuple[str | None, str]:
+    """Resolve the exact bounded prompt and a stable glossary state identity."""
+    parts = [initial_prompt.strip()] if initial_prompt else []
+    state = "not_configured" if glossary_path is None else "missing"
+    payload: object = {}
+    if glossary_path is not None:
+        path = Path(glossary_path)
+        try:
+            file_stat = path.lstat()
+            if path.is_symlink() or not stat.S_ISREG(file_stat.st_mode):
+                state = "unsafe"
+            elif file_stat.st_size > MAX_GLOSSARY_BYTES:
+                state = "oversized"
+            else:
+                raw = path.read_bytes()
+                if len(raw) != file_stat.st_size:
+                    state = "changed"
+                else:
+                    payload = json.loads(raw.decode("utf-8"))
+                    state = "ready" if isinstance(payload, dict) else "invalid"
+        except FileNotFoundError:
+            state = "missing"
+        except PermissionError:
+            state = "unreadable"
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            state = "invalid"
+    terms: list[str] = []
+    if state == "ready" and isinstance(payload, dict):
+        for canonical, aliases in payload.items():
+            terms.append(str(canonical))
+            if isinstance(aliases, list):
+                terms.extend(str(alias) for alias in aliases)
+    terms = list(dict.fromkeys(term.strip() for term in terms if term.strip()))[:120]
+    if terms:
+        parts.append("Словарь имён и терминов: " + ", ".join(terms) + ".")
+    return " ".join(parts) or None, state
 
 
 class WhisperTranscriber:
@@ -38,22 +83,11 @@ class WhisperTranscriber:
         )
 
     def _resolved_prompt(self) -> str | None:
-        parts = [self.initial_prompt.strip()] if self.initial_prompt else []
-        if self.glossary_path and self.glossary_path.is_file():
-            try:
-                payload = json.loads(self.glossary_path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                payload = {}
-            terms: list[str] = []
-            if isinstance(payload, dict):
-                for canonical, aliases in payload.items():
-                    terms.append(str(canonical))
-                    if isinstance(aliases, list):
-                        terms.extend(str(alias) for alias in aliases)
-            terms = list(dict.fromkeys(term.strip() for term in terms if term.strip()))[:120]
-            if terms:
-                parts.append("Словарь имён и терминов: " + ", ".join(terms) + ".")
-        return " ".join(parts) or None
+        prompt, _state = resolve_whisper_prompt(
+            self.initial_prompt,
+            self.glossary_path,
+        )
+        return prompt
 
     def status(self) -> ProviderStatus:
         try:

@@ -2,16 +2,28 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Protocol
+import shutil
+from typing import Callable, Protocol
 from uuid import uuid4
 
+from videoscope.artifacts import (
+    IndexingSpecifications,
+    StageKind,
+    StageRun,
+    StageState,
+    validate_artifact_identifier,
+)
 from videoscope.media.ffmpeg import FFmpeg
-from videoscope.providers.scenes import SceneDetector, normalize_scenes
+from videoscope.providers.scenes import SceneDetector
 from videoscope.providers.types import ObjectTag, TimedText
 from videoscope.repository import Repository, SegmentRecord
 
 
 logger = logging.getLogger(__name__)
+
+
+class IndexingSpecificationChanged(RuntimeError):
+    pass
 
 
 def merge_timed_text(
@@ -83,8 +95,29 @@ class VectorIndex(Protocol):
     def replace_video(self, video_id: str, segments: list[SegmentRecord]) -> None: ...
 
 
+class DenseFrameExtractor(Protocol):
+    def extract_frames(
+        self,
+        source: Path,
+        destination: Path,
+        start: float,
+        end: float,
+        *,
+        step: float,
+        max_width: int = 640,
+    ) -> list[object]: ...
+
+
 class VisualIndex(Protocol):
-    def replace_video(self, video_id: str, segments: list[SegmentRecord]) -> None: ...
+    def replace_video_source(
+        self,
+        video_id: str,
+        source: Path,
+        duration: float,
+        extractor: DenseFrameExtractor,
+        *,
+        frames_dir: Path | None = None,
+    ) -> str: ...
 
 
 class MomentRetriever(Protocol):
@@ -96,7 +129,9 @@ class Indexer:
         self,
         *,
         repository: Repository,
+        media_root: Path,
         thumbnails_dir: Path,
+        specification_resolver: Callable[[], IndexingSpecifications],
         ffmpeg: FFmpeg,
         scenes: SceneDetector,
         vector_index: VectorIndex,
@@ -107,7 +142,9 @@ class Indexer:
         moment_retriever: MomentRetriever | None = None,
     ) -> None:
         self.repository = repository
+        self.media_root = Path(media_root)
         self.thumbnails_dir = thumbnails_dir
+        self.specification_resolver = specification_resolver
         self.ffmpeg = ffmpeg
         self.scenes = scenes
         self.vector_index = vector_index
@@ -117,12 +154,17 @@ class Indexer:
         self.objects = objects
         self.moment_retriever = moment_retriever
 
-    def _add_timed_text(self, video_id: str, modality: str, item: TimedText) -> None:
+    @staticmethod
+    def _timed_text_segment(
+        video_id: str,
+        modality: str,
+        item: TimedText,
+    ) -> SegmentRecord | None:
         text = item.text.strip()
         if not text or item.end <= item.start:
-            return
-        self.repository.add_segment(
-            segment_id=uuid4().hex,
+            return None
+        return SegmentRecord(
+            id=uuid4().hex,
             video_id=video_id,
             start=item.start,
             end=item.end,
@@ -130,7 +172,360 @@ class Indexer:
             text=text,
             confidence=item.confidence,
             metadata=item.metadata,
+            thumbnail_path=None,
         )
+
+    def _create_running_stage(
+        self,
+        video_id: str,
+        specifications: IndexingSpecifications,
+        kind: StageKind,
+    ) -> StageRun:
+        queued = self.repository.create_stage_run(
+            video_id=video_id,
+            specification=specifications.for_kind(kind),
+        )
+        return self.repository.transition_stage_run(queued.run_id, StageState.RUNNING)
+
+    def _verify_run_specification(self, run: StageRun) -> None:
+        current = self.specification_resolver()
+        if not isinstance(current, IndexingSpecifications):
+            raise IndexingSpecificationChanged(
+                "indexing specification resolver returned invalid data"
+            )
+        if current.for_kind(run.stage_kind).specification_hash != run.specification_hash:
+            raise IndexingSpecificationChanged("indexing specification changed during stage")
+
+    def _record_not_configured(
+        self,
+        video_id: str,
+        specifications: IndexingSpecifications,
+        kind: StageKind,
+    ) -> None:
+        queued = self.repository.create_stage_run(
+            video_id=video_id,
+            specification=specifications.for_kind(kind),
+        )
+        self.repository.transition_stage_run(queued.run_id, StageState.NOT_CONFIGURED)
+
+    def _record_failed(
+        self,
+        run: StageRun,
+        error_code: str,
+        *,
+        error: Exception | None = None,
+    ) -> None:
+        if error is not None:
+            logger.warning(
+                "Indexing stage %s failed for %s",
+                run.stage_kind.value,
+                run.video_id,
+                exc_info=error,
+            )
+        self.repository.transition_stage_run(
+            run.run_id,
+            StageState.FAILED,
+            error_code=error_code,
+        )
+
+    def _validated_generations_root(self, video_id: str) -> Path:
+        validate_artifact_identifier(video_id, field_name="thumbnail video id")
+        configured_root = self.thumbnails_dir
+        if configured_root.is_symlink():
+            raise ValueError("thumbnail root must not be a symlink")
+        configured_root.mkdir(parents=True, exist_ok=True)
+        root = configured_root.resolve(strict=True)
+        video_root_path = configured_root / video_id
+        if video_root_path.is_symlink():
+            raise ValueError("video thumbnail root must not be a symlink")
+        video_root_path.mkdir(exist_ok=True)
+        video_root = video_root_path.resolve(strict=True)
+        if video_root.parent != root:
+            raise ValueError("video thumbnail root escaped configured storage")
+        generations_path = video_root_path / "generations"
+        if generations_path.is_symlink():
+            raise ValueError("thumbnail generations root must not be a symlink")
+        generations_path.mkdir(exist_ok=True)
+        generations_root = generations_path.resolve(strict=True)
+        if generations_root.parent != video_root:
+            raise ValueError("thumbnail generations root escaped video storage")
+        return generations_root
+
+    @staticmethod
+    def _remove_generated_directory(path: Path, *, generations_root: Path) -> None:
+        if generations_root.is_symlink() or path.is_symlink():
+            raise ValueError("refusing to remove a symlinked thumbnail directory")
+        try:
+            resolved_root = generations_root.resolve(strict=True)
+        except OSError as error:
+            raise ValueError("thumbnail generations root is unavailable") from error
+        if path.parent != generations_root or not path.name:
+            raise ValueError("refusing to remove an unexpected thumbnail directory")
+        if path.exists():
+            try:
+                resolved = path.resolve(strict=True)
+            except OSError as error:
+                raise ValueError("generated thumbnail directory is unavailable") from error
+            if resolved.parent != resolved_root or resolved == resolved_root:
+                raise ValueError("generated thumbnail directory escaped storage")
+            shutil.rmtree(resolved)
+
+    def _index_scenes(
+        self,
+        video_id: str,
+        source: Path,
+        duration: float,
+        specifications: IndexingSpecifications,
+        warnings: list[str],
+    ) -> tuple[bool, list[tuple[float, float, Path]]]:
+        run = self._create_running_stage(video_id, specifications, StageKind.SCENES)
+        try:
+            scene_intervals = self.scenes.detect(source, duration)
+        except Exception as error:
+            self._record_failed(run, "scene_provider_failed", error=error)
+            warnings.append("scenes stage failed")
+            return False, []
+
+        generation_id = uuid4().hex
+        validate_artifact_identifier(
+            generation_id,
+            field_name="scene generation id",
+        )
+        generations_root = self.thumbnails_dir / video_id / "generations"
+        temporary_dir = generations_root / f".{generation_id}.tmp"
+        final_dir = generations_root / generation_id
+        published = False
+        try:
+            generations_root = self._validated_generations_root(video_id)
+            temporary_dir = generations_root / f".{generation_id}.tmp"
+            final_dir = generations_root / generation_id
+            temporary_dir.mkdir(exist_ok=False)
+            candidates: list[SegmentRecord] = []
+            frame_paths: list[tuple[float, float, Path]] = []
+            for index, (start, end) in enumerate(scene_intervals):
+                filename = f"scene-{index:04d}.jpg"
+                temporary_path = temporary_dir / filename
+                final_path = final_dir / filename
+                self.ffmpeg.extract_frame(
+                    source,
+                    temporary_path,
+                    start + (end - start) / 2,
+                )
+                candidates.append(
+                    SegmentRecord(
+                        id=uuid4().hex,
+                        video_id=video_id,
+                        start=start,
+                        end=end,
+                        modality="scene",
+                        text=f"scene {index + 1}",
+                        confidence=1.0,
+                        metadata={"scene_index": index},
+                        thumbnail_path=str(final_path),
+                    )
+                )
+                frame_paths.append((start, end, final_path))
+            self._verify_run_specification(run)
+            temporary_dir.replace(final_dir)
+            published = True
+            self.repository.commit_segment_generation(
+                run.run_id,
+                segments=candidates,
+                generation_id=generation_id,
+                video_thumbnail_path=(
+                    str(frame_paths[0][2]) if frame_paths else None
+                ),
+            )
+        except Exception as error:
+            cleanup_target = final_dir if published else temporary_dir
+            try:
+                self._remove_generated_directory(
+                    cleanup_target,
+                    generations_root=generations_root,
+                )
+            except (OSError, ValueError):
+                logger.error(
+                    "Refused unsafe scene generation cleanup for %s",
+                    video_id,
+                    exc_info=True,
+                )
+            error_code = (
+                "scene_specification_changed"
+                if isinstance(error, IndexingSpecificationChanged)
+                else "scene_build_failed"
+            )
+            self._record_failed(run, error_code, error=error)
+            warnings.append("scenes stage failed")
+            return False, []
+
+        return True, frame_paths
+
+    def _index_speech(
+        self,
+        video_id: str,
+        source: Path,
+        specifications: IndexingSpecifications,
+        warnings: list[str],
+    ) -> None:
+        if self.speech is None:
+            self._record_not_configured(video_id, specifications, StageKind.SPEECH)
+            return
+        run = self._create_running_stage(video_id, specifications, StageKind.SPEECH)
+        try:
+            candidates = [
+                segment
+                for item in merge_timed_text(self.speech.transcribe(source))
+                if (segment := self._timed_text_segment(video_id, "speech", item))
+                is not None
+            ]
+            self._verify_run_specification(run)
+            self.repository.commit_segment_generation(
+                run.run_id,
+                segments=candidates,
+            )
+        except Exception as error:
+            error_code = (
+                "speech_specification_changed"
+                if isinstance(error, IndexingSpecificationChanged)
+                else "speech_provider_failed"
+            )
+            self._record_failed(run, error_code, error=error)
+            warnings.append("speech stage failed")
+
+    def _index_ocr(
+        self,
+        video_id: str,
+        frame_paths: list[tuple[float, float, Path]],
+        *,
+        scenes_available: bool,
+        specifications: IndexingSpecifications,
+        warnings: list[str],
+    ) -> None:
+        if self.ocr is None:
+            self._record_not_configured(video_id, specifications, StageKind.OCR)
+            return
+        run = self._create_running_stage(video_id, specifications, StageKind.OCR)
+        if not scenes_available:
+            self._record_failed(run, "scene_dependency_unavailable")
+            warnings.append("ocr stage failed")
+            return
+        try:
+            candidates: list[SegmentRecord] = []
+            for index, (start, end, frame_path) in enumerate(frame_paths):
+                unique: dict[str, tuple[str, float]] = {}
+                for text, confidence in self.ocr.read(frame_path):
+                    normalized = " ".join(text.split()).strip()
+                    key = normalized.casefold()
+                    if len(key) < 2:
+                        continue
+                    current = unique.get(key)
+                    if current is None or confidence > current[1]:
+                        unique[key] = (normalized, confidence)
+                if not unique:
+                    continue
+                ordered = list(unique.values())
+                candidates.append(
+                    SegmentRecord(
+                        id=uuid4().hex,
+                        video_id=video_id,
+                        start=start,
+                        end=end,
+                        modality="ocr",
+                        text=" · ".join(text for text, _ in ordered),
+                        confidence=sum(confidence for _, confidence in ordered)
+                        / len(ordered),
+                        metadata={"scene_index": index, "line_count": len(ordered)},
+                        thumbnail_path=str(frame_path),
+                    )
+                )
+            self._verify_run_specification(run)
+            self.repository.commit_segment_generation(run.run_id, segments=candidates)
+        except Exception as error:
+            error_code = (
+                "ocr_specification_changed"
+                if isinstance(error, IndexingSpecificationChanged)
+                else "ocr_provider_failed"
+            )
+            self._record_failed(run, error_code, error=error)
+            warnings.append("ocr stage failed")
+
+    def _index_objects(
+        self,
+        video_id: str,
+        frame_paths: list[tuple[float, float, Path]],
+        *,
+        scenes_available: bool,
+        specifications: IndexingSpecifications,
+        warnings: list[str],
+    ) -> None:
+        if self.objects is None:
+            self._record_not_configured(video_id, specifications, StageKind.OBJECTS)
+            return
+        run = self._create_running_stage(video_id, specifications, StageKind.OBJECTS)
+        if not scenes_available:
+            self._record_failed(run, "scene_dependency_unavailable")
+            warnings.append("objects stage failed")
+            return
+        try:
+            candidates: list[SegmentRecord] = []
+            for index, (start, end, frame_path) in enumerate(frame_paths):
+                tags = self.objects.detect(frame_path)
+                if not tags:
+                    continue
+                candidates.append(
+                    SegmentRecord(
+                        id=uuid4().hex,
+                        video_id=video_id,
+                        start=start,
+                        end=end,
+                        modality="objects",
+                        text=", ".join(sorted({tag.label for tag in tags})),
+                        confidence=max(tag.confidence for tag in tags),
+                        metadata={
+                            "scene_index": index,
+                            "objects": [
+                                {
+                                    "label": tag.label,
+                                    "confidence": tag.confidence,
+                                    **tag.metadata,
+                                }
+                                for tag in tags
+                            ],
+                        },
+                        thumbnail_path=str(frame_path),
+                    )
+                )
+            self._verify_run_specification(run)
+            self.repository.commit_segment_generation(run.run_id, segments=candidates)
+        except Exception as error:
+            error_code = (
+                "objects_specification_changed"
+                if isinstance(error, IndexingSpecificationChanged)
+                else "objects_provider_failed"
+            )
+            self._record_failed(run, error_code, error=error)
+            warnings.append("objects stage failed")
+
+    def _replace_text_vectors(
+        self,
+        video_id: str,
+        specifications: IndexingSpecifications,
+        warnings: list[str],
+    ) -> None:
+        try:
+            segments = self.repository.list_current_active_segments(
+                specifications.semantic_segment_specifications,
+                video_ids=[video_id],
+            )
+            self.vector_index.replace_video(video_id, segments)
+        except Exception as error:
+            run = self._create_running_stage(
+                video_id,
+                specifications,
+                StageKind.TEXT_VECTORS,
+            )
+            self._record_failed(run, "text_vector_index_failed", error=error)
+            warnings.append("text vector stage failed")
 
     def process(self, video_id: str) -> None:
         video = self.repository.get_video(video_id)
@@ -141,6 +536,10 @@ class Indexer:
         self.repository.update_video(video_id, status="processing", progress=0.01, stage="probe", error=None)
 
         try:
+            self.repository.verify_asset_identity(video_id, media_root=self.media_root)
+            specifications = self.specification_resolver()
+            if not isinstance(specifications, IndexingSpecifications):
+                raise ValueError("indexing specification resolver returned invalid data")
             probe = self.ffmpeg.probe(source)
             if probe.duration <= 0:
                 raise ValueError("video duration is zero")
@@ -153,138 +552,64 @@ class Indexer:
                 progress=0.08,
                 stage="scenes",
             )
-            self.repository.clear_segments(video_id)
-
-            try:
-                scene_intervals = self.scenes.detect(source, probe.duration)
-            except Exception as error:
-                warnings.append(f"scenes: {error}")
-                scene_intervals = normalize_scenes([], duration=probe.duration)
-
-            frame_paths: list[tuple[float, float, Path]] = []
-            for index, (start, end) in enumerate(scene_intervals):
-                frame_path = self.thumbnails_dir / video_id / f"scene-{index:04d}.jpg"
-                self.ffmpeg.extract_frame(source, frame_path, start + (end - start) / 2)
-                frame_paths.append((start, end, frame_path))
-                self.repository.add_segment(
-                    segment_id=uuid4().hex,
-                    video_id=video_id,
-                    start=start,
-                    end=end,
-                    modality="scene",
-                    text=f"scene {index + 1}",
-                    confidence=1.0,
-                    metadata={"scene_index": index},
-                    thumbnail_path=str(frame_path),
-                )
-
-            thumbnail_path = frame_paths[0][2] if frame_paths else None
+            scenes_available, frame_paths = self._index_scenes(
+                video_id,
+                source,
+                probe.duration,
+                specifications,
+                warnings,
+            )
             self.repository.update_video(
                 video_id,
-                thumbnail_path=str(thumbnail_path) if thumbnail_path else None,
                 progress=0.25,
                 stage="speech",
             )
 
-            if self.speech is not None:
-                try:
-                    for item in merge_timed_text(self.speech.transcribe(source)):
-                        self._add_timed_text(video_id, "speech", item)
-                except Exception as error:
-                    warnings.append(f"speech: {error}")
+            self._index_speech(
+                video_id,
+                source,
+                specifications,
+                warnings,
+            )
 
             self.repository.update_video(video_id, progress=0.45, stage="vision")
-            total_frames = max(1, len(frame_paths))
-            ocr_consecutive_failures = 0
-            objects_consecutive_failures = 0
-            maximum_consecutive_failures = 3
-            for index, (start, end, frame_path) in enumerate(frame_paths):
-                if (
-                    self.ocr is not None
-                    and ocr_consecutive_failures < maximum_consecutive_failures
-                ):
-                    try:
-                        recognized = self.ocr.read(frame_path)
-                        ocr_consecutive_failures = 0
-                        unique: dict[str, tuple[str, float]] = {}
-                        for text, confidence in recognized:
-                            normalized = " ".join(text.split()).strip()
-                            key = normalized.casefold()
-                            if len(key) < 2:
-                                continue
-                            current = unique.get(key)
-                            if current is None or confidence > current[1]:
-                                unique[key] = (normalized, confidence)
-                        if unique:
-                            ordered = list(unique.values())
-                            self.repository.add_segment(
-                                segment_id=uuid4().hex,
-                                video_id=video_id,
-                                start=start,
-                                end=end,
-                                modality="ocr",
-                                text=" · ".join(text for text, _ in ordered),
-                                confidence=sum(confidence for _, confidence in ordered) / len(ordered),
-                                metadata={"scene_index": index, "line_count": len(ordered)},
-                                thumbnail_path=str(frame_path),
-                            )
-                    except Exception as error:
-                        warnings.append(f"ocr: {error}")
-                        ocr_consecutive_failures += 1
-
-                if (
-                    self.objects is not None
-                    and objects_consecutive_failures < maximum_consecutive_failures
-                ):
-                    try:
-                        tags = self.objects.detect(frame_path)
-                        objects_consecutive_failures = 0
-                        if tags:
-                            self.repository.add_segment(
-                                segment_id=uuid4().hex,
-                                video_id=video_id,
-                                start=start,
-                                end=end,
-                                modality="objects",
-                                text=", ".join(sorted({tag.label for tag in tags})),
-                                confidence=max(tag.confidence for tag in tags),
-                                metadata={
-                                    "scene_index": index,
-                                    "objects": [
-                                        {
-                                            "label": tag.label,
-                                            "confidence": tag.confidence,
-                                            **tag.metadata,
-                                        }
-                                        for tag in tags
-                                    ],
-                                },
-                                thumbnail_path=str(frame_path),
-                            )
-                    except Exception as error:
-                        warnings.append(f"objects: {error}")
-                        objects_consecutive_failures += 1
-
-                self.repository.update_video(
-                    video_id,
-                    progress=0.45 + 0.4 * ((index + 1) / total_frames),
-                    stage="vision",
-                )
+            self._index_ocr(
+                video_id,
+                frame_paths,
+                scenes_available=scenes_available,
+                specifications=specifications,
+                warnings=warnings,
+            )
+            self._index_objects(
+                video_id,
+                frame_paths,
+                scenes_available=scenes_available,
+                specifications=specifications,
+                warnings=warnings,
+            )
+            self.repository.update_video(video_id, progress=0.85, stage="vision")
 
             self.repository.update_video(video_id, progress=0.9, stage="index")
-            segments = self.repository.list_segments(video_id)
-            self.vector_index.replace_video(video_id, segments)
+            self._replace_text_vectors(video_id, specifications, warnings)
             if self.visual_index is not None:
                 try:
                     self.repository.update_video(video_id, progress=0.94, stage="visual-index")
-                    self.visual_index.replace_video(video_id, segments)
+                    self.visual_index.replace_video_source(
+                        video_id,
+                        source,
+                        probe.duration,
+                        self.ffmpeg,
+                        frames_dir=self.thumbnails_dir / video_id,
+                    )
                 except Exception as error:
-                    warnings.append(f"siglip2: {error}")
+                    logger.warning("Dense visual indexing failed for %s", video_id, exc_info=error)
+                    warnings.append("dense visual stage failed")
             if self.moment_retriever is not None:
                 try:
                     self.moment_retriever.prepare(video_id, source, probe.duration)
                 except Exception as error:
-                    warnings.append(f"lighthouse: {error}")
+                    logger.warning("Lighthouse indexing failed for %s", video_id, exc_info=error)
+                    warnings.append("lighthouse stage failed")
             if warnings:
                 logger.warning("Optional indexing stages failed for %s: %s", video_id, "; ".join(warnings))
             self.repository.update_video(

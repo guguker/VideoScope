@@ -4,6 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from videoscope.config import AppSettings
+from videoscope.model_manifest import QWEN_VIDEO_MODEL
 
 
 @pytest.mark.parametrize(
@@ -84,3 +85,60 @@ def test_remote_internvideo_requires_https_and_strong_api_key() -> None:
 
     assert settings.internvideo_endpoint == "https://gpu.example/rerank"
     assert loopback.internvideo_endpoint == "http://127.0.0.1:8780/rerank"
+
+
+def test_qwen_worker_requires_loopback_http_and_strong_api_key() -> None:
+    key = "q" * 32
+    with pytest.raises(ValidationError, match="qwen_video_api_key"):
+        AppSettings(qwen_video_endpoint="http://127.0.0.1:8781")
+    with pytest.raises(ValidationError, match="qwen_video_model"):
+        AppSettings(
+            qwen_video_endpoint="http://127.0.0.1:8781",
+            qwen_video_api_key=key,
+            qwen_video_model=None,
+        )
+    with pytest.raises(ValidationError, match="127.0.0.1"):
+        AppSettings(
+            qwen_video_endpoint="http://gpu.example:8781",
+            qwen_video_api_key=key,
+            qwen_video_model="organization/qwen",
+        )
+    with pytest.raises(ValidationError, match="plain loopback HTTP"):
+        AppSettings(
+            qwen_video_endpoint="https://127.0.0.1:8781",
+            qwen_video_api_key=key,
+            qwen_video_model="organization/qwen",
+        )
+    with pytest.raises(ValidationError, match="127.0.0.1"):
+        AppSettings(
+            qwen_video_endpoint="http://localhost:8781",
+            qwen_video_api_key=key,
+            qwen_video_model="organization/qwen",
+        )
+
+    settings = AppSettings(
+        qwen_video_endpoint="http://127.0.0.1:8781",
+        qwen_video_api_key=key,
+        qwen_video_model=QWEN_VIDEO_MODEL,
+    )
+
+    assert settings.qwen_video_endpoint == "http://127.0.0.1:8781"
+    assert key not in repr(settings)
+
+    with pytest.raises(ValidationError, match="pinned"):
+        AppSettings(
+            qwen_video_endpoint="http://127.0.0.1:8781",
+            qwen_video_api_key=key,
+            qwen_video_model="organization/unpinned-qwen",
+        )
+
+
+def test_qwen_in_process_compatibility_is_explicit_and_unambiguous() -> None:
+    assert AppSettings().qwen_video_allow_in_process is False
+    with pytest.raises(ValidationError, match="cannot be combined"):
+        AppSettings(
+            qwen_video_endpoint="http://127.0.0.1:8781",
+            qwen_video_api_key="q" * 32,
+            qwen_video_model=QWEN_VIDEO_MODEL,
+            qwen_video_allow_in_process=True,
+        )

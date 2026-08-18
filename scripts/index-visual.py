@@ -2,10 +2,9 @@ from __future__ import annotations
 
 from videoscope.config import AppSettings
 from videoscope.media.ffmpeg import FFmpeg
-from videoscope.model_manifest import model_revision
 from videoscope.providers.base import ProviderState
 from videoscope.repository import Repository
-from videoscope.search.visual_index import SiglipVisualIndex
+from videoscope.runtime import create_visual_index
 
 
 def main() -> None:
@@ -14,12 +13,7 @@ def main() -> None:
     repository = Repository(settings.database_path)
     repository.initialize()
     ffmpeg = FFmpeg()
-    index = SiglipVisualIndex(
-        settings.visual_index_dir,
-        model_name=settings.siglip_model,
-        model_revision=model_revision(settings.siglip_model),
-        batch_size=settings.siglip_batch_size,
-    )
+    index = create_visual_index(settings)
     status = index.status(check_index=False)
     if status.state is not ProviderState.READY:
         raise SystemExit(status.detail)
@@ -37,8 +31,6 @@ def main() -> None:
             video.media_path,
             duration,
             ffmpeg,
-            step=settings.visual_index_step,
-            max_width=settings.visual_index_max_width,
             frames_dir=settings.thumbnails_dir / video.id,
         )
     print(f"Visual index is ready: {settings.siglip_model}")

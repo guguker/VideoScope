@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from dataclasses import asdict
+import hashlib
 import logging
 import mimetypes
 from pathlib import Path
 import re
+import stat
 from typing import Protocol
 from urllib.parse import quote
 from uuid import uuid4
@@ -53,6 +55,7 @@ from videoscope.media.uploads import UploadRejected, validate_upload
 from videoscope.providers.base import ProviderRegistry, ProviderState, StaticProvider
 from videoscope.repository import Repository, VideoRecord
 from videoscope.search.service import SearchService
+from videoscope.search.service import thumbnail_url_for_path
 from videoscope.search.text_matching import SearchLexicon
 from videoscope.search.vector_index import MemoryVectorIndex
 from videoscope.security import RequestBodyLimitMiddleware, RateLimit, SlidingWindowLimiter
@@ -93,11 +96,17 @@ def create_app(
         resolved_clips = clip_service or runtime.clips
         resolved_providers = provider_registry or runtime.providers
     else:
+        from videoscope.runtime import create_indexing_specifications
+
         resolved_queue = processing_queue
         resolved_search = search_service or SearchService(
             resolved_repository,
             MemoryVectorIndex(),
             lexicon=SearchLexicon(resolved_settings.glossary_path),
+            specification_resolver=lambda: create_indexing_specifications(
+                resolved_settings
+            ),
+            thumbnails_dir=resolved_settings.thumbnails_dir,
         )
         resolved_clips = clip_service or ClipService(
             resolved_repository,
@@ -198,10 +207,10 @@ def create_app(
             "created_at": record.created_at,
             "updated_at": record.updated_at,
             "media_url": f"/api/videos/{record.id}/media",
-            "thumbnail_url": (
-                f"/api/thumbnails/{record.id}/{Path(record.thumbnail_path).name}"
-                if record.thumbnail_path
-                else None
+            "thumbnail_url": thumbnail_url_for_path(
+                record.id,
+                record.thumbnail_path,
+                resolved_settings.thumbnails_dir,
             ),
         }
 
@@ -314,12 +323,14 @@ def create_app(
         destination = resolved_settings.media_dir / stored_name
         temporary = resolved_settings.temp_dir / f"{video_id}.upload"
         size_bytes = 0
+        source_digest = hashlib.sha256()
         try:
             with temporary.open("wb") as output:
                 while chunk := await file.read(UPLOAD_CHUNK_SIZE):
                     size_bytes += len(chunk)
                     if size_bytes > resolved_settings.max_upload_bytes:
                         raise HTTPException(status_code=413, detail="Video is too large")
+                    source_digest.update(chunk)
                     output.write(chunk)
             validate_upload(filename, size_bytes, max_bytes=resolved_settings.max_upload_bytes)
             temporary.replace(destination)
@@ -331,16 +342,25 @@ def create_app(
             temporary.unlink(missing_ok=True)
             destination.unlink(missing_ok=True)
             raise HTTPException(status_code=415, detail=str(error)) from error
+        except Exception:
+            temporary.unlink(missing_ok=True)
+            destination.unlink(missing_ok=True)
+            raise
         finally:
             await form.close()
 
-        record = resolved_repository.create_video(
-            video_id=video_id,
-            original_name=filename,
-            stored_name=stored_name,
-            media_path=str(destination),
-            size_bytes=size_bytes,
-        )
+        try:
+            record = resolved_repository.create_video_with_asset(
+                video_id=video_id,
+                original_name=filename,
+                stored_name=stored_name,
+                media_path=str(destination),
+                size_bytes=size_bytes,
+                source_sha256=source_digest.hexdigest(),
+            )
+        except Exception:
+            destination.unlink(missing_ok=True)
+            raise
         resolved_queue.submit(video_id)
         return video_payload(record)
 
@@ -367,7 +387,7 @@ def create_app(
         return FileResponse(path, media_type=media_type)
 
     @app.get(
-        "/api/thumbnails/{video_id}/{filename}",
+        "/api/thumbnails/{video_id}/{relative_path:path}",
         response_class=FileResponse,
         responses={
             200: {
@@ -377,19 +397,43 @@ def create_app(
             404: {"description": "Thumbnail not found"},
         },
     )
-    def thumbnail(video_id: str, filename: str) -> FileResponse:
-        if not VIDEO_ID_RE.fullmatch(video_id) or Path(filename).name != filename:
+    def thumbnail(video_id: str, relative_path: str) -> FileResponse:
+        if (
+            not VIDEO_ID_RE.fullmatch(video_id)
+            or not relative_path
+            or "\x00" in relative_path
+            or "\\" in relative_path
+            or relative_path.startswith("/")
+        ):
             raise HTTPException(status_code=404, detail="Thumbnail not found")
-        thumbnails_root = resolved_settings.thumbnails_dir.resolve()
-        expected_parent = (thumbnails_root / video_id).resolve()
+        parts = relative_path.split("/")
+        if any(part in {"", ".", ".."} for part in parts):
+            raise HTTPException(status_code=404, detail="Thumbnail not found")
         try:
-            expected_parent.relative_to(thumbnails_root)
-        except ValueError as error:
+            configured_root = resolved_settings.thumbnails_dir
+            if configured_root.is_symlink():
+                raise ValueError("thumbnail root must not be a symlink")
+            thumbnails_root = configured_root.resolve(strict=True)
+            video_root_path = configured_root / video_id
+            if video_root_path.is_symlink():
+                raise ValueError("video thumbnail root must not be a symlink")
+            video_root = video_root_path.resolve(strict=True)
+            if video_root.parent != thumbnails_root:
+                raise ValueError("video thumbnail root escaped its storage root")
+            candidate_path = video_root_path
+            for part in parts:
+                candidate_path = candidate_path / part
+                if candidate_path.is_symlink():
+                    raise ValueError("thumbnail path contains a symlink")
+            candidate = candidate_path.resolve(strict=True)
+            relative = candidate.relative_to(video_root)
+            if not relative.parts or candidate == video_root:
+                raise ValueError("thumbnail must be inside the video root")
+            if not stat.S_ISREG(candidate.lstat().st_mode):
+                raise ValueError("thumbnail is not a regular file")
+        except (OSError, RuntimeError, ValueError) as error:
             raise HTTPException(status_code=404, detail="Thumbnail not found") from error
-        path = (expected_parent / filename).resolve()
-        if not path.is_file() or path.parent != expected_parent:
-            raise HTTPException(status_code=404, detail="Thumbnail not found")
-        return FileResponse(path, media_type="image/jpeg")
+        return FileResponse(candidate, media_type="image/jpeg")
 
     @app.post(
         "/api/videos/{video_id}/reindex",

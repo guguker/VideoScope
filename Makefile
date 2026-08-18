@@ -1,4 +1,4 @@
-.PHONY: install install-ml install-ocr install-video models models-ml models-video install-lighthouse index-objects index-visual index-visual-quality index-speech index-lighthouse dev test test-backend test-frontend build demo
+.PHONY: install install-ml install-ocr install-video qwen-worker models models-ml models-video install-lighthouse index-objects index-visual index-visual-quality index-speech index-lighthouse dev test test-backend test-frontend build demo
 
 install:
 	./scripts/bootstrap.sh
@@ -10,7 +10,10 @@ install-ocr:
 	./scripts/install-ocr.sh
 
 install-video:
-	UV_PROJECT_ENVIRONMENT="$(CURDIR)/.venv" .venv/bin/uv sync --project backend --locked --inexact --extra dev --extra video
+	UV_PROJECT_ENVIRONMENT="$(CURDIR)/.venv-qwen" .venv/bin/uv sync --project backend --locked --extra video
+
+qwen-worker:
+	.venv-qwen/bin/python -m videoscope.providers.qwen_worker
 
 models: models-ml models-video
 
@@ -18,7 +21,7 @@ models-ml:
 	.venv/bin/python scripts/download-models.py --profile ml
 
 models-video:
-	.venv/bin/python scripts/download-models.py --profile video
+	.venv-qwen/bin/python scripts/download-models.py --profile video
 
 install-lighthouse:
 	./scripts/install-lighthouse.sh

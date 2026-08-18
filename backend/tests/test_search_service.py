@@ -1,6 +1,7 @@
 import pytest
 
-from videoscope.repository import Repository
+from videoscope.artifacts import StageKind, StageSpecification, StageState
+from videoscope.repository import Repository, SegmentRecord
 from videoscope.search.service import (
     SearchDependencyError,
     SearchService,
@@ -13,19 +14,43 @@ from videoscope.search.fusion import EvidenceHit
 from videoscope.search.visual_index import SiglipVisualIndex
 
 
+def _stage_specification(kind: StageKind) -> StageSpecification:
+    return StageSpecification(
+        kind=kind,
+        schema_version=1,
+        implementation_revision=f"tests.search.{kind.value}.v1",
+    )
+
+
+def _publish_segments(
+    repository: Repository,
+    specification: StageSpecification,
+    segments: list[SegmentRecord],
+) -> None:
+    run = repository.create_stage_run(
+        video_id="video-1",
+        specification=specification,
+    )
+    repository.transition_stage_run(run.run_id, StageState.RUNNING)
+    repository.commit_segment_generation(run.run_id, segments=segments)
+
+
 def test_search_service_returns_enriched_ranked_moment(tmp_path) -> None:
     repository = Repository(tmp_path / "db.sqlite3")
     repository.initialize()
-    repository.create_video(
+    repository.create_video_with_asset(
         video_id="video-1",
         original_name="final.mp4",
         stored_name="video-1.mp4",
         media_path=str(tmp_path / "video-1.mp4"),
         size_bytes=100,
+        source_sha256="0" * 64,
     )
     repository.update_video("video-1", status="ready")
-    speech = repository.add_segment(
-        segment_id="speech-1",
+    thumbnails = tmp_path / "thumbs"
+    thumbnail_path = thumbnails / "video-1" / "scene.jpg"
+    speech = SegmentRecord(
+        id="speech-1",
         video_id="video-1",
         start=10,
         end=15,
@@ -33,10 +58,10 @@ def test_search_service_returns_enriched_ranked_moment(tmp_path) -> None:
         text="player makes a three point shot",
         confidence=0.9,
         metadata={},
-        thumbnail_path="/thumbs/video-1/scene.jpg",
+        thumbnail_path=str(thumbnail_path),
     )
-    ocr = repository.add_segment(
-        segment_id="ocr-1",
+    ocr = SegmentRecord(
+        id="ocr-1",
         video_id="video-1",
         start=11,
         end=14,
@@ -44,11 +69,20 @@ def test_search_service_returns_enriched_ranked_moment(tmp_path) -> None:
         text="HOME 87 GUEST 86",
         confidence=0.8,
         metadata={},
-        thumbnail_path="/thumbs/video-1/scene.jpg",
+        thumbnail_path=str(thumbnail_path),
     )
+    speech_specification = _stage_specification(StageKind.SPEECH)
+    ocr_specification = _stage_specification(StageKind.OCR)
+    _publish_segments(repository, speech_specification, [speech])
+    _publish_segments(repository, ocr_specification, [ocr])
     index = MemoryVectorIndex()
     index.replace_video("video-1", [speech, ocr])
-    service = SearchService(repository, index)
+    service = SearchService(
+        repository,
+        index,
+        segment_specifications=[speech_specification, ocr_specification],
+        thumbnails_dir=thumbnails,
+    )
 
     results = service.search("three point shot", limit=10)
 
@@ -159,12 +193,13 @@ class StaleMomentSearch(RecordingMomentSearch):
 def _repository_with_video(tmp_path) -> Repository:
     repository = Repository(tmp_path / "search.sqlite3")
     repository.initialize()
-    repository.create_video(
+    repository.create_video_with_asset(
         video_id="video-1",
         original_name="match.mp4",
         stored_name="video-1.mp4",
         media_path=str(tmp_path / "video-1.mp4"),
         size_bytes=10,
+        source_sha256="0" * 64,
     )
     repository.update_video("video-1", status="ready")
     return repository
@@ -396,16 +431,29 @@ def test_lighthouse_cannot_create_standalone_results() -> None:
 
 def test_name_search_matches_russian_case_ending(tmp_path) -> None:
     repository = _repository_with_video(tmp_path)
-    repository.add_segment(
-        segment_id="speech-name",
-        video_id="video-1",
-        start=100,
-        end=106,
-        modality="speech",
-        text="Сегодня Мозгова заменили",
-        confidence=0.88,
+    specification = _stage_specification(StageKind.SPEECH)
+    _publish_segments(
+        repository,
+        specification,
+        [
+            SegmentRecord(
+                id="speech-name",
+                video_id="video-1",
+                start=100,
+                end=106,
+                modality="speech",
+                text="Сегодня Мозгова заменили",
+                confidence=0.88,
+                metadata={},
+                thumbnail_path=None,
+            )
+        ],
     )
-    service = SearchService(repository, RecordingIndex([]))
+    service = SearchService(
+        repository,
+        RecordingIndex([]),
+        segment_specifications=[specification],
+    )
 
     results = service.search("Мозгов")
 
@@ -416,16 +464,29 @@ def test_name_search_matches_russian_case_ending(tmp_path) -> None:
 
 def test_name_search_rejects_unconfirmed_phonetic_collision(tmp_path) -> None:
     repository = _repository_with_video(tmp_path)
-    repository.add_segment(
-        segment_id="speech-moscow",
-        video_id="video-1",
-        start=100,
-        end=106,
-        modality="speech",
-        text="команда Москов снова атакует",
-        confidence=0.88,
+    specification = _stage_specification(StageKind.SPEECH)
+    _publish_segments(
+        repository,
+        specification,
+        [
+            SegmentRecord(
+                id="speech-moscow",
+                video_id="video-1",
+                start=100,
+                end=106,
+                modality="speech",
+                text="команда Москов снова атакует",
+                confidence=0.88,
+                metadata={},
+                thumbnail_path=None,
+            )
+        ],
     )
-    service = SearchService(repository, RecordingIndex([]))
+    service = SearchService(
+        repository,
+        RecordingIndex([]),
+        segment_specifications=[specification],
+    )
 
     assert service.search("Мозгов") == []
 
@@ -493,17 +554,24 @@ def test_evaluation_uses_strict_temporal_refiner(tmp_path) -> None:
             raise RuntimeError("dense refinement failed")
 
     repository = _repository_with_video(tmp_path)
+    objects_specification = _stage_specification(StageKind.OBJECTS)
+    _publish_segments(repository, objects_specification, [])
     visual = EvidenceHit("video-1", "visual:1", 4, 8, "visual", 0.9, "query")
     service = SearchService(
         repository,
         MemoryVectorIndex(),
         visual_search=RecordingVisualIndex([visual]),
         temporal_refiner=StrictAwareRefiner(),
+        segment_specifications=[objects_specification],
     )
 
-    assert service.search("игрок поднимает руку", use_lighthouse=False)
+    assert service.search("игрок поднимает руку", mode="visual", use_lighthouse=False)
     with pytest.raises(SearchDependencyError, match="Visual"):
-        service.search_for_evaluation("игрок поднимает руку", use_lighthouse=False)
+        service.search_for_evaluation(
+            "игрок поднимает руку",
+            mode="visual",
+            use_lighthouse=False,
+        )
 
 
 def test_evaluation_uses_strict_candidate_reranker(tmp_path) -> None:
@@ -517,17 +585,31 @@ def test_evaluation_uses_strict_candidate_reranker(tmp_path) -> None:
             raise RuntimeError("candidate verification failed")
 
     repository = _repository_with_video(tmp_path)
+    objects_specification = _stage_specification(StageKind.OBJECTS)
+    _publish_segments(repository, objects_specification, [])
+    speech_specification = _stage_specification(StageKind.SPEECH)
+    ocr_specification = _stage_specification(StageKind.OCR)
+    _publish_segments(repository, speech_specification, [])
+    _publish_segments(repository, ocr_specification, [])
     visual = EvidenceHit("video-1", "visual:1", 4, 8, "visual", 0.9, "query")
     service = SearchService(
         repository,
         MemoryVectorIndex(),
         visual_search=RecordingVisualIndex([visual]),
         candidate_reranker=StrictAwareReranker(),
+        segment_specifications=[
+            speech_specification,
+            ocr_specification,
+            objects_specification,
+        ],
     )
 
     assert service.search("игрок поднимает руку", use_lighthouse=False)
     with pytest.raises(SearchDependencyError, match="Candidate"):
-        service.search_for_evaluation("игрок поднимает руку", use_lighthouse=False)
+        service.search_for_evaluation(
+            "игрок поднимает руку",
+            use_lighthouse=False,
+        )
 
 
 def test_search_scopes_every_provider_and_output_to_ready_videos(tmp_path) -> None:
