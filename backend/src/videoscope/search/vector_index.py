@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from collections import OrderedDict
 from collections.abc import Mapping
 import hashlib
+import json
 import math
 from pathlib import Path
 import re
@@ -10,6 +12,14 @@ from uuid import NAMESPACE_URL, uuid5
 import numpy as np
 
 from videoscope.providers.base import ProviderState, ProviderStatus
+from videoscope.artifacts import (
+    TextVectorBuildPlan,
+    TextVectorBuildReceipt,
+    TextVectorIndexSpecification,
+    TextVectorSearchBinding,
+    TextVectorSearchHit,
+    validate_artifact_identifier,
+)
 from videoscope.repository import Repository, SegmentRecord
 from videoscope.search.embeddings import HashEmbedding, SemanticEmbedding
 from videoscope.search.fusion import EvidenceHit
@@ -19,6 +29,7 @@ from videoscope.storage import atomic_write_json
 class QdrantVectorIndex:
     id = "qdrant"
     available = True
+    supports_generation_provenance = True
 
     def __init__(self, path: Path, *, embedding=None) -> None:  # type: ignore[no-untyped-def]
         self.path = Path(path)
@@ -30,11 +41,17 @@ class QdrantVectorIndex:
                 f"{type(self.embedding).__module__}.{type(self.embedding).__qualname__}:{self.dimensions}",
             )
         )
-        identity_hash = hashlib.sha256(self.embedding_identity.encode("utf-8")).hexdigest()[:12]
-        self.collection_name = f"videoscope_segments_v2_{identity_hash}"
+        self.index_specification = TextVectorIndexSpecification(
+            embedding_identity=self.embedding_identity,
+            dimensions=self.dimensions,
+        )
+        self.collection_name = self.index_specification.collection_name
         self.marker_path = self.path.parent / f".{self.path.name}-{self.collection_name}.json"
         self._client = None
         self._rebuild_failed = False
+        self._validated_generation_cache: OrderedDict[
+            tuple[str, str, str, str, int], None
+        ] = OrderedDict()
 
     @property
     def dimensions(self) -> int:
@@ -65,13 +82,9 @@ class QdrantVectorIndex:
                 ProviderState.UNAVAILABLE,
                 "Семантический индекс недоступен; подробности записаны в журнале",
             )
-        if check_index and self.needs_rebuild():
-            return ProviderStatus(
-                self.id,
-                "Qdrant",
-                ProviderState.NEEDS_CONFIGURATION,
-                "Семантический индекс требует безопасной перестройки",
-            )
+        # Legacy marker state is intentionally not readiness for immutable
+        # generations. A fresh collection is writable and becomes searchable
+        # only after SQLite activates a verified per-video generation.
         backend = getattr(self.embedding, "backend", "local")
         detail = f"Встроенный локальный индекс, кодировщик: {backend}"
         return ProviderStatus(
@@ -147,14 +160,18 @@ class QdrantVectorIndex:
         self.invalidate()
         try:
             client = self._get_client()
-            if client.collection_exists(self.collection_name):
-                client.delete_collection(self.collection_name)
-            client.create_collection(
+            legacy_filter = models.Filter(
+                must=[
+                    models.FieldCondition(
+                        key="record_type",
+                        match=models.MatchValue(value="legacy"),
+                    )
+                ]
+            )
+            client.delete(
                 collection_name=self.collection_name,
-                vectors_config=models.VectorParams(
-                    size=self.dimensions,
-                    distance=models.Distance.COSINE,
-                ),
+                points_selector=models.FilterSelector(filter=legacy_filter),
+                wait=True,
             )
             for video_id, segments in videos:
                 self._replace_video(video_id, segments, restore_marker=False)
@@ -171,6 +188,507 @@ class QdrantVectorIndex:
             for video in repository.list_videos()
             if video.status == "ready"
         ])
+
+    @staticmethod
+    def point_id(generation_id: str, segment_id: str) -> str:
+        validate_artifact_identifier(generation_id, field_name="text vector generation id")
+        validate_artifact_identifier(segment_id, field_name="text vector segment id")
+        return str(uuid5(NAMESPACE_URL, f"videoscope:text:{generation_id}:{segment_id}"))
+
+    @staticmethod
+    def manifest_point_id(generation_id: str) -> str:
+        validate_artifact_identifier(generation_id, field_name="text vector generation id")
+        return str(uuid5(NAMESPACE_URL, f"videoscope:text:{generation_id}:manifest"))
+
+    @staticmethod
+    def _canonical_digest(payload: object) -> str:
+        return hashlib.sha256(
+            json.dumps(
+                payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode("utf-8")
+        ).hexdigest()
+
+    def _validate_build_plan(self, plan: TextVectorBuildPlan) -> None:
+        if not isinstance(plan, TextVectorBuildPlan):
+            raise ValueError("text vector build plan must be validated")
+        if plan.index_specification != self.index_specification:
+            raise ValueError("text vector build index specification does not match writer")
+
+    def _validated_plan_vectors(
+        self,
+        plan: TextVectorBuildPlan,
+    ) -> tuple[list[np.ndarray], str]:
+        ensure_ready = getattr(self.embedding, "ensure_ready", None)
+        if ensure_ready is not None and not ensure_ready():
+            raise RuntimeError("semantic embedding is not ready")
+        vectors = self.embedding.embed([point.text for point in plan.points])
+        if len(vectors) != len(plan.points):
+            raise ValueError("embedding model returned an unexpected vector count")
+        validated: list[np.ndarray] = []
+        manifest: list[dict[str, str]] = []
+        for point, vector in zip(plan.points, vectors, strict=True):
+            try:
+                resolved = np.asarray(vector, dtype="<f4")
+            except (TypeError, ValueError, OverflowError) as error:
+                raise ValueError("embedding model returned an invalid vector") from error
+            if (
+                resolved.ndim != 1
+                or resolved.shape[0] != self.dimensions
+                or not bool(np.isfinite(resolved).all())
+            ):
+                raise ValueError("embedding model returned an invalid vector")
+            contiguous = np.ascontiguousarray(resolved, dtype="<f4")
+            validated.append(contiguous)
+            manifest.append(
+                {
+                    "point_id": self.point_id(plan.generation_id, point.segment_id),
+                    "vector_sha256": hashlib.sha256(contiguous.tobytes()).hexdigest(),
+                }
+            )
+        return validated, self._canonical_digest(manifest)
+
+    def _manifest_payload(
+        self,
+        plan: TextVectorBuildPlan,
+        *,
+        vector_manifest_sha256: str,
+    ) -> dict[str, object]:
+        return {
+            "collection_name": plan.index_specification.collection_name,
+            "generation_id": plan.generation_id,
+            "index_specification_hash": plan.index_specification.specification_hash,
+            "input_manifest_sha256": plan.input_manifest_sha256,
+            "payload_schema_version": plan.index_specification.payload_schema_version,
+            "point_count": len(plan.points),
+            "point_manifest_sha256": plan.point_manifest_sha256,
+            "record_type": "manifest",
+            "source_sha256": plan.source_sha256,
+            "stage_specification_hash": plan.stage_specification_hash,
+            "vector_manifest_sha256": vector_manifest_sha256,
+            "video_id": plan.video_id,
+        }
+
+    def build_generation(self, plan: TextVectorBuildPlan) -> TextVectorBuildReceipt:
+        """Build an invisible immutable generation; SQLite activation is separate."""
+        from qdrant_client import models
+
+        self._validate_build_plan(plan)
+        vectors, _candidate_vector_manifest = self._validated_plan_vectors(plan)
+        segment_points = [
+            models.PointStruct(
+                id=self.point_id(plan.generation_id, point.segment_id),
+                vector=vector.tolist(),
+                payload={
+                    "generation_id": plan.generation_id,
+                    "modality": point.modality,
+                    "record_type": "segment",
+                    "segment_generation_id": point.segment_generation_id,
+                    "segment_id": point.segment_id,
+                    "text_sha256": point.text_sha256,
+                    "video_id": point.video_id,
+                },
+            )
+            for point, vector in zip(plan.points, vectors, strict=True)
+        ]
+        manifest_id = self.manifest_point_id(plan.generation_id)
+        point_ids = [point.id for point in segment_points] + [manifest_id]
+        client = self._get_client()
+        existing = client.retrieve(
+            collection_name=self.collection_name,
+            ids=point_ids,
+            with_payload=False,
+            with_vectors=False,
+        )
+        if existing:
+            raise ValueError("text vector generation already exists")
+        if segment_points:
+            client.upsert(
+                collection_name=self.collection_name,
+                points=segment_points,
+                wait=True,
+                update_mode=models.UpdateMode.INSERT_ONLY,
+            )
+        durable_records = client.retrieve(
+            collection_name=self.collection_name,
+            ids=[point.id for point in segment_points],
+            with_payload=True,
+            with_vectors=True,
+        )
+        durable_by_id = {str(record.id): record for record in durable_records}
+        durable_vector_manifest: list[dict[str, str]] = []
+        for source, point in zip(plan.points, segment_points, strict=True):
+            record = durable_by_id.get(str(point.id))
+            if record is None or getattr(record, "payload", None) != point.payload:
+                raise RuntimeError("text vector generation point was not durably written")
+            vector = np.asarray(getattr(record, "vector", None), dtype="<f4")
+            if (
+                vector.ndim != 1
+                or vector.shape[0] != self.dimensions
+                or not bool(np.isfinite(vector).all())
+            ):
+                raise RuntimeError("text vector generation vector was not durably written")
+            durable_vector_manifest.append(
+                {
+                    "point_id": self.point_id(plan.generation_id, source.segment_id),
+                    "vector_sha256": hashlib.sha256(
+                        np.ascontiguousarray(vector, dtype="<f4").tobytes()
+                    ).hexdigest(),
+                }
+            )
+        vector_manifest_sha256 = self._canonical_digest(durable_vector_manifest)
+        sentinel = models.PointStruct(
+            id=manifest_id,
+            vector=[1.0, *([0.0] * (self.dimensions - 1))],
+            payload=self._manifest_payload(
+                plan,
+                vector_manifest_sha256=vector_manifest_sha256,
+            ),
+        )
+        client.upsert(
+            collection_name=self.collection_name,
+            points=[sentinel],
+            wait=True,
+            update_mode=models.UpdateMode.INSERT_ONLY,
+        )
+        receipt = TextVectorBuildReceipt(
+            generation_id=plan.generation_id,
+            index_specification_hash=plan.index_specification.specification_hash,
+            point_count=len(plan.points),
+            point_manifest_sha256=plan.point_manifest_sha256,
+            vector_manifest_sha256=vector_manifest_sha256,
+        )
+        probe_binding_payload = self._manifest_payload(
+            plan,
+            vector_manifest_sha256=receipt.vector_manifest_sha256,
+        )
+        records = client.retrieve(
+            collection_name=self.collection_name,
+            ids=[manifest_id],
+            with_payload=True,
+            with_vectors=False,
+        )
+        if (
+            len(records) != 1
+            or getattr(records[0], "payload", None) != probe_binding_payload
+        ):
+            raise RuntimeError("text vector generation manifest was not durably written")
+        count_filter = models.Filter(
+            must=[
+                models.FieldCondition(
+                    key="generation_id",
+                    match=models.MatchValue(value=plan.generation_id),
+                ),
+                models.FieldCondition(
+                    key="record_type",
+                    match=models.MatchValue(value="segment"),
+                ),
+            ]
+        )
+        count = client.count(
+            collection_name=self.collection_name,
+            count_filter=count_filter,
+            exact=True,
+        ).count
+        if count != len(plan.points):
+            raise RuntimeError("text vector generation point count is incomplete")
+        return receipt
+
+    def _expected_binding_manifest(
+        self,
+        binding: TextVectorSearchBinding,
+    ) -> dict[str, object]:
+        generation = binding.generation
+        return {
+            "collection_name": generation.collection_name,
+            "generation_id": generation.generation_id,
+            "index_specification_hash": generation.index_specification_hash,
+            "input_manifest_sha256": generation.input_manifest_sha256,
+            "payload_schema_version": binding.index_specification.payload_schema_version,
+            "point_count": generation.point_count,
+            "point_manifest_sha256": generation.point_manifest_sha256,
+            "record_type": "manifest",
+            "source_sha256": generation.source_sha256,
+            "stage_specification_hash": generation.specification_hash,
+            "vector_manifest_sha256": generation.vector_manifest_sha256,
+            "video_id": generation.video_id,
+        }
+
+    @staticmethod
+    def _generation_validation_cache_key(
+        binding: TextVectorSearchBinding,
+    ) -> tuple[str, str, str, str, int]:
+        generation = binding.generation
+        return (
+            generation.generation_id,
+            generation.index_specification_hash,
+            generation.point_manifest_sha256,
+            generation.vector_manifest_sha256,
+            generation.point_count,
+        )
+
+    def validate_generation(
+        self,
+        binding: TextVectorSearchBinding,
+        *,
+        exhaustive: bool = False,
+    ) -> bool:
+        from qdrant_client import models
+
+        if not isinstance(binding, TextVectorSearchBinding):
+            raise ValueError("text vector search binding must be validated")
+        if binding.index_specification != self.index_specification:
+            return False
+        try:
+            manifest_id = self.manifest_point_id(binding.generation_id)
+            manifest_records = self._get_client().retrieve(
+                collection_name=self.collection_name,
+                ids=[manifest_id],
+                with_payload=True,
+                with_vectors=False,
+            )
+            if (
+                len(manifest_records) != 1
+                or getattr(manifest_records[0], "payload", None)
+                != self._expected_binding_manifest(binding)
+            ):
+                return False
+            count_filter = models.Filter(
+                must=[
+                    models.FieldCondition(
+                        key="generation_id",
+                        match=models.MatchValue(value=binding.generation_id),
+                    ),
+                    models.FieldCondition(
+                        key="record_type",
+                        match=models.MatchValue(value="segment"),
+                    ),
+                ]
+            )
+            count = self._get_client().count(
+                collection_name=self.collection_name,
+                count_filter=count_filter,
+                exact=True,
+            ).count
+            if count != binding.generation.point_count:
+                return False
+            if not exhaustive:
+                return True
+            cache_key = self._generation_validation_cache_key(binding)
+            if cache_key in self._validated_generation_cache:
+                self._validated_generation_cache.move_to_end(cache_key)
+                return True
+            segment_ids = [
+                self.point_id(binding.generation_id, point.segment_id)
+                for point in binding.points
+            ]
+            records = self._get_client().retrieve(
+                collection_name=self.collection_name,
+                ids=segment_ids,
+                with_payload=True,
+                with_vectors=True,
+            )
+            by_id = {str(record.id): record for record in records}
+            if len(by_id) != len(segment_ids):
+                return False
+            vector_manifest: list[dict[str, str]] = []
+            for point, point_id in zip(binding.points, segment_ids, strict=True):
+                record = by_id.get(point_id)
+                if record is None or getattr(record, "payload", None) != {
+                    "generation_id": binding.generation_id,
+                    "modality": point.modality,
+                    "record_type": "segment",
+                    "segment_generation_id": point.segment_generation_id,
+                    "segment_id": point.segment_id,
+                    "text_sha256": point.text_sha256,
+                    "video_id": point.video_id,
+                }:
+                    return False
+                vector = np.asarray(getattr(record, "vector", None), dtype="<f4")
+                if (
+                    vector.ndim != 1
+                    or vector.shape[0] != self.dimensions
+                    or not bool(np.isfinite(vector).all())
+                ):
+                    return False
+                vector_manifest.append(
+                    {
+                        "point_id": point_id,
+                        "vector_sha256": hashlib.sha256(
+                            np.ascontiguousarray(vector, dtype="<f4").tobytes()
+                        ).hexdigest(),
+                    }
+                )
+            if self._canonical_digest(vector_manifest) != binding.generation.vector_manifest_sha256:
+                return False
+            self._validated_generation_cache[cache_key] = None
+            self._validated_generation_cache.move_to_end(cache_key)
+            while len(self._validated_generation_cache) > 128:
+                self._validated_generation_cache.popitem(last=False)
+        except Exception:
+            return False
+        return True
+
+    def search_generations(
+        self,
+        query: str,
+        *,
+        bindings: list[TextVectorSearchBinding] | tuple[TextVectorSearchBinding, ...],
+        modalities: set[str] | None = None,
+        limit: int = 50,
+        exhaustive_validation: bool = False,
+    ) -> list[TextVectorSearchHit]:
+        from qdrant_client import models
+
+        if not query.strip() or limit <= 0 or not bindings:
+            return []
+        resolved_bindings = tuple(bindings)
+        if any(not isinstance(item, TextVectorSearchBinding) for item in resolved_bindings):
+            raise ValueError("text vector search bindings must be validated")
+        if any(
+            not self.validate_generation(
+                item,
+                exhaustive=exhaustive_validation,
+            )
+            for item in resolved_bindings
+        ):
+            raise ValueError("text vector generation manifest is missing or invalid")
+        allowed_pairs = {
+            (item.video_id, item.generation_id) for item in resolved_bindings
+        }
+        expected_points = {
+            (binding.video_id, binding.generation_id, point.segment_id): point
+            for binding in resolved_bindings
+            for point in binding.points
+        }
+        allowed_modalities = {"speech", "ocr", "objects"} if modalities is None else set(modalities)
+        if not allowed_modalities <= {"speech", "ocr", "objects"}:
+            raise ValueError("unsupported text vector search modality")
+        pair_filters = [
+            models.Filter(
+                must=[
+                    models.FieldCondition(
+                        key="video_id",
+                        match=models.MatchValue(value=video_id),
+                    ),
+                    models.FieldCondition(
+                        key="generation_id",
+                        match=models.MatchValue(value=generation_id),
+                    ),
+                ]
+            )
+            for video_id, generation_id in sorted(allowed_pairs)
+        ]
+        query_filter = models.Filter(
+            must=[
+                models.FieldCondition(
+                    key="record_type",
+                    match=models.MatchValue(value="segment"),
+                ),
+                models.FieldCondition(
+                    key="modality",
+                    match=models.MatchAny(any=sorted(allowed_modalities)),
+                ),
+            ],
+            should=pair_filters,
+            min_should=models.MinShould(conditions=pair_filters, min_count=1),
+        )
+        embed_query = getattr(self.embedding, "embed_query", None)
+        raw_vector = embed_query(query) if embed_query else self.embedding.embed([query])[0]
+        try:
+            vector = np.asarray(raw_vector, dtype=np.float32)
+        except (TypeError, ValueError, OverflowError) as error:
+            raise ValueError("embedding model returned an invalid query vector") from error
+        if (
+            vector.ndim != 1
+            or vector.shape[0] != self.dimensions
+            or not bool(np.isfinite(vector).all())
+        ):
+            raise ValueError("embedding model returned an invalid query vector")
+        response = self._get_client().query_points(
+            collection_name=self.collection_name,
+            query=vector.tolist(),
+            query_filter=query_filter,
+            limit=limit,
+            with_payload=True,
+        )
+        hits: list[TextVectorSearchHit] = []
+        for point in response.points:
+            payload = getattr(point, "payload", None)
+            if not isinstance(payload, Mapping):
+                continue
+            video_id = payload.get("video_id")
+            generation_id = payload.get("generation_id")
+            segment_id = payload.get("segment_id")
+            modality = payload.get("modality")
+            if (
+                type(video_id) is not str
+                or type(generation_id) is not str
+                or (video_id, generation_id) not in allowed_pairs
+                or type(segment_id) is not str
+                or type(modality) is not str
+                or modality not in allowed_modalities
+            ):
+                continue
+            expected_point = expected_points.get(
+                (video_id, generation_id, segment_id)
+            )
+            if expected_point is None or dict(payload) != {
+                "generation_id": generation_id,
+                "modality": expected_point.modality,
+                "record_type": "segment",
+                "segment_generation_id": expected_point.segment_generation_id,
+                "segment_id": expected_point.segment_id,
+                "text_sha256": expected_point.text_sha256,
+                "video_id": expected_point.video_id,
+            }:
+                continue
+            try:
+                score = float(point.score)
+                if not math.isfinite(score):
+                    continue
+                hit = TextVectorSearchHit(
+                    video_id=video_id,
+                    generation_id=generation_id,
+                    segment_id=segment_id,
+                    modality=modality,
+                    score=max(0.0, min(1.0, score)),
+                )
+            except (AttributeError, TypeError, ValueError):
+                continue
+            hits.append(hit)
+        return hits
+
+    def delete_generation(
+        self,
+        generation_id: str,
+        *,
+        index_specification_hash: str,
+    ) -> None:
+        from qdrant_client import models
+
+        validate_artifact_identifier(generation_id, field_name="text vector generation id")
+        if index_specification_hash != self.index_specification.specification_hash:
+            raise ValueError("text vector GC index specification does not match writer")
+        generation_filter = models.Filter(
+            must=[
+                models.FieldCondition(
+                    key="generation_id",
+                    match=models.MatchValue(value=generation_id),
+                )
+            ]
+        )
+        self._get_client().delete(
+            collection_name=self.collection_name,
+            points_selector=models.FilterSelector(filter=generation_filter),
+            wait=True,
+        )
+        for cache_key in tuple(self._validated_generation_cache):
+            if cache_key[0] == generation_id:
+                self._validated_generation_cache.pop(cache_key, None)
 
     def replace_video(self, video_id: str, segments: list[SegmentRecord]) -> None:
         self._replace_video(video_id, segments, restore_marker=True)
@@ -220,6 +738,7 @@ class QdrantVectorIndex:
                 id=str(uuid5(NAMESPACE_URL, segment.id)),
                 vector=vector.tolist(),
                 payload={
+                    "record_type": "legacy",
                     "segment_id": segment.id,
                     "video_id": segment.video_id,
                     "start": segment.start,
@@ -239,7 +758,11 @@ class QdrantVectorIndex:
                 models.FieldCondition(
                     key="video_id",
                     match=models.MatchValue(value=video_id),
-                )
+                ),
+                models.FieldCondition(
+                    key="record_type",
+                    match=models.MatchValue(value="legacy"),
+                ),
             ]
         )
         self.invalidate()
@@ -271,7 +794,12 @@ class QdrantVectorIndex:
         if not query.strip() or limit <= 0:
             return []
         query_filter = None
-        must = []
+        must = [
+            models.FieldCondition(
+                key="record_type",
+                match=models.MatchValue(value="legacy"),
+            )
+        ]
         if video_ids:
             must.append(
                 models.FieldCondition(
@@ -367,10 +895,157 @@ class MemoryVectorIndex:
 
     id = "memory-index"
     available = True
+    supports_generation_provenance = True
 
     def __init__(self, embedding: HashEmbedding | None = None) -> None:
         self.embedding = embedding or HashEmbedding()
+        self.embedding_identity = str(
+            getattr(
+                self.embedding,
+                "identity",
+                f"{type(self.embedding).__module__}.{type(self.embedding).__qualname__}:{self.embedding.dimensions}",
+            )
+        )
+        self.index_specification = TextVectorIndexSpecification(
+            embedding_identity=self.embedding_identity,
+            dimensions=int(self.embedding.dimensions),
+        )
         self._segments: dict[str, SegmentRecord] = {}
+        self._generation_records: dict[
+            str,
+            tuple[TextVectorBuildPlan, TextVectorBuildReceipt, tuple[np.ndarray, ...]],
+        ] = {}
+
+    def build_generation(self, plan: TextVectorBuildPlan) -> TextVectorBuildReceipt:
+        if not isinstance(plan, TextVectorBuildPlan):
+            raise ValueError("text vector build plan must be validated")
+        if plan.index_specification != self.index_specification:
+            raise ValueError("text vector build index specification does not match writer")
+        if plan.generation_id in self._generation_records:
+            raise ValueError("text vector generation already exists")
+        vectors = self.embedding.embed([point.text for point in plan.points])
+        if len(vectors) != len(plan.points):
+            raise ValueError("embedding model returned an unexpected vector count")
+        validated: list[np.ndarray] = []
+        manifest: list[dict[str, str]] = []
+        for point, vector in zip(plan.points, vectors, strict=True):
+            try:
+                resolved = np.asarray(vector, dtype="<f4")
+            except (TypeError, ValueError, OverflowError) as error:
+                raise ValueError("embedding model returned an invalid vector") from error
+            if (
+                resolved.ndim != 1
+                or resolved.shape[0] != self.index_specification.dimensions
+                or not bool(np.isfinite(resolved).all())
+            ):
+                raise ValueError("embedding model returned an invalid vector")
+            contiguous = np.ascontiguousarray(resolved, dtype="<f4")
+            validated.append(contiguous)
+            manifest.append(
+                {
+                    "point_id": QdrantVectorIndex.point_id(
+                        plan.generation_id,
+                        point.segment_id,
+                    ),
+                    "vector_sha256": hashlib.sha256(contiguous.tobytes()).hexdigest(),
+                }
+            )
+        receipt = TextVectorBuildReceipt(
+            generation_id=plan.generation_id,
+            index_specification_hash=plan.index_specification.specification_hash,
+            point_count=len(plan.points),
+            point_manifest_sha256=plan.point_manifest_sha256,
+            vector_manifest_sha256=QdrantVectorIndex._canonical_digest(manifest),
+        )
+        self._generation_records[plan.generation_id] = (
+            plan,
+            receipt,
+            tuple(validated),
+        )
+        return receipt
+
+    def validate_generation(
+        self,
+        binding: TextVectorSearchBinding,
+        *,
+        exhaustive: bool = False,
+    ) -> bool:
+        del exhaustive
+        if not isinstance(binding, TextVectorSearchBinding):
+            raise ValueError("text vector search binding must be validated")
+        record = self._generation_records.get(binding.generation_id)
+        if record is None:
+            return False
+        plan, receipt, vectors = record
+        generation = binding.generation
+        return (
+            binding.index_specification == self.index_specification
+            and plan.video_id == generation.video_id
+            and plan.stage_specification_hash == generation.specification_hash
+            and plan.source_sha256 == generation.source_sha256
+            and plan.index_specification.specification_hash
+            == generation.index_specification_hash
+            and plan.input_manifest_sha256 == generation.input_manifest_sha256
+            and plan.point_manifest_sha256 == generation.point_manifest_sha256
+            and plan.points == binding.points
+            and receipt.vector_manifest_sha256 == generation.vector_manifest_sha256
+            and receipt.point_count == generation.point_count == len(vectors)
+        )
+
+    def search_generations(
+        self,
+        query: str,
+        *,
+        bindings: list[TextVectorSearchBinding] | tuple[TextVectorSearchBinding, ...],
+        modalities: set[str] | None = None,
+        limit: int = 50,
+        exhaustive_validation: bool = False,
+    ) -> list[TextVectorSearchHit]:
+        del exhaustive_validation
+        if not query.strip() or limit <= 0 or not bindings:
+            return []
+        allowed_modalities = {"speech", "ocr", "objects"} if modalities is None else set(modalities)
+        if not allowed_modalities <= {"speech", "ocr", "objects"}:
+            raise ValueError("unsupported text vector search modality")
+        query_vector = np.asarray(self.embedding.embed([query])[0], dtype=np.float32)
+        if (
+            query_vector.ndim != 1
+            or query_vector.shape[0] != self.index_specification.dimensions
+            or not bool(np.isfinite(query_vector).all())
+        ):
+            raise ValueError("embedding model returned an invalid query vector")
+        ranked: list[TextVectorSearchHit] = []
+        for binding in bindings:
+            if not self.validate_generation(binding):
+                raise ValueError("text vector generation manifest is missing or invalid")
+            plan, _receipt, vectors = self._generation_records[binding.generation_id]
+            for point, vector in zip(plan.points, vectors, strict=True):
+                if point.modality not in allowed_modalities:
+                    continue
+                score = float(np.dot(query_vector, vector))
+                if not math.isfinite(score):
+                    continue
+                ranked.append(
+                    TextVectorSearchHit(
+                        video_id=point.video_id,
+                        generation_id=plan.generation_id,
+                        segment_id=point.segment_id,
+                        modality=point.modality,
+                        score=max(0.0, min(1.0, score)),
+                    )
+                )
+        return sorted(ranked, key=lambda item: item.score, reverse=True)[:limit]
+
+    def delete_generation(
+        self,
+        generation_id: str,
+        *,
+        index_specification_hash: str,
+    ) -> None:
+        validate_artifact_identifier(generation_id, field_name="text vector generation id")
+        if index_specification_hash != self.index_specification.specification_hash:
+            raise ValueError("text vector GC index specification does not match writer")
+        self._generation_records.pop(generation_id, None)
 
     def replace_video(self, video_id: str, segments: list[SegmentRecord]) -> None:
         self._segments = {

@@ -10,7 +10,13 @@ import re
 from typing import Protocol
 from urllib.parse import quote
 
-from videoscope.artifacts import IndexingSpecifications, StageKind, StageSpecification
+from videoscope.artifacts import (
+    IndexingSpecifications,
+    StageKind,
+    StageSpecification,
+    TextVectorSearchBinding,
+    TextVectorSearchHit,
+)
 from videoscope.repository import Repository, SegmentRecord
 from videoscope.search.fusion import EvidenceHit, calibrate_hits, fuse_hits
 from videoscope.search.query_router import QueryRouter
@@ -279,6 +285,16 @@ class SearchIndex(Protocol):
         limit: int = 50,
     ) -> list[EvidenceHit]: ...
 
+    def search_generations(
+        self,
+        query: str,
+        *,
+        bindings: list[TextVectorSearchBinding] | tuple[TextVectorSearchBinding, ...],
+        modalities: set[str] | None = None,
+        limit: int = 50,
+        exhaustive_validation: bool = False,
+    ) -> list[TextVectorSearchHit]: ...
+
 
 class MomentSearch(Protocol):
     def search(self, query: str, video_ids: list[str], *, limit: int = 30) -> list[EvidenceHit]: ...
@@ -382,6 +398,14 @@ class SearchService:
             return resolved.segment_specifications
         return self._static_segment_specifications or ()
 
+    def _current_indexing_specifications(self) -> IndexingSpecifications | None:
+        if self.specification_resolver is None:
+            return None
+        resolved = self.specification_resolver()
+        if not isinstance(resolved, IndexingSpecifications):
+            raise ValueError("indexing specification resolver returned invalid data")
+        return resolved
+
     def _require_current_sqlite_artifacts(
         self,
         *,
@@ -459,8 +483,14 @@ class SearchService:
 
         current_specifications: tuple[StageSpecification, ...] = ()
         selected_specifications: tuple[StageSpecification, ...] = ()
+        indexing_specifications: IndexingSpecifications | None = None
         try:
-            current_specifications = self._current_segment_specifications()
+            indexing_specifications = self._current_indexing_specifications()
+            current_specifications = (
+                indexing_specifications.segment_specifications
+                if indexing_specifications is not None
+                else self._static_segment_specifications or ()
+            )
             if raise_on_provider_error:
                 self._require_current_sqlite_artifacts(
                     modalities=allowed_modalities,
@@ -529,16 +559,114 @@ class SearchService:
         current_by_id = {
             (segment.video_id, segment.id): segment for segment in current_segments
         }
+        generation_aware = (
+            indexing_specifications is not None
+            and bool(
+                getattr(
+                    self.vector_index,
+                    "supports_generation_provenance",
+                    False,
+                )
+            )
+            and callable(getattr(self.vector_index, "search_generations", None))
+        )
+        text_vector_bindings: tuple[TextVectorSearchBinding, ...] = ()
+        if generation_aware and semantic_modalities and ready_video_ids:
+            assert indexing_specifications is not None
+            try:
+                text_vector_bindings = self.repository.list_current_text_vector_bindings(
+                    video_ids=ready_video_ids,
+                    text_specification=indexing_specifications.text_vectors,
+                    semantic_specifications=(
+                        indexing_specifications.semantic_segment_specifications
+                    ),
+                    required_modalities=(
+                        semantic_modalities if raise_on_provider_error else None
+                    ),
+                )
+            except Exception as error:
+                logger.warning(
+                    "Current text vector generation is unavailable",
+                    exc_info=error,
+                )
+                if raise_on_provider_error:
+                    raise SearchDependencyError(
+                        "Semantic index failed integrity validation"
+                    ) from error
+            if raise_on_provider_error and {
+                binding.video_id for binding in text_vector_bindings
+            } != set(ready_video_ids):
+                raise SearchDependencyError(
+                    "Semantic index is unavailable for required evidence"
+                )
 
         hits: list[EvidenceHit] = []
         if semantic_modalities and ready_video_ids:
             try:
-                semantic_hits = self.vector_index.search(
-                    normalized_query,
-                    video_ids=ready_video_ids,
-                    modalities=semantic_modalities,
-                    limit=max(limit * 3, 30),
-                )
+                if generation_aware:
+                    allowed_generation_pairs = {
+                        (binding.video_id, binding.generation_id)
+                        for binding in text_vector_bindings
+                    }
+                    generation_hits = self.vector_index.search_generations(
+                        normalized_query,
+                        bindings=text_vector_bindings,
+                        modalities=semantic_modalities,
+                        limit=max(limit * 3, 30),
+                        exhaustive_validation=raise_on_provider_error,
+                    )
+                    assert indexing_specifications is not None
+                    post_search_bindings = (
+                        self.repository.list_current_text_vector_bindings(
+                            video_ids=ready_video_ids,
+                            text_specification=indexing_specifications.text_vectors,
+                            semantic_specifications=(
+                                indexing_specifications.semantic_segment_specifications
+                            ),
+                            required_modalities=(
+                                semantic_modalities
+                                if raise_on_provider_error
+                                else None
+                            ),
+                        )
+                    )
+                    if post_search_bindings != text_vector_bindings:
+                        raise ValueError(
+                            "text vector generation changed during search"
+                        )
+                    semantic_hits = []
+                    for hit in generation_hits:
+                        if (
+                            not isinstance(hit, TextVectorSearchHit)
+                            or (hit.video_id, hit.generation_id)
+                            not in allowed_generation_pairs
+                        ):
+                            continue
+                        segment = current_by_id.get((hit.video_id, hit.segment_id))
+                        if segment is None or segment.modality != hit.modality:
+                            continue
+                        semantic_hits.append(
+                            EvidenceHit(
+                                video_id=segment.video_id,
+                                segment_id=segment.id,
+                                start=segment.start,
+                                end=segment.end,
+                                modality=segment.modality,
+                                score=hit.score,
+                                text=segment.text,
+                                metadata={
+                                    "source": "semantic-generation",
+                                    "text_vector_generation_id": hit.generation_id,
+                                },
+                            )
+                        )
+                else:
+                    semantic_hits = self.vector_index.search(
+                        normalized_query,
+                        video_ids=ready_video_ids,
+                        modalities=semantic_modalities,
+                        limit=max(limit * 3, 30),
+                    )
                 authoritative_semantic_hits: list[EvidenceHit] = []
                 for hit in semantic_hits:
                     segment = current_by_id.get((hit.video_id, hit.segment_id))

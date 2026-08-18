@@ -11,6 +11,9 @@ from videoscope.artifacts import (
     StageKind,
     StageRun,
     StageState,
+    TextVectorBuildPlan,
+    TextVectorBuildReceipt,
+    TextVectorIndexSpecification,
     validate_artifact_identifier,
 )
 from videoscope.media.ffmpeg import FFmpeg
@@ -92,7 +95,13 @@ class ObjectProvider(Protocol):
 
 
 class VectorIndex(Protocol):
+    available: bool
+    supports_generation_provenance: bool
+    index_specification: TextVectorIndexSpecification
+
     def replace_video(self, video_id: str, segments: list[SegmentRecord]) -> None: ...
+
+    def build_generation(self, plan: TextVectorBuildPlan) -> TextVectorBuildReceipt: ...
 
 
 class DenseFrameExtractor(Protocol):
@@ -513,17 +522,114 @@ class Indexer:
         warnings: list[str],
     ) -> None:
         try:
+            current = self.specification_resolver()
+            if not isinstance(current, IndexingSpecifications):
+                raise ValueError("indexing specification resolver returned invalid data")
+        except Exception as error:
+            logger.warning(
+                "Text vector specification resolution failed for %s",
+                video_id,
+                exc_info=error,
+            )
+            warnings.append("text vector stage failed")
+            return
+        if not bool(getattr(self.vector_index, "available", True)):
+            self._record_not_configured(
+                video_id,
+                current,
+                StageKind.TEXT_VECTORS,
+            )
+            warnings.append("text vector stage not configured")
+            return
+
+        generation_capable = bool(
+            getattr(self.vector_index, "supports_generation_provenance", False)
+        ) and all(
+            callable(getattr(self.vector_index, name, None))
+            for name in ("build_generation", "validate_generation")
+        )
+        if generation_capable:
+            run = self._create_running_stage(
+                video_id,
+                current,
+                StageKind.TEXT_VECTORS,
+            )
+            plan: TextVectorBuildPlan | None = None
+            try:
+                index_specification = getattr(
+                    self.vector_index,
+                    "index_specification",
+                    None,
+                )
+                if not isinstance(index_specification, TextVectorIndexSpecification):
+                    raise ValueError("vector writer has no validated physical identity")
+                plan = self.repository.reserve_text_vector_generation(
+                    run.run_id,
+                    index_specification=index_specification,
+                    semantic_specifications=current.semantic_segment_specifications,
+                )
+                receipt = self.vector_index.build_generation(plan)
+                if not isinstance(receipt, TextVectorBuildReceipt):
+                    raise ValueError("vector writer returned an invalid generation receipt")
+                self._verify_run_specification(run)
+                self.repository.commit_text_vector_generation(
+                    run.run_id,
+                    receipt=receipt,
+                )
+                return
+            except Exception as error:
+                message = str(error)
+                if isinstance(error, IndexingSpecificationChanged):
+                    error_code = "text_vector_specification_changed"
+                elif "inputs changed" in message or "active text vector generation changed" in message:
+                    error_code = "text_vector_inputs_changed"
+                elif isinstance(error, ValueError) and (
+                    "receipt" in message or "manifest" in message
+                ):
+                    error_code = "text_vector_generation_invalid"
+                else:
+                    error_code = "text_vector_index_failed"
+                logger.warning(
+                    "Immutable text vector build failed for %s",
+                    video_id,
+                    exc_info=error,
+                )
+                if plan is not None:
+                    try:
+                        self.repository.fail_text_vector_build(
+                            run.run_id,
+                            error_code=error_code,
+                        )
+                    except Exception as cleanup_error:
+                        logger.warning(
+                            "Text vector build cleanup was deferred for %s",
+                            video_id,
+                            exc_info=cleanup_error,
+                        )
+                        persisted = self.repository.get_stage_run(run.run_id)
+                        if persisted is not None and persisted.state is StageState.RUNNING:
+                            self._record_failed(run, error_code)
+                else:
+                    self._record_failed(run, error_code)
+                warnings.append("text vector stage failed")
+                return
+
+        # Compatibility seam for old test/in-process indexes. The write remains
+        # deliberately untrusted and the run is terminal FAILED, never COMPLETE.
+        run = self._create_running_stage(
+            video_id,
+            current,
+            StageKind.TEXT_VECTORS,
+        )
+        try:
             segments = self.repository.list_current_active_segments(
-                specifications.semantic_segment_specifications,
+                current.semantic_segment_specifications,
                 video_ids=[video_id],
             )
             self.vector_index.replace_video(video_id, segments)
+            self._record_failed(run, "text_vector_generation_unverified")
+            warnings.append("text vector generation unverified")
         except Exception as error:
-            run = self._create_running_stage(
-                video_id,
-                specifications,
-                StageKind.TEXT_VECTORS,
-            )
             self._record_failed(run, "text_vector_index_failed", error=error)
             warnings.append("text vector stage failed")
 
