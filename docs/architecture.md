@@ -10,7 +10,7 @@ flowchart LR
     Q --> W["Whisper MLX"]
     S --> O["PaddleOCR"]
     S --> R["Roboflow + Supervision"]
-    S --> L["Lighthouse 150 s windows"]
+    S --> L["Isolated Lighthouse worker"]
     S --> T["Immutable scene generations"]
     Q --> G["Dense SigLIP 2 generation"]
     W --> DB["SQLite temporal segments"]
@@ -46,8 +46,10 @@ as temporal segments:
 - confidence and provider metadata
 - representative thumbnail
 
-Qdrant stores vectors and lightweight payloads. SigLIP and Lighthouse keep
-rebuildable, versioned per-video artifacts outside SQLite. Their query-time
+Qdrant stores vectors and identity-only payloads in immutable per-video
+generations; SQLite owns the active-generation pointer and upstream lineage.
+SigLIP and Lighthouse keep rebuildable, versioned per-video artifacts outside
+SQLite. Their query-time
 `visual`/`lighthouse` evidence and Qwen/InternVideo judgements are returned in the
 search response, but are not accepted as persistent segment modalities. SQLite
 remains the source of truth for video metadata, processing state, and persisted
@@ -56,12 +58,17 @@ temporal evidence.
 ## Ranking
 
 1. The query router chooses speech, OCR, object, visual, or mixed retrieval and assigns modality weights.
-2. Qdrant retrieves semantic text, OCR, and object evidence; SQLite adds exact, inflected, transliterated, and phonetic matches.
+2. Qdrant reads only the generation selected and validated by SQLite, retrieves
+   semantic speech, OCR, and object evidence, then hydrates authoritative text
+   and metadata from SQLite. SQLite also adds exact, inflected, transliterated,
+   and phonetic matches.
 3. SigLIP 2 retrieves across a dense, specification-versioned timeline for each
    video; incomplete, corrupt, or specification-incompatible generations fail
    closed. The source digest is recorded, and mutation during generation build
    aborts activation.
-4. Lighthouse windows are retained only when corroborated by visual or object evidence.
+4. The isolated Lighthouse worker searches only validated immutable feature
+   generations; its windows are retained only when corroborated by visual or
+   object evidence.
 5. Scores are calibrated within each modality and temporally overlapping hits are clustered per video.
 6. A ready local Qwen3.5 9B worker verifies only the best fused short-event
    candidates; in the target worker configuration MLX-VLM does not import into
@@ -89,9 +96,9 @@ or retrieval configuration no longer matches the current runtime.
 
 FFmpeg probing is critical, while optional failures are isolated. SQLite segment
 stages record explicit failed/not-configured runs and preserve compatible active
-generations; dense visual activation preserves its previous pointer. Dense and
-Lighthouse failures become video warnings, while Qwen and InternVideo failures
-are logged at query time.
+generations; text-vector, dense visual and Lighthouse activation preserve their
+previous pointers. Dense and Lighthouse failures become video warnings, while
+Qwen and InternVideo failures are logged at query time.
 
 ## Security boundary
 
@@ -111,6 +118,11 @@ are logged at query time.
 - Local RF-DETR processes frames on the VideoScope machine. Only the optional Roboflow Serverless path receives frames, and only after both an API key and a non-local model ID are explicitly configured.
 - Qwen runs locally through MLX in an authenticated loopback-only worker with a
   dedicated locked environment. The backend shares only one-use files under
-  `data/tmp`, never arbitrary library paths. A configured external InternVideo
+  `data/tmp`, never arbitrary library paths.
+- Lighthouse runs in its own pinned Python 3.11 environment behind an
+  authenticated loopback-only endpoint. It accepts only contained media paths
+  and publishes bounded, validated immutable feature snapshots; see
+  `docs/lighthouse-worker.md`.
+- A configured external InternVideo
   endpoint receives only selected downscaled frames from the best fused
   candidates, never the complete source video.

@@ -18,7 +18,8 @@
   переключением проверенных поколений;
 - локальная Qwen3.5 9B через изолированный MLX worker как дополнительная проверка коротких видеособытий;
 - InternVideo 2.5 как опциональный финальный GPU-reranker;
-- локальный Qdrant с multilingual MPNet; при отказе энкодера остаётся точный лексический поиск;
+- локальный Qdrant с multilingual MPNet и неизменяемыми поколениями по каждому
+  видео; при отказе энкодера остаётся точный лексический поиск;
 - маршрутизация запросов, калиброванное объединение сигналов и объяснение каждого совпадения;
 - словарь имён и терминов, русские словоформы, транслитерация и таймкоды отдельных слов;
 - локальный evaluation harness с Recall@K, MRR, temporal IoU и задержкой;
@@ -48,11 +49,13 @@ make models-ml
 make install-ocr    # необязательно; отдельный совместимый worker
 make install-video
 make models-video
-make install-lighthouse  # необязательно
+make install-lighthouse   # необязательно; отдельный Python 3.11 worker
+make models-lighthouse
 ```
 
-После установки новых провайдеров перезапустите `make dev`. Qwen worker запускается
-отдельно командой `make qwen-worker` и не добавляет MLX-VLM в процесс backend.
+После установки новых провайдеров перезапустите `make dev`. Qwen и Lighthouse
+запускаются отдельно командами `make qwen-worker` и `make lighthouse-worker`;
+MLX-VLM и несовместимый Lighthouse/CLIP-стек не импортируются штатным backend.
 `make index-visual` и `make index-lighthouse` перестраивают производные индексы
 уже загруженной библиотеки. Для речи и объектов используйте действие
 «Переиндексировать»: старые maintenance-скрипты ещё не публикуют проверенные
@@ -83,8 +86,8 @@ API и OpenAPI: `http://127.0.0.1:8765/api/docs`
 | PaddleOCR worker | текст на экране в отдельном Python-окружении | этап пропускается |
 | SigLIP 2 Base | основной локальный visual encoder с плотной выборкой по всей временной шкале; 384 доступен как quality-профиль | визуальный режим отключается |
 | Roboflow + Supervision | локальный универсальный RF-DETR или облачная предметная модель | `rfdetr-small` работает без ключа |
-| Qdrant + MPNet | локальный семантический индекс речи и объектов | остаётся точный поиск по словам |
-| Lighthouse | video moment retrieval | нужен пакет и checkpoint |
+| Qdrant + MPNet | локальный семантический индекс речи, OCR и объектов с атомарным переключением поколений | остаётся точный поиск по словам |
+| Lighthouse worker | video moment retrieval в отдельном Python 3.11 процессе | нужен настроенный worker и закреплённые модели |
 | Qwen3.5 9B + MLX worker | локальная проверка коротких видеособытий по последовательности кадров в отдельном процессе | этап пропускается или используется настроенный InternVideo |
 | InternVideo 2.5 | внешний GPU-reranker лучших кандидатов | локальный поиск продолжает работать без него |
 
@@ -154,15 +157,29 @@ VIDEOSCOPE_QWEN_VIDEO_FRAME_COUNT=12
 
 ## Lighthouse
 
-Официальная библиотека тестировалась авторами на Python 3.9/CUDA и ограничивает входное видео 150 секундами. VideoScope разрезает длинные файлы на окна, сохраняет признаки и возвращает результаты в исходной временной шкале. Для CPU используется `feature_name="clip"`.
+Официальная библиотека тестировалась авторами на старом Python/CUDA-стеке и
+ограничивает входное видео 150 секундами. VideoScope разрезает длинные файлы на
+окна, сохраняет признаки и возвращает результаты в исходной временной шкале. Для
+CPU используется `feature_name="clip"`.
 
-Upstream импортирует аудио-, Gradio- и Transformers-зависимости даже для CLIP-only режима. Поэтому VideoScope содержит изолированный адаптер: модель QD-DETR и формат checkpoint остаются официальными, но загружаются только OpenAI CLIP и нужное ядро Lighthouse. `make install-lighthouse` скачивает checkpoint с Zenodo и сверяет закреплённый SHA-256 до любого pickle-декодирования; произвольный checkpoint не загружается. Без него поиск продолжает работать по речи, OCR, объектам, сценам и multilingual-векторам.
+Upstream требует NumPy/Transformers, несовместимые с основным Python 3.12
+окружением. Поэтому `make install-lighthouse` создаёт только `.venv-lighthouse`
+из отдельного Python 3.11 lock, а `make models-lighthouse` отдельно загружает два
+закреплённых файла модели. Оба SHA-256 проверяются до legacy checkpoint decode;
+worker принимает только аутентифицированные loopback-запросы. Без него поиск
+продолжает работать по речи, OCR, объектам, сценам и multilingual-векторам.
 
 Укажите пути в `.env`:
 
 ```dotenv
 LIGHTHOUSE_CHECKPOINT=./data/models/lighthouse/clip_qd_detr_qvhighlight.ckpt
+LIGHTHOUSE_CLIP_CHECKPOINT=./data/models/lighthouse/ViT-B-32.pt
+LIGHTHOUSE_ENDPOINT=http://127.0.0.1:8782
+LIGHTHOUSE_API_KEY=<отдельный URL-safe токен длиной не менее 32 символов>
 ```
+
+Полный контракт, миграция старого кэша и откат описаны в
+[docs/lighthouse-worker.md](docs/lighthouse-worker.md).
 
 ## Проверка
 

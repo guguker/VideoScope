@@ -35,21 +35,25 @@ directory before they are served.
 | `evaluation/cases.json` | local developer evaluation cases | local user data |
 | `evaluation/latest-report.json` | latest generated evaluation result | derived |
 
-SQLite schema v5 stores scene, speech, OCR and object segments in immutable
-generations. A stage run, source SHA-256 and canonical specification hash identify
-each generation; a separate pointer selects the active generation atomically.
-Reindexing never deletes the previous generation. Scene images follow the same
-rule under `thumbnails/<video-id>/generations/<generation-id>/` and are published
-before the database pointer changes.
+SQLite schema v6 stores derived evidence as immutable generations. Migration v5
+introduced source/specification-linked scene, speech, OCR and object generations;
+migration v6 adds verified per-video text-vector generations. A stage run, source
+SHA-256 and canonical specification hash identify each generation; separate
+SQLite pointers select the active segment and vector generations atomically.
+Reindexing never deletes the previous active generation. Scene images follow the
+same rule under `thumbnails/<video-id>/generations/<generation-id>/` and are
+published before the database pointer changes.
 
 Rows migrated from older databases retain `generation_id = NULL`. They remain
 stored for recovery but are not trusted by lexical search, semantic indexing or
 thumbnail fallback. The application does not silently rebuild a ready library at
 startup: each legacy video needs an explicit Reindex action before its evidence
-becomes searchable again. A successful
-unversioned Qdrant write is usable interactively, but is not recorded as a
-verified `text_vectors` generation until Qdrant gains an immutable per-video
-generation contract.
+becomes searchable again. Text-vector points are written into a new immutable
+Qdrant generation, followed by a manifest sentinel and an exact read-back
+validation. Only then may one SQLite transaction activate that generation and
+complete its stage run. A failed build preserves the previous active generation.
+Legacy unversioned Qdrant points and markers remain inert and untrusted until an
+explicit reindex publishes a verified generation.
 
 Legacy evaluation cases contain local video IDs, so they are not a built-in
 portable dataset. The benchmark subsystem instead accepts versioned manifests
