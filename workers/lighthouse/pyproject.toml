@@ -1,0 +1,21 @@
+[project]
+name = "videoscope-lighthouse-worker"
+version = "0.1.0"
+description = "Isolated QD-DETR/CLIP runtime for VideoScope"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+  "clip @ https://github.com/openai/CLIP/archive/d05afc436d78f1c48dc0dbf8e5980a9d471f35f6.tar.gz#sha256=553c80a6364ac7350dd7800f535531175f22c11fa742bda1b50b62121eb5f40f",
+  "fastapi>=0.115,<1",
+  "lighthouse @ https://github.com/line/lighthouse/archive/d095eaa552cecef240897a8b750306b3b2a08740.tar.gz#sha256=0941b57be663ae603b2c2443bf05de4938d5e35f183770190d803710bcf0db3f",
+  "numpy==1.23.5",
+  "opencv-python>=4.8,<4.12",
+  "pydantic>=2.10,<3",
+  "pydantic-settings>=2.7,<3",
+  "torch>=2.6,<3",
+  "torchvision>=0.21,<1",
+  "uvicorn[standard]>=0.34,<1",
+]
+
+[tool.uv]
+package = false
+exclude-newer = "2026-08-18T00:00:00Z"

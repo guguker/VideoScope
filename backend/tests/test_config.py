@@ -133,6 +133,40 @@ def test_qwen_worker_requires_loopback_http_and_strong_api_key() -> None:
         )
 
 
+def test_lighthouse_worker_requires_literal_loopback_and_strong_api_key() -> None:
+    key = "l" * 32
+    with pytest.raises(ValidationError, match="lighthouse_api_key"):
+        AppSettings(lighthouse_endpoint="http://127.0.0.1:8782")
+    with pytest.raises(ValidationError, match="127.0.0.1"):
+        AppSettings(
+            lighthouse_endpoint="http://localhost:8782",
+            lighthouse_api_key=key,
+        )
+    with pytest.raises(ValidationError, match="plain loopback HTTP"):
+        AppSettings(
+            lighthouse_endpoint="https://127.0.0.1:8782",
+            lighthouse_api_key=key,
+        )
+
+    settings = AppSettings(
+        lighthouse_endpoint="http://127.0.0.1:8782",
+        lighthouse_api_key=key,
+    )
+
+    assert settings.lighthouse_endpoint == "http://127.0.0.1:8782"
+    assert key not in repr(settings)
+
+
+def test_lighthouse_in_process_compatibility_is_explicit_and_unambiguous() -> None:
+    assert AppSettings().lighthouse_allow_in_process is False
+    with pytest.raises(ValidationError, match="cannot be combined"):
+        AppSettings(
+            lighthouse_endpoint="http://127.0.0.1:8782",
+            lighthouse_api_key="l" * 32,
+            lighthouse_allow_in_process=True,
+        )
+
+
 def test_qwen_in_process_compatibility_is_explicit_and_unambiguous() -> None:
     assert AppSettings().qwen_video_allow_in_process is False
     with pytest.raises(ValidationError, match="cannot be combined"):

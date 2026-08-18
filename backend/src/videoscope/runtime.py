@@ -19,7 +19,11 @@ from videoscope.model_manifest import (
 from videoscope.processing.indexer import Indexer
 from videoscope.processing.queue import ThreadedProcessingQueue
 from videoscope.providers.base import ProviderRegistry, ProviderState, StaticProvider
-from videoscope.providers.lighthouse import LighthouseRetriever
+from videoscope.providers.lighthouse import (
+    DisabledLighthouseRetriever,
+    LighthouseRetriever,
+)
+from videoscope.providers.lighthouse_worker import LighthouseWorkerClient
 from videoscope.providers.internvideo import InternVideoReranker
 from videoscope.providers.paddle_ocr import PaddleOCRReader
 from videoscope.providers.qwen_video import QwenVideoReranker
@@ -204,6 +208,29 @@ def create_qwen_reranker(
     )
 
 
+def create_lighthouse_retriever(
+    settings: AppSettings,
+    ffmpeg: FFmpeg,
+) -> LighthouseWorkerClient | LighthouseRetriever | DisabledLighthouseRetriever:
+    """Keep Lighthouse ML imports outside the default backend process."""
+    if settings.lighthouse_endpoint:
+        return LighthouseWorkerClient(
+            endpoint=settings.lighthouse_endpoint,
+            api_key=settings.lighthouse_api_key or "",
+            input_root=settings.media_dir,
+            cache_dir=settings.cache_dir,
+            timeout=settings.lighthouse_timeout,
+        )
+    if settings.lighthouse_allow_in_process:
+        return LighthouseRetriever(
+            checkpoint=settings.lighthouse_checkpoint,
+            cache_dir=settings.cache_dir,
+            ffmpeg=ffmpeg,
+            source_root=settings.lighthouse_root,
+        )
+    return DisabledLighthouseRetriever()
+
+
 def build_runtime(settings: AppSettings, repository: Repository) -> Runtime:
     ffmpeg = FFmpeg()
     scenes = SceneDetector(
@@ -226,12 +253,7 @@ def build_runtime(settings: AppSettings, repository: Repository) -> Runtime:
         model_id=settings.roboflow_model_id,
         cache_dir=settings.models_dir / "rfdetr",
     )
-    lighthouse = LighthouseRetriever(
-        checkpoint=settings.lighthouse_checkpoint,
-        cache_dir=settings.cache_dir,
-        ffmpeg=ffmpeg,
-        source_root=settings.lighthouse_root,
-    )
+    lighthouse = create_lighthouse_retriever(settings, ffmpeg)
     text_embedding = create_semantic_embedding(
         model_name=settings.text_embedding_model,
         dimensions=settings.text_embedding_dimensions,

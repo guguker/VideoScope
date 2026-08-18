@@ -8,6 +8,7 @@
 .venv/
 .venv-ocr/
 .venv-qwen/
+.venv-lighthouse/
 __pycache__/
 *.py[cod]
 *.egg-info/

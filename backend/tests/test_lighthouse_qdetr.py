@@ -177,3 +177,71 @@ def test_rejects_checkpoint_before_torch_load(monkeypatch, tmp_path: Path) -> No
 
     with pytest.raises(RuntimeError, match="checksum"):
         QDDETRPredictor(str(checkpoint))
+
+
+def test_rejects_clip_weights_before_clip_load(monkeypatch, tmp_path: Path) -> None:
+    checkpoint = tmp_path / "model.ckpt"
+    checkpoint.write_bytes(b"trusted test checkpoint")
+    clip_checkpoint = tmp_path / "ViT-B-32.pt"
+    clip_checkpoint.write_bytes(b"untrusted clip weights")
+    fake_clip = types.ModuleType("clip")
+    fake_clip.load = lambda *_args, **_kwargs: (_ for _ in ()).throw(  # type: ignore[attr-defined]
+        AssertionError("CLIP weights reached decoder")
+    )
+    monkeypatch.setitem(sys.modules, "clip", fake_clip)
+
+    with pytest.raises(RuntimeError, match="CLIP checkpoint checksum"):
+        QDDETRPredictor(
+            str(checkpoint),
+            checkpoint_sha256=sha256(checkpoint.read_bytes()).hexdigest(),
+            clip_checkpoint_path=str(clip_checkpoint),
+        )
+
+
+def test_decoders_receive_verified_private_snapshots(monkeypatch, tmp_path: Path) -> None:
+    checkpoint = tmp_path / "model.ckpt"
+    checkpoint.write_bytes(b"trusted qd detr")
+    clip_checkpoint = tmp_path / "ViT-B-32.pt"
+    clip_checkpoint.write_bytes(b"trusted clip")
+
+    options = types.SimpleNamespace(clip_length=2.0, device="old")
+    model = FakeQDModel()
+    lighthouse = types.ModuleType("lighthouse")
+    lighthouse.__path__ = []  # type: ignore[attr-defined]
+    common = types.ModuleType("lighthouse.common")
+    common.__path__ = []  # type: ignore[attr-defined]
+    qd_detr = types.ModuleType("lighthouse.common.qd_detr")
+    qd_detr.build_model = lambda _options: (model, None)  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "lighthouse", lighthouse)
+    monkeypatch.setitem(sys.modules, "lighthouse.common", common)
+    monkeypatch.setitem(sys.modules, "lighthouse.common.qd_detr", qd_detr)
+
+    def load_checkpoint(snapshot, **_kwargs):  # type: ignore[no-untyped-def]
+        checkpoint.write_bytes(b"replacement pickle")
+        assert Path(snapshot.name) != checkpoint
+        assert snapshot.read() == b"trusted qd detr"
+        return {"opt": options, "model": {"weight": 1}}
+
+    monkeypatch.setattr(torch, "load", load_checkpoint)
+    fake_clip = types.ModuleType("clip")
+
+    def load_clip(snapshot_path, **_kwargs):  # type: ignore[no-untyped-def]
+        clip_checkpoint.write_bytes(b"replacement clip")
+        snapshot = Path(snapshot_path)
+        assert snapshot != clip_checkpoint
+        assert snapshot.read_bytes() == b"trusted clip"
+        return FakeClipModel(), None
+
+    fake_clip.load = load_clip  # type: ignore[attr-defined]
+    fake_clip.tokenize = lambda _queries: torch.tensor([[1, 2, 0, 0]])  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "clip", fake_clip)
+
+    predictor = QDDETRPredictor(
+        str(checkpoint),
+        checkpoint_sha256=sha256(b"trusted qd detr").hexdigest(),
+        clip_checkpoint_path=str(clip_checkpoint),
+        clip_checkpoint_sha256=sha256(b"trusted clip").hexdigest(),
+    )
+
+    assert predictor._clip_length == 2.0
+    assert model.loaded == {"weight": 1}

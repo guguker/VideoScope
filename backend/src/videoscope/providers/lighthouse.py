@@ -66,6 +66,16 @@ class LighthouseRetriever:
         return hmac.compare_digest(digest.hexdigest(), self.checkpoint_sha256)
 
     @property
+    def identity(self) -> dict[str, object]:
+        return {
+            "mode": "deprecated-in-process",
+            "checkpoint_sha256": self.checkpoint_sha256,
+            "lighthouse_revision": LIGHTHOUSE_SOURCE_REVISION,
+            "clip_revision": LIGHTHOUSE_CLIP_REVISION,
+            "cache_schema_version": self.cache_schema_version,
+        }
+
+    @property
     def cache_identity(self) -> dict[str, object]:
         predictor_class, _ = self._predictor_class()
         return {
@@ -315,3 +325,49 @@ class LighthouseRetriever:
                         )
                     )
         return sorted(hits, key=lambda hit: hit.score, reverse=True)[:limit]
+
+
+class DisabledLighthouseRetriever:
+    """Fail-closed optional provider used until an isolated worker is configured."""
+
+    id = "lighthouse"
+    max_window_seconds = 150.0
+    checkpoint_sha256 = LIGHTHOUSE_CHECKPOINT_SHA256
+
+    @property
+    def identity(self) -> dict[str, object]:
+        return {
+            "mode": "disabled",
+            "checkpoint_sha256": LIGHTHOUSE_CHECKPOINT_SHA256,
+            "lighthouse_revision": LIGHTHOUSE_SOURCE_REVISION,
+            "clip_revision": LIGHTHOUSE_CLIP_REVISION,
+        }
+
+    @property
+    def cache_identity(self) -> dict[str, object]:
+        return self.identity
+
+    def cache_is_current(self, _video_id: str) -> bool:
+        return False
+
+    def prepare(self, _video_id: str, _source: Path, _duration: float) -> None:
+        raise RuntimeError("Lighthouse worker is not configured")
+
+    def search(
+        self,
+        _query: str,
+        _video_ids: list[str],
+        *,
+        limit: int = 30,
+    ) -> list[EvidenceHit]:
+        del limit
+        return []
+
+    def status(self) -> ProviderStatus:
+        return ProviderStatus(
+            self.id,
+            "Lighthouse QD-DETR",
+            ProviderState.NEEDS_CONFIGURATION,
+            "Configure the isolated Lighthouse worker",
+            optional=True,
+        )

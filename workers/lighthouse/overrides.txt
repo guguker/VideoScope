@@ -1,0 +1,1 @@
+clip @ https://github.com/openai/CLIP/archive/d05afc436d78f1c48dc0dbf8e5980a9d471f35f6.tar.gz#sha256=553c80a6364ac7350dd7800f535531175f22c11fa742bda1b50b62121eb5f40f

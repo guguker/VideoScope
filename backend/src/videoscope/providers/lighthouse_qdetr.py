@@ -3,12 +3,79 @@ from __future__ import annotations
 import hashlib
 import hmac
 import math
+import os
 from pathlib import Path
+import stat
+from tempfile import TemporaryDirectory
 from typing import Any
 
 import numpy as np
 
-from videoscope.model_manifest import LIGHTHOUSE_CHECKPOINT_SHA256
+from videoscope.model_manifest import (
+    LIGHTHOUSE_CHECKPOINT_SHA256,
+    LIGHTHOUSE_CLIP_CHECKPOINT_SHA256,
+)
+
+
+_MAX_MODEL_ARTIFACT_BYTES = 4 * 1024 * 1024 * 1024
+
+
+def _copy_verified_snapshot(
+    source_path: Path,
+    destination: Path,
+    *,
+    expected_sha256: str,
+    label: str,
+) -> None:
+    """Copy one regular artifact to a private snapshot while hashing one open inode."""
+
+    descriptor = -1
+    try:
+        descriptor = os.open(
+            source_path,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+        )
+        before = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_size <= 0
+            or before.st_size > _MAX_MODEL_ARTIFACT_BYTES
+        ):
+            raise RuntimeError(f"{label} is not a bounded regular file")
+        digest = hashlib.sha256()
+        with os.fdopen(descriptor, "rb", closefd=True) as source:
+            descriptor = -1
+            with destination.open("xb") as snapshot:
+                while chunk := source.read(1024 * 1024):
+                    digest.update(chunk)
+                    snapshot.write(chunk)
+                snapshot.flush()
+                os.fsync(snapshot.fileno())
+            after = os.fstat(source.fileno())
+        identity_before = (
+            before.st_dev,
+            before.st_ino,
+            before.st_size,
+            before.st_mtime_ns,
+            before.st_ctime_ns,
+        )
+        identity_after = (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+            after.st_mtime_ns,
+            after.st_ctime_ns,
+        )
+        if identity_after != identity_before:
+            raise RuntimeError(f"{label} changed while it was being verified")
+        if not hmac.compare_digest(digest.hexdigest(), expected_sha256):
+            raise RuntimeError(f"{label} checksum mismatch")
+        destination.chmod(0o400)
+    except OSError as error:
+        raise RuntimeError(f"{label} cannot be read") from error
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
 
 
 class QDDETRPredictor:
@@ -30,36 +97,52 @@ class QDDETRPredictor:
         device: str = "cpu",
         feature_name: str = "clip",
         checkpoint_sha256: str = LIGHTHOUSE_CHECKPOINT_SHA256,
+        clip_checkpoint_path: str | None = None,
+        clip_checkpoint_sha256: str = LIGHTHOUSE_CLIP_CHECKPOINT_SHA256,
     ) -> None:
         if feature_name != "clip":
             raise ValueError("VideoScope's Lighthouse adapter supports feature_name='clip' only")
-
-        checkpoint_file = Path(checkpoint_path)
-        digest = hashlib.sha256()
-        try:
-            with checkpoint_file.open("rb") as source:
-                for chunk in iter(lambda: source.read(1024 * 1024), b""):
-                    digest.update(chunk)
-        except OSError as error:
-            raise RuntimeError("Lighthouse checkpoint cannot be read") from error
-        if not hmac.compare_digest(digest.hexdigest(), checkpoint_sha256):
-            raise RuntimeError("Lighthouse checkpoint checksum mismatch")
 
         import clip
         import torch
         from lighthouse.common.qd_detr import build_model
 
-        checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
-        options = checkpoint["opt"]
-        options.device = device
+        with TemporaryDirectory(prefix="videoscope-lighthouse-model-") as temporary:
+            snapshot_root = Path(temporary)
+            checkpoint_snapshot = snapshot_root / "qd-detr.ckpt"
+            _copy_verified_snapshot(
+                Path(checkpoint_path),
+                checkpoint_snapshot,
+                expected_sha256=checkpoint_sha256,
+                label="Lighthouse checkpoint",
+            )
+            clip_reference = "ViT-B/32"
+            if clip_checkpoint_path is not None:
+                clip_snapshot = snapshot_root / "clip.pt"
+                _copy_verified_snapshot(
+                    Path(clip_checkpoint_path),
+                    clip_snapshot,
+                    expected_sha256=clip_checkpoint_sha256,
+                    label="Lighthouse CLIP checkpoint",
+                )
+                clip_reference = str(clip_snapshot)
 
-        model, _ = build_model(options)
-        model.load_state_dict(checkpoint["model"])
-        model.to(device)
-        model.eval()
+            with checkpoint_snapshot.open("rb") as checkpoint_handle:
+                checkpoint = torch.load(
+                    checkpoint_handle,
+                    map_location="cpu",
+                    weights_only=False,
+                )
+            options = checkpoint["opt"]
+            options.device = device
 
-        clip_model, _ = clip.load("ViT-B/32", device=device, jit=False)
-        clip_model.eval()
+            model, _ = build_model(options)
+            model.load_state_dict(checkpoint["model"])
+            model.to(device)
+            model.eval()
+
+            clip_model, _ = clip.load(clip_reference, device=device, jit=False)
+            clip_model.eval()
 
         self._torch = torch
         self._clip = clip

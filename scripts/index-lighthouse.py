@@ -5,7 +5,8 @@ from pathlib import Path
 from videoscope.config import AppSettings
 from videoscope.media.ffmpeg import FFmpeg
 from videoscope.providers.base import ProviderState
-from videoscope.providers.lighthouse import LighthouseRetriever
+from videoscope.providers.lighthouse import DisabledLighthouseRetriever, LighthouseRetriever
+from videoscope.providers.lighthouse_worker import LighthouseWorkerClient
 from videoscope.repository import Repository
 
 
@@ -15,12 +16,23 @@ def main() -> None:
     repository = Repository(settings.database_path)
     repository.initialize()
     ffmpeg = FFmpeg()
-    retriever = LighthouseRetriever(
-        checkpoint=settings.lighthouse_checkpoint,
-        cache_dir=settings.cache_dir,
-        ffmpeg=ffmpeg,
-        source_root=settings.lighthouse_root,
-    )
+    if settings.lighthouse_endpoint:
+        retriever = LighthouseWorkerClient(
+            endpoint=settings.lighthouse_endpoint,
+            api_key=settings.lighthouse_api_key or "",
+            input_root=settings.media_dir,
+            cache_dir=settings.cache_dir,
+            timeout=settings.lighthouse_timeout,
+        )
+    elif settings.lighthouse_allow_in_process:
+        retriever = LighthouseRetriever(
+            checkpoint=settings.lighthouse_checkpoint,
+            cache_dir=settings.cache_dir,
+            ffmpeg=ffmpeg,
+            source_root=settings.lighthouse_root,
+        )
+    else:
+        retriever = DisabledLighthouseRetriever()
     status = retriever.status()
     if status.state is not ProviderState.READY:
         raise SystemExit(status.detail)
