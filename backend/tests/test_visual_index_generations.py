@@ -14,6 +14,11 @@ from videoscope.config import AppSettings
 from videoscope.evaluation import evaluation_runtime_revision
 from videoscope.media.ffmpeg import SampledFrame
 from videoscope.runtime import create_visual_index
+from videoscope.providers.vision_worker_client import VisionCapabilityStatus
+from videoscope.providers.vision_worker_contract import (
+    RFDETR_SMALL_CHECKPOINT_SHA256,
+    VisionWorkerSpecification,
+)
 from videoscope.search.visual_index import (
     SiglipVisualIndex,
     VisualIndexSpecification,
@@ -88,6 +93,87 @@ def _install_fake_embeddings(
     )
 
 
+class FakeVisionInferenceClient:
+    def __init__(self, specification: VisionWorkerSpecification) -> None:
+        self.specification = specification
+        self.invalid_vectors = False
+        self.text_batches: list[list[str]] = []
+
+    @property
+    def identity(self) -> dict[str, object]:
+        return {
+            "mode": "isolated-worker",
+            "specification_hash": self.specification.identity,
+            "siglip_specification_hash": self.specification.siglip_identity,
+            "detector_specification_hash": self.specification.detector_identity,
+        }
+
+    def capability(self) -> VisionCapabilityStatus:
+        return VisionCapabilityStatus(True, "fixture worker is ready")
+
+    def image_vectors(self, paths: list[Path]) -> np.ndarray:
+        if self.invalid_vectors:
+            return np.full((len(paths), 2), np.nan, dtype=np.float32)
+        return np.tile(np.array([[1.0, 0.0]], dtype=np.float32), (len(paths), 1))
+
+    def text_vectors(self, texts: list[str]) -> np.ndarray:
+        self.text_batches.append(list(texts))
+        return np.tile(np.array([[1.0, 0.0]], dtype=np.float32), (len(texts), 1))
+
+
+def _worker_specification(
+    *,
+    detector_checkpoint_sha256: str = RFDETR_SMALL_CHECKPOINT_SHA256,
+    siglip_logit_scale: float = 10.0,
+) -> VisionWorkerSpecification:
+    return VisionWorkerSpecification(
+        siglip_model="google/siglip2-base-patch16-224",
+        siglip_revision="75de2d55ec2d0b4efc50b3e9ad70dba96a7b2fa2",
+        embedding_dimensions=2,
+        detector_model_id="rfdetr-small",
+        detector_checkpoint_sha256=detector_checkpoint_sha256,
+        siglip_logit_scale=siglip_logit_scale,
+        siglip_logit_bias=-1.0,
+        minimum_confidence=0.25,
+    )
+
+
+def _worker_index(
+    tmp_path: Path,
+    client: FakeVisionInferenceClient,
+) -> SiglipVisualIndex:
+    return SiglipVisualIndex(
+        tmp_path / "index",
+        model_name=client.specification.siglip_model,
+        model_revision=client.specification.siglip_revision,
+        sample_step=2.0,
+        max_width=512,
+        inference_client=client,
+    )
+
+
+def test_event_search_routes_each_temporal_prompt_through_the_worker(
+    tmp_path: Path,
+) -> None:
+    client = FakeVisionInferenceClient(_worker_specification())
+    index = _worker_index(tmp_path, client)
+    index.replace_video_source(
+        "video-1",
+        _source(tmp_path),
+        6.0,
+        RecordingDenseExtractor(),
+    )
+
+    index.search(
+        "игрок реализует штрафной",
+        video_ids=["video-1"],
+        limit=5,
+    )
+
+    assert len(client.text_batches) > 1
+    assert all(len(batch) == 1 for batch in client.text_batches)
+
+
 def test_visual_specification_identity_covers_every_compatibility_dimension() -> None:
     specification = VisualIndexSpecification(
         model_name="organization/model",
@@ -113,6 +199,9 @@ def test_visual_specification_identity_covers_every_compatibility_dimension() ->
         replace(specification, sampling_strategy="fixed_step_frames"),
     ):
         assert changed.identity != specification.identity
+
+    with pytest.raises(ValueError, match="max width"):
+        replace(specification, max_width=8_193)
 
 
 def test_dense_build_persists_and_atomically_activates_a_valid_generation(
@@ -465,3 +554,63 @@ def test_runtime_and_maintenance_factory_share_visual_specification(tmp_path: Pa
     assert runtime_index.specification == maintenance_index.specification
     assert runtime_index.specification.sample_step == 0.75
     assert runtime_index.specification.max_width == 384
+
+
+def test_malformed_worker_vectors_preserve_previous_active_generation(
+    tmp_path: Path,
+) -> None:
+    source = _source(tmp_path)
+    client = FakeVisionInferenceClient(_worker_specification())
+    index = _worker_index(tmp_path, client)
+    first_generation = index.replace_video_source(
+        "video-1",
+        source,
+        3.0,
+        RecordingDenseExtractor(),
+    )
+    client.invalid_vectors = True
+
+    with pytest.raises(ValueError, match="finite frame rows"):
+        index.replace_video_source(
+            "video-1",
+            source,
+            3.0,
+            RecordingDenseExtractor(),
+        )
+
+    assert index.active_generation_id("video-1") == first_generation
+    assert index.index_is_current("video-1") is True
+
+
+def test_worker_siglip_identity_change_stales_generation_but_detector_change_does_not(
+    tmp_path: Path,
+) -> None:
+    source = _source(tmp_path)
+    baseline = _worker_index(
+        tmp_path,
+        FakeVisionInferenceClient(_worker_specification()),
+    )
+    baseline.replace_video_source(
+        "video-1",
+        source,
+        3.0,
+        RecordingDenseExtractor(),
+    )
+    detector_changed = _worker_index(
+        tmp_path,
+        FakeVisionInferenceClient(
+            _worker_specification(detector_checkpoint_sha256="a" * 64)
+        ),
+    )
+    siglip_worker_changed = _worker_index(
+        tmp_path,
+        FakeVisionInferenceClient(
+            _worker_specification(siglip_logit_scale=11.0)
+        ),
+    )
+
+    assert baseline.specification.schema_version == 3
+    assert detector_changed.specification.identity == baseline.specification.identity
+    assert detector_changed.index_is_current("video-1") is True
+    assert siglip_worker_changed.specification.identity != baseline.specification.identity
+    assert siglip_worker_changed.index_is_current("video-1") is False

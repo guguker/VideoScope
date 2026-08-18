@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import logging
 import shutil
 from dataclasses import dataclass, field
@@ -32,7 +31,17 @@ from videoscope.providers.qwen_video import QwenVideoReranker
 from videoscope.providers.qwen_worker import QwenWorkerClient
 from videoscope.providers.roboflow import RoboflowDetector
 from videoscope.providers.scenes import SceneDetector
-from videoscope.providers.whisper import WhisperTranscriber, resolve_whisper_prompt
+from videoscope.providers.whisper import (
+    WhisperPromptSnapshot,
+    WhisperTranscriber,
+    snapshot_whisper_prompt,
+)
+from videoscope.providers.whisper_worker import (
+    WHISPER_DEPENDENCY_IDENTITY,
+    WHISPER_INFERENCE_RUNTIME_IDENTITY,
+    WHISPER_WORKER_SCHEMA_VERSION,
+    WhisperWorkerClient,
+)
 from videoscope.repository import Repository
 from videoscope.runtime_lifecycle import (
     ArtifactGarbageCollector,
@@ -45,9 +54,23 @@ from videoscope.search.temporal_refinement import TemporalRefiner
 from videoscope.search.embeddings import create_semantic_embedding
 from videoscope.search.vector_index import EmptyVectorIndex, QdrantVectorIndex
 from videoscope.search.visual_index import SiglipVisualIndex
+from videoscope.providers.vision_worker_client import VisionWorkerClient
+from videoscope.providers.vision_worker_contract import (
+    REVIEWED_SIGLIP_PROFILES,
+    VISION_WORKER_SCHEMA_VERSION,
+    VisionWorkerSpecification,
+)
 
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class IndexingRunPlan:
+    """Ephemeral inputs shared by stage identities and provider requests."""
+
+    specifications: IndexingSpecifications
+    whisper_prompt_snapshot: WhisperPromptSnapshot
 
 
 @dataclass(slots=True)
@@ -166,15 +189,34 @@ class Runtime:
         return False
 
 
-def create_indexing_specifications(settings: AppSettings) -> IndexingSpecifications:
-    """Snapshot every configuration input that changes trusted SQLite/text output."""
-    effective_prompt, glossary_state = resolve_whisper_prompt(
-        settings.whisper_initial_prompt,
-        settings.glossary_path,
+def create_vision_worker_specification(
+    settings: AppSettings,
+) -> VisionWorkerSpecification:
+    revision = model_revision(settings.siglip_model)
+    if revision is None:
+        raise ValueError("SigLIP worker model must have a pinned revision")
+    profile = REVIEWED_SIGLIP_PROFILES.get((settings.siglip_model, revision))
+    if profile is None:
+        raise ValueError("SigLIP worker model profile has not been reviewed")
+    dimensions, logit_scale, logit_bias = profile
+    return VisionWorkerSpecification(
+        siglip_model=settings.siglip_model,
+        siglip_revision=revision,
+        embedding_dimensions=dimensions,
+        detector_model_id=settings.vision_detector_model_id,
+        detector_checkpoint_sha256=settings.vision_detector_checkpoint_sha256,
+        siglip_logit_scale=logit_scale,
+        siglip_logit_bias=logit_bias,
+        minimum_confidence=settings.vision_worker_minimum_confidence,
     )
-    prompt_digest = hashlib.sha256(
-        (effective_prompt or "").encode("utf-8")
-    ).hexdigest()
+
+
+def _create_indexing_specifications(
+    settings: AppSettings,
+    *,
+    whisper_prompt_snapshot: WhisperPromptSnapshot,
+) -> IndexingSpecifications:
+    """Snapshot every configuration input that changes trusted SQLite/text output."""
     embedding_repository, embedding_revision = fastembed_snapshot(
         settings.text_embedding_model
     )
@@ -199,11 +241,11 @@ def create_indexing_specifications(settings: AppSettings) -> IndexingSpecificati
     )
     speech = StageSpecification(
         kind=StageKind.SPEECH,
-        schema_version=1,
-        implementation_revision="videoscope.speech-segments.v1",
+        schema_version=2,
+        implementation_revision="videoscope.speech-segments.v2",
         parameters={
-            "effective_prompt_sha256": prompt_digest,
-            "glossary_state": glossary_state,
+            "effective_prompt_sha256": whisper_prompt_snapshot.effective_prompt_sha256,
+            "glossary_state": whisper_prompt_snapshot.glossary_state,
             "language": settings.whisper_language,
             "merge_max_duration_seconds": 14.0,
             "merge_max_gap_seconds": 1.25,
@@ -213,7 +255,14 @@ def create_indexing_specifications(settings: AppSettings) -> IndexingSpecificati
             settings.whisper_model,
             model_revision(settings.whisper_model),
         ),
-        dependencies={"provider": "mlx-whisper"},
+        dependencies={
+            "boundary": (
+                "isolated-worker" if settings.whisper_worker_endpoint else "disabled"
+            ),
+            "dependency_identity": WHISPER_DEPENDENCY_IDENTITY,
+            "provider": WHISPER_WORKER_SCHEMA_VERSION,
+            "runtime_identity": WHISPER_INFERENCE_RUNTIME_IDENTITY,
+        },
     )
     ocr = StageSpecification(
         kind=StageKind.OCR,
@@ -231,20 +280,40 @@ def create_indexing_specifications(settings: AppSettings) -> IndexingSpecificati
             "scenes_specification": scenes.specification_hash,
         },
     )
+    if settings.vision_worker_endpoint:
+        vision_specification = create_vision_worker_specification(settings)
+        object_model_identity = vision_specification.detector_model_identity
+        object_dependencies = {
+            "detector_specification": vision_specification.detector_identity,
+            "provider": VISION_WORKER_SCHEMA_VERSION,
+            "scenes_specification": scenes.specification_hash,
+        }
+        object_boundary = "isolated-worker"
+    elif settings.roboflow_api_key and settings.roboflow_model_id:
+        object_model_identity = f"roboflow/{settings.roboflow_model_id}"
+        object_dependencies = {
+            "provider": "roboflow-hosted-v1",
+            "scenes_specification": scenes.specification_hash,
+        }
+        object_boundary = "hosted"
+    else:
+        object_model_identity = "objects/not-configured"
+        object_dependencies = {
+            "provider": "disabled",
+            "scenes_specification": scenes.specification_hash,
+        }
+        object_boundary = "disabled"
     objects = StageSpecification(
         kind=StageKind.OBJECTS,
-        schema_version=1,
-        implementation_revision="videoscope.object-segments.v1",
+        schema_version=2,
+        implementation_revision="videoscope.object-segments.v2",
         parameters={
-            "credential_configured": bool(settings.roboflow_api_key),
-            "minimum_confidence": 0.25,
+            "boundary": object_boundary,
+            "minimum_confidence": settings.vision_worker_minimum_confidence,
             "segment_schema": segment_schema,
         },
-        model_identity=f"roboflow/{settings.roboflow_model_id or 'unconfigured'}",
-        dependencies={
-            "provider": "roboflow",
-            "scenes_specification": scenes.specification_hash,
-        },
+        model_identity=object_model_identity,
+        dependencies=object_dependencies,
     )
     text_vectors = StageSpecification(
         kind=StageKind.TEXT_VECTORS,
@@ -273,7 +342,41 @@ def create_indexing_specifications(settings: AppSettings) -> IndexingSpecificati
     )
 
 
-def create_visual_index(settings: AppSettings) -> SiglipVisualIndex:
+def create_indexing_run_plan(settings: AppSettings) -> IndexingRunPlan:
+    prompt_snapshot = snapshot_whisper_prompt(
+        settings.whisper_initial_prompt,
+        settings.glossary_path,
+    )
+    return IndexingRunPlan(
+        specifications=_create_indexing_specifications(
+            settings,
+            whisper_prompt_snapshot=prompt_snapshot,
+        ),
+        whisper_prompt_snapshot=prompt_snapshot,
+    )
+
+
+def create_indexing_specifications(settings: AppSettings) -> IndexingSpecifications:
+    """Compatibility projection for consumers that need only persisted identities."""
+    return create_indexing_run_plan(settings).specifications
+
+
+def create_vision_worker_client(settings: AppSettings) -> VisionWorkerClient | None:
+    if not settings.vision_worker_endpoint:
+        return None
+    return VisionWorkerClient(
+        endpoint=settings.vision_worker_endpoint,
+        api_key=settings.vision_worker_api_key or "",
+        input_root=settings.data_dir,
+        specification=create_vision_worker_specification(settings),
+        timeout=settings.vision_worker_timeout,
+    )
+
+
+def create_visual_index(
+    settings: AppSettings,
+    inference_client: VisionWorkerClient | None = None,
+) -> SiglipVisualIndex:
     """Build the one canonical dense visual writer used by runtime and backfill."""
     return SiglipVisualIndex(
         settings.visual_index_dir,
@@ -282,6 +385,46 @@ def create_visual_index(settings: AppSettings) -> SiglipVisualIndex:
         batch_size=settings.siglip_batch_size,
         sample_step=settings.visual_index_step,
         max_width=settings.visual_index_max_width,
+        inference_client=inference_client,
+    )
+
+
+def create_object_detector(
+    settings: AppSettings,
+    *,
+    vision_client: VisionWorkerClient | None = None,
+) -> VisionWorkerClient | RoboflowDetector | None:
+    if vision_client is not None:
+        return vision_client
+    if settings.roboflow_api_key and settings.roboflow_model_id:
+        return RoboflowDetector(
+            api_key=settings.roboflow_api_key,
+            model_id=settings.roboflow_model_id,
+            minimum_confidence=settings.vision_worker_minimum_confidence,
+        )
+    return None
+
+
+def create_whisper_transcriber(settings: AppSettings) -> WhisperTranscriber | None:
+    if not settings.whisper_worker_endpoint:
+        return None
+    inference_client = WhisperWorkerClient(
+        endpoint=settings.whisper_worker_endpoint,
+        api_key=settings.whisper_worker_api_key or "",
+        input_root=settings.media_dir,
+        expected_model_identity=model_identity(
+            settings.whisper_model,
+            model_revision(settings.whisper_model),
+        ),
+        timeout=settings.whisper_worker_timeout,
+    )
+    return WhisperTranscriber(
+        settings.whisper_model,
+        settings.whisper_language,
+        settings.whisper_initial_prompt,
+        settings.glossary_path,
+        model_revision=model_revision(settings.whisper_model),
+        inference_client=inference_client,
     )
 
 
@@ -352,21 +495,15 @@ def build_runtime(settings: AppSettings, repository: Repository) -> Runtime:
         threshold=settings.scene_threshold,
         max_scene_seconds=settings.max_scene_seconds,
     )
-    whisper = WhisperTranscriber(
-        settings.whisper_model,
-        settings.whisper_language,
-        settings.whisper_initial_prompt,
-        settings.glossary_path,
-        model_revision=model_revision(settings.whisper_model),
-    )
+    vision_client = create_vision_worker_client(settings)
+    whisper = create_whisper_transcriber(settings)
     ocr = PaddleOCRReader(
         worker_python=settings.ocr_worker_python,
         worker_script=settings.ocr_worker_script,
     )
-    roboflow = RoboflowDetector(
-        api_key=settings.roboflow_api_key,
-        model_id=settings.roboflow_model_id,
-        cache_dir=settings.models_dir / "rfdetr",
+    object_detector = create_object_detector(
+        settings,
+        vision_client=vision_client,
     )
     lighthouse = create_lighthouse_retriever(settings, ffmpeg)
     text_embedding = create_semantic_embedding(
@@ -375,7 +512,7 @@ def build_runtime(settings: AppSettings, repository: Repository) -> Runtime:
         cache_dir=settings.models_dir / "fastembed",
     )
     qdrant = QdrantVectorIndex(settings.qdrant_dir / "text", embedding=text_embedding)
-    siglip = create_visual_index(settings)
+    siglip = create_visual_index(settings, inference_client=vision_client)
     internvideo = InternVideoReranker(
         endpoint=settings.internvideo_endpoint,
         api_key=settings.internvideo_api_key,
@@ -389,18 +526,14 @@ def build_runtime(settings: AppSettings, repository: Repository) -> Runtime:
 
     qdrant_ready = qdrant.status().state is ProviderState.READY
     vector_index = qdrant if qdrant_ready else EmptyVectorIndex()
-    speech_provider = whisper if whisper.status().state is ProviderState.READY else None
+    speech_provider = whisper
     ocr_provider = ocr if ocr.status().state is ProviderState.READY else None
-    object_provider = roboflow if roboflow.status().state is ProviderState.READY else None
+    object_provider = object_detector
     moment_provider = lighthouse if lighthouse.status().state is ProviderState.READY else None
     # Stale/legacy generations must remain readable only as unavailable evidence,
     # but they must not disable the writer needed by ingest/API reindex to replace
     # them with the canonical dense specification.
-    visual_provider = (
-        siglip
-        if siglip.status(check_index=False).state is ProviderState.READY
-        else None
-    )
+    visual_provider = siglip if vision_client is not None else None
     candidate_reranker = (
         qwen_video
         if qwen_video.status().state is ProviderState.READY
@@ -427,7 +560,7 @@ def build_runtime(settings: AppSettings, repository: Repository) -> Runtime:
         repository=repository,
         media_root=settings.media_dir,
         thumbnails_dir=settings.thumbnails_dir,
-        specification_resolver=lambda: create_indexing_specifications(settings),
+        specification_resolver=lambda: create_indexing_run_plan(settings),
         ffmpeg=ffmpeg,
         scenes=scenes,
         speech=speech_provider,
@@ -452,13 +585,27 @@ def build_runtime(settings: AppSettings, repository: Repository) -> Runtime:
         ProviderState.READY if ffmpeg_binary else ProviderState.UNAVAILABLE,
         "ffmpeg executable is available" if ffmpeg_binary else "ffmpeg executable is missing",
     )
+    whisper_status = whisper or StaticProvider(
+        "whisper",
+        "Whisper MLX",
+        ProviderState.NEEDS_CONFIGURATION,
+        "Настройте изолированный Whisper worker",
+        optional=True,
+    )
+    object_status = object_detector or StaticProvider(
+        "roboflow",
+        "Object detection",
+        ProviderState.NEEDS_CONFIGURATION,
+        "Настройте vision worker или hosted Roboflow",
+        optional=True,
+    )
     providers = ProviderRegistry(
         [
             ffmpeg_status,
             scenes,
-            whisper,
+            whisper_status,
             ocr,
-            roboflow,
+            object_status,
             lighthouse,
             qdrant,
             siglip,

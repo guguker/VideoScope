@@ -15,6 +15,7 @@ from uuid import uuid4
 import numpy as np
 
 from videoscope.providers.base import ProviderState, ProviderStatus
+from videoscope.providers.vision_worker_contract import MAX_IMAGE_DIMENSION
 from videoscope.model_manifest import model_identity
 from videoscope.repository import SegmentRecord
 from videoscope.search.fusion import EvidenceHit
@@ -43,8 +44,24 @@ class DenseFrameExtractor(Protocol):
     ) -> list[object]: ...
 
 
+class VisualInferenceCapability(Protocol):
+    ready: bool
+    detail: str
+
+
+class VisualInferenceClient(Protocol):
+    @property
+    def identity(self) -> dict[str, object]: ...
+
+    def capability(self) -> VisualInferenceCapability: ...
+
+    def image_vectors(self, paths: list[Path]) -> np.ndarray: ...
+
+    def text_vectors(self, texts: list[str]) -> np.ndarray: ...
+
+
 VISUAL_INDEX_MANIFEST_SCHEMA_VERSION = 1
-VISUAL_INDEX_SCHEMA_VERSION = 2
+VISUAL_INDEX_SCHEMA_VERSION = 3
 VISUAL_INDEX_SAMPLING_STRATEGY = "fixed_step_seconds"
 VISUAL_INDEX_PREPROCESSING_REVISION = "siglip2-auto-processor-rgb-v1"
 VISUAL_INDEX_EXTRACTOR_IDENTITY = "ffmpeg-fixed-step-v1"
@@ -65,6 +82,7 @@ class VisualIndexSpecification:
     preprocessing_revision: str = VISUAL_INDEX_PREPROCESSING_REVISION
     schema_version: int = VISUAL_INDEX_SCHEMA_VERSION
     extractor_identity: str = VISUAL_INDEX_EXTRACTOR_IDENTITY
+    inference_identity: str = "not-configured"
 
     def __post_init__(self) -> None:
         string_values = {
@@ -72,6 +90,7 @@ class VisualIndexSpecification:
             "sampling_strategy": self.sampling_strategy,
             "preprocessing_revision": self.preprocessing_revision,
             "extractor_identity": self.extractor_identity,
+            "inference_identity": self.inference_identity,
         }
         if any(type(value) is not str or not value.strip() for value in string_values.values()):
             raise ValueError("visual index specification strings must be non-empty")
@@ -85,14 +104,20 @@ class VisualIndexSpecification:
             or float(self.sample_step) <= 0
         ):
             raise ValueError("visual index step must be positive")
-        if type(self.max_width) is not int or self.max_width < 64:
-            raise ValueError("visual index maximum width must be at least 64")
+        if (
+            type(self.max_width) is not int
+            or not 64 <= self.max_width <= MAX_IMAGE_DIMENSION
+        ):
+            raise ValueError(
+                f"visual index max width must be between 64 and {MAX_IMAGE_DIMENSION}"
+            )
         if type(self.schema_version) is not int or self.schema_version < 1:
             raise ValueError("visual index schema version must be positive")
 
     def to_dict(self) -> dict[str, object]:
         return {
             "extractor_identity": self.extractor_identity,
+            "inference_identity": self.inference_identity,
             "max_width": self.max_width,
             "model_name": self.model_name,
             "model_revision": self.model_revision,
@@ -192,11 +217,21 @@ class SiglipVisualIndex:
         preprocessing_revision: str = VISUAL_INDEX_PREPROCESSING_REVISION,
         schema_version: int = VISUAL_INDEX_SCHEMA_VERSION,
         extractor_identity: str = VISUAL_INDEX_EXTRACTOR_IDENTITY,
+        inference_client: VisualInferenceClient | None = None,
     ) -> None:
         self.path = Path(path)
         self.model_name = model_name
         self.model_revision = model_revision
         self.batch_size = max(1, batch_size)
+        self.inference_client = inference_client
+        inference_identity = "not-configured"
+        if inference_client is not None:
+            configured_identity = inference_client.identity.get(
+                "siglip_specification_hash"
+            )
+            if type(configured_identity) is not str or not configured_identity.strip():
+                raise ValueError("visual inference client identity is invalid")
+            inference_identity = configured_identity
         self.specification = VisualIndexSpecification(
             model_name=model_name,
             model_revision=model_revision,
@@ -206,12 +241,15 @@ class SiglipVisualIndex:
             preprocessing_revision=preprocessing_revision,
             schema_version=schema_version,
             extractor_identity=extractor_identity,
+            inference_identity=inference_identity,
         )
-        self._model = None
-        self._processor = None
-        self._device = "cpu"
-        self._logit_scale = 1.0
-        self._logit_bias = 0.0
+        worker_specification = getattr(inference_client, "specification", None)
+        self._logit_scale = float(
+            getattr(worker_specification, "siglip_logit_scale", 1.0)
+        )
+        self._logit_bias = float(
+            getattr(worker_specification, "siglip_logit_bias", 0.0)
+        )
 
     @property
     def model_identity(self) -> str:
@@ -233,41 +271,21 @@ class SiglipVisualIndex:
         )
 
     def status(self, *, check_index: bool = True) -> ProviderStatus:
-        try:
-            import torch  # noqa: F401
-            import transformers  # noqa: F401
-        except ImportError:
+        if self.inference_client is None:
+            return ProviderStatus(
+                self.id,
+                "SigLIP 2",
+                ProviderState.NEEDS_CONFIGURATION,
+                "Настройте изолированный vision worker",
+            )
+        capability = self.inference_client.capability()
+        if not capability.ready:
             return ProviderStatus(
                 self.id,
                 "SigLIP 2",
                 ProviderState.UNAVAILABLE,
-                "torch and transformers are required",
+                capability.detail,
             )
-        model_path = Path(self.model_name).expanduser()
-        if not model_path.exists():
-            try:
-                from huggingface_hub import try_to_load_from_cache
-
-                config = try_to_load_from_cache(
-                    self.model_name,
-                    "config.json",
-                    revision=self.model_revision,
-                )
-                weights = try_to_load_from_cache(
-                    self.model_name,
-                    "model.safetensors",
-                    revision=self.model_revision,
-                )
-            except Exception:
-                config = None
-                weights = None
-            if not config or not weights:
-                return ProviderStatus(
-                    self.id,
-                    "SigLIP 2",
-                    ProviderState.NEEDS_CONFIGURATION,
-                    f"Модель не загружена: {self.model_name}",
-                )
         if check_index and self._has_incompatible_indexes():
             return ProviderStatus(
                 self.id,
@@ -311,68 +329,39 @@ class SiglipVisualIndex:
                 return True
         return False
 
-    @staticmethod
-    def _pooled(output: object):  # type: ignore[no-untyped-def]
-        pooled = getattr(output, "pooler_output", None)
-        if pooled is not None:
-            return pooled
-        if isinstance(output, tuple) and len(output) > 1:
-            return output[1]
-        return output
-
-    def _load(self):  # type: ignore[no-untyped-def]
-        if self._model is not None and self._processor is not None:
-            return self._model, self._processor
-
-        import torch
-        from transformers import AutoModel, AutoProcessor
-
-        self._device = "mps" if torch.backends.mps.is_available() else "cpu"
-        load_options = (
-            {"revision": self.model_revision}
-            if self.model_revision is not None
-            else {}
-        )
-        self._processor = AutoProcessor.from_pretrained(self.model_name, **load_options)
-        self._model = AutoModel.from_pretrained(self.model_name, **load_options)
-        self._model.eval().to(self._device)
-        self._logit_scale = math.exp(float(self._model.logit_scale.detach().cpu().item()))
-        self._logit_bias = float(self._model.logit_bias.detach().cpu().item())
-        return self._model, self._processor
-
-    @staticmethod
-    def _normalize(features):  # type: ignore[no-untyped-def]
-        return features / features.norm(p=2, dim=-1, keepdim=True).clamp_min(1e-12)
-
     def _image_vectors(self, paths: list[Path]) -> np.ndarray:
-        import torch
-        from PIL import Image
-
-        model, processor = self._load()
-        output: list[np.ndarray] = []
+        if self.inference_client is None:
+            raise RuntimeError("vision worker is not configured")
+        batches: list[np.ndarray] = []
         for offset in range(0, len(paths), self.batch_size):
-            images = []
-            for path in paths[offset : offset + self.batch_size]:
-                with Image.open(path) as image:
-                    images.append(image.convert("RGB"))
-            inputs = processor(images=images, return_tensors="pt")
-            inputs = {name: value.to(self._device) for name, value in inputs.items()}
-            with torch.inference_mode():
-                encoded = self._pooled(model.get_image_features(**inputs))
-                encoded = self._normalize(encoded)
-            output.append(encoded.detach().float().cpu().numpy())
-        return np.concatenate(output, axis=0) if output else np.empty((0, 0), dtype=np.float32)
+            batch = np.asarray(
+                self.inference_client.image_vectors(
+                    paths[offset : offset + self.batch_size]
+                ),
+                dtype=np.float32,
+            )
+            batches.append(batch)
+        return (
+            np.concatenate(batches, axis=0)
+            if batches
+            else np.empty((0, 0), dtype=np.float32)
+        )
 
     def _text_vector(self, query: str) -> np.ndarray:
-        import torch
-
-        model, processor = self._load()
-        inputs = processor(text=[query], padding="max_length", return_tensors="pt")
-        inputs = {name: value.to(self._device) for name, value in inputs.items()}
-        with torch.inference_mode():
-            encoded = self._pooled(model.get_text_features(**inputs))
-            encoded = self._normalize(encoded)
-        return encoded[0].detach().float().cpu().numpy()
+        if self.inference_client is None:
+            raise RuntimeError("vision worker is not configured")
+        vectors = np.asarray(
+            self.inference_client.text_vectors([query]),
+            dtype=np.float32,
+        )
+        if (
+            vectors.ndim != 2
+            or vectors.shape[0] != 1
+            or vectors.shape[1] <= 0
+            or not bool(np.all(np.isfinite(vectors)))
+        ):
+            raise RuntimeError("vision worker returned invalid text vectors")
+        return vectors[0]
 
     def _text_vectors(self, query: str) -> np.ndarray:
         prompts = visual_prompt_variants(query)
@@ -382,6 +371,11 @@ class SiglipVisualIndex:
             for subject in ("человек", "мужчина", "женщина", "игрок", "person", "man", "woman", "player")
         ):
             prompts.append(f"человек {query}")
+        if self.inference_client is not None:
+            return np.asarray(
+                self.inference_client.text_vectors(prompts),
+                dtype=np.float32,
+            )
         return np.stack([self._text_vector(prompt) for prompt in prompts])
 
     def score_images(self, query: str, paths: list[Path]) -> list[float]:
