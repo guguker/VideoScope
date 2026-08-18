@@ -103,11 +103,27 @@ def test_visual_index_script_holds_runtime_lock_around_all_shared_state(
             assert "lock.close" not in events
             events.append("index.close")
 
+    vision_client = object()
+
     monkeypatch.setattr(script, "AppSettings", FakeSettings)
     monkeypatch.setattr(script, "ExclusiveRuntimeLock", FakeLock, raising=False)
     monkeypatch.setattr(script, "Repository", FakeRepository)
     monkeypatch.setattr(script, "FFmpeg", lambda: SimpleNamespace())
-    monkeypatch.setattr(script, "create_visual_index", lambda _settings: FakeIndex())
+    monkeypatch.setattr(
+        script,
+        "create_vision_worker_client",
+        lambda _settings: vision_client,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        script,
+        "create_visual_index",
+        lambda _settings, *, inference_client: (
+            FakeIndex()
+            if inference_client is vision_client
+            else pytest.fail("visual backfill did not use the configured worker")
+        ),
+    )
 
     script.main()
 

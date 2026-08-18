@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import inspect
 from pathlib import Path
 import shutil
 from threading import Event, Thread
@@ -132,7 +133,12 @@ def merge_timed_text(
 
 
 class SpeechProvider(Protocol):
-    def transcribe(self, source: Path) -> list[TimedText]: ...
+    def transcribe(
+        self,
+        source: Path,
+        *,
+        prompt_snapshot: object | None = None,
+    ) -> list[TimedText]: ...
 
 
 class OCRProvider(Protocol):
@@ -189,7 +195,7 @@ class Indexer:
         repository: Repository,
         media_root: Path,
         thumbnails_dir: Path,
-        specification_resolver: Callable[[], IndexingSpecifications],
+        specification_resolver: Callable[[], object],
         ffmpeg: FFmpeg,
         scenes: SceneDetector,
         vector_index: VectorIndex,
@@ -265,12 +271,23 @@ class Indexer:
         )
         return self.repository.transition_stage_run(queued.run_id, StageState.RUNNING)
 
+    def _resolve_indexing_plan(self) -> tuple[IndexingSpecifications, object | None]:
+        resolved = self.specification_resolver()
+        if isinstance(resolved, IndexingSpecifications):
+            return resolved, None
+        specifications = getattr(resolved, "specifications", None)
+        prompt_snapshot = getattr(resolved, "whisper_prompt_snapshot", None)
+        if not isinstance(specifications, IndexingSpecifications):
+            raise ValueError("indexing specification resolver returned invalid data")
+        return specifications, prompt_snapshot
+
     def _verify_run_specification(self, run: StageRun) -> None:
-        current = self.specification_resolver()
-        if not isinstance(current, IndexingSpecifications):
+        try:
+            current, _prompt_snapshot = self._resolve_indexing_plan()
+        except (TypeError, ValueError) as error:
             raise IndexingSpecificationChanged(
                 "indexing specification resolver returned invalid data"
-            )
+            ) from error
         if current.for_kind(run.stage_kind).specification_hash != run.specification_hash:
             raise IndexingSpecificationChanged("indexing specification changed during stage")
 
@@ -443,6 +460,7 @@ class Indexer:
         video_id: str,
         source: Path,
         specifications: IndexingSpecifications,
+        prompt_snapshot: object | None,
         warnings: list[str],
     ) -> None:
         if self.speech is None:
@@ -450,9 +468,18 @@ class Indexer:
             return
         run = self._create_running_stage(video_id, specifications, StageKind.SPEECH)
         try:
+            transcribe = self.speech.transcribe
+            accepts_prompt_snapshot = "prompt_snapshot" in inspect.signature(
+                transcribe
+            ).parameters
+            transcribed = (
+                transcribe(source, prompt_snapshot=prompt_snapshot)
+                if accepts_prompt_snapshot
+                else transcribe(source)
+            )
             candidates = [
                 segment
-                for item in merge_timed_text(self.speech.transcribe(source))
+                for item in merge_timed_text(transcribed)
                 if (segment := self._timed_text_segment(video_id, "speech", item))
                 is not None
             ]
@@ -591,9 +618,7 @@ class Indexer:
         warnings: list[str],
     ) -> None:
         try:
-            current = self.specification_resolver()
-            if not isinstance(current, IndexingSpecifications):
-                raise ValueError("indexing specification resolver returned invalid data")
+            current, _prompt_snapshot = self._resolve_indexing_plan()
         except Exception as error:
             logger.warning(
                 "Text vector specification resolution failed for %s",
@@ -738,9 +763,7 @@ class Indexer:
 
         try:
             self.repository.verify_asset_identity(video_id, media_root=self.media_root)
-            specifications = self.specification_resolver()
-            if not isinstance(specifications, IndexingSpecifications):
-                raise ValueError("indexing specification resolver returned invalid data")
+            specifications, whisper_prompt_snapshot = self._resolve_indexing_plan()
             probe = self.ffmpeg.probe(source)
             if probe.duration <= 0:
                 raise ValueError("video duration is zero")
@@ -770,6 +793,7 @@ class Indexer:
                 video_id,
                 source,
                 specifications,
+                whisper_prompt_snapshot,
                 warnings,
             )
 

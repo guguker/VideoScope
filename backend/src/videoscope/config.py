@@ -15,6 +15,36 @@ from videoscope.model_manifest import (
     WHISPER_MODEL,
     model_revision,
 )
+from videoscope.providers.vision_worker_contract import (
+    MAX_IMAGES,
+    MAX_IMAGE_DIMENSION,
+    REVIEWED_SIGLIP_PROFILES,
+    RFDETR_SMALL_CHECKPOINT_SHA256,
+)
+from videoscope.providers.whisper import MAX_WHISPER_EFFECTIVE_PROMPT_CHARS
+
+
+def _validate_literal_loopback_origin(value: str, *, field_name: str) -> None:
+    parsed = urlsplit(value)
+    if (
+        parsed.scheme != "http"
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+        or parsed.path not in {"", "/"}
+    ):
+        raise ValueError(f"{field_name} must be a plain literal loopback HTTP origin")
+    try:
+        address = ip_address(parsed.hostname.casefold())
+        port = parsed.port
+    except ValueError as error:
+        raise ValueError(
+            f"{field_name} must be a plain literal loopback HTTP origin"
+        ) from error
+    if str(address) != "127.0.0.1" or port is None:
+        raise ValueError(f"{field_name} must use 127.0.0.1 and an explicit port")
 
 
 class AppSettings(BaseSettings):
@@ -39,8 +69,50 @@ class AppSettings(BaseSettings):
         validation_alias=AliasChoices("ROBOFLOW_API_KEY", "VIDEOSCOPE_ROBOFLOW_API_KEY"),
     )
     roboflow_model_id: str | None = Field(
-        default="rfdetr-small",
+        default=None,
         validation_alias=AliasChoices("ROBOFLOW_MODEL_ID", "VIDEOSCOPE_ROBOFLOW_MODEL_ID"),
+    )
+    vision_worker_endpoint: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "VISION_WORKER_ENDPOINT",
+            "VIDEOSCOPE_VISION_WORKER_ENDPOINT",
+        ),
+    )
+    vision_worker_api_key: str | None = Field(
+        default=None,
+        min_length=32,
+        max_length=256,
+        pattern=r"^[A-Za-z0-9._~-]+$",
+        repr=False,
+        validation_alias=AliasChoices(
+            "VISION_WORKER_API_KEY",
+            "VIDEOSCOPE_VISION_WORKER_API_KEY",
+        ),
+    )
+    vision_worker_timeout: float = Field(default=120.0, gt=0, le=600)
+    vision_worker_minimum_confidence: float = Field(
+        default=0.25,
+        ge=0,
+        le=1,
+        validation_alias="VIDEOSCOPE_VISION_WORKER_MINIMUM_CONFIDENCE",
+    )
+    vision_detector_model_id: str = Field(
+        default="rfdetr-small",
+        pattern=r"^rfdetr-(?:nano|small|medium|large)$",
+        validation_alias=AliasChoices(
+            "VIDEOSCOPE_VISION_DETECTOR_MODEL_ID",
+            "VIDEOSCOPE_VISION_WORKER_DETECTOR_MODEL_ID",
+        ),
+    )
+    vision_detector_checkpoint_sha256: str = Field(
+        default=RFDETR_SMALL_CHECKPOINT_SHA256,
+        pattern=r"^[0-9a-f]{64}$",
+        validation_alias=AliasChoices(
+            "VIDEOSCOPE_VISION_DETECTOR_CHECKPOINT_SHA256",
+            "VIDEOSCOPE_VISION_WORKER_DETECTOR_CHECKPOINT_SHA256",
+            "VIDEOSCOPE_VISION_WORKER_RFDETR_SHA256",
+        ),
     )
     internvideo_endpoint: str | None = Field(
         default=None,
@@ -139,6 +211,7 @@ class AppSettings(BaseSettings):
     )
     whisper_language: str = Field(
         default="auto",
+        pattern=r"^(?:auto|[a-z]{2,3}(?:-[a-z0-9]{2,8})?)$",
         validation_alias=AliasChoices("WHISPER_LANGUAGE", "VIDEOSCOPE_WHISPER_LANGUAGE"),
     )
     whisper_initial_prompt: str | None = Field(
@@ -150,13 +223,37 @@ class AppSettings(BaseSettings):
             "WHISPER_INITIAL_PROMPT",
             "VIDEOSCOPE_WHISPER_INITIAL_PROMPT",
         ),
+        max_length=MAX_WHISPER_EFFECTIVE_PROMPT_CHARS,
     )
+    whisper_worker_endpoint: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "WHISPER_WORKER_ENDPOINT",
+            "VIDEOSCOPE_WHISPER_WORKER_ENDPOINT",
+        ),
+    )
+    whisper_worker_api_key: str | None = Field(
+        default=None,
+        min_length=32,
+        max_length=256,
+        pattern=r"^[A-Za-z0-9._~-]+$",
+        repr=False,
+        validation_alias=AliasChoices(
+            "WHISPER_WORKER_API_KEY",
+            "VIDEOSCOPE_WHISPER_WORKER_API_KEY",
+        ),
+    )
+    whisper_worker_timeout: float = Field(default=3600.0, gt=0, le=3600)
     text_embedding_model: str = TEXT_EMBEDDING_MODEL
     text_embedding_dimensions: int = Field(default=TEXT_EMBEDDING_DIMENSIONS, gt=0)
     siglip_model: str = SIGLIP_224_MODEL
-    siglip_batch_size: int = Field(default=8, ge=1, le=256)
+    siglip_batch_size: int = Field(default=8, ge=1, le=MAX_IMAGES)
     visual_index_step: float = Field(default=1.0, gt=0)
-    visual_index_max_width: int = Field(default=640, ge=64)
+    visual_index_max_width: int = Field(
+        default=640,
+        ge=64,
+        le=MAX_IMAGE_DIMENSION,
+    )
     semantic_text_min_score: float = Field(default=0.42, ge=0, le=1)
     visual_min_score: float = Field(default=0.18, ge=0, le=1)
     temporal_refinement_candidates: int = Field(default=12, ge=1, le=100)
@@ -230,6 +327,60 @@ class AppSettings(BaseSettings):
         if self.qwen_video_endpoint and self.qwen_video_allow_in_process:
             raise ValueError(
                 "qwen_video_endpoint cannot be combined with qwen_video_allow_in_process"
+            )
+        if bool(self.vision_worker_endpoint) != bool(self.vision_worker_api_key):
+            missing = (
+                "vision_worker_api_key"
+                if self.vision_worker_endpoint
+                else "vision_worker_endpoint"
+            )
+            raise ValueError(f"{missing} is required for the isolated vision worker")
+        if self.vision_worker_endpoint:
+            _validate_literal_loopback_origin(
+                self.vision_worker_endpoint,
+                field_name="vision_worker_endpoint",
+            )
+            siglip_revision = model_revision(self.siglip_model)
+            if (
+                siglip_revision is None
+                or (self.siglip_model, siglip_revision)
+                not in REVIEWED_SIGLIP_PROFILES
+            ):
+                raise ValueError(
+                    "siglip_model must be a reviewed SigLIP worker profile"
+                )
+        if bool(self.whisper_worker_endpoint) != bool(self.whisper_worker_api_key):
+            missing = (
+                "whisper_worker_api_key"
+                if self.whisper_worker_endpoint
+                else "whisper_worker_endpoint"
+            )
+            raise ValueError(f"{missing} is required for the isolated Whisper worker")
+        if self.whisper_worker_endpoint:
+            _validate_literal_loopback_origin(
+                self.whisper_worker_endpoint,
+                field_name="whisper_worker_endpoint",
+            )
+            if self.whisper_model != WHISPER_MODEL:
+                raise ValueError(
+                    "whisper_model must be the reviewed Whisper worker model"
+                )
+        if (
+            self.roboflow_api_key is None
+            and self.roboflow_model_id
+            in {"rfdetr-nano", "rfdetr-small", "rfdetr-medium", "rfdetr-large"}
+        ):
+            # Migrate the former in-process local detector setting without
+            # making an existing .env prevent the isolated backend from starting.
+            self.roboflow_model_id = None
+        if self.roboflow_model_id is not None:
+            if self.roboflow_api_key and "/" not in self.roboflow_model_id:
+                raise ValueError("roboflow_model_id must have project/version form")
+        if self.vision_worker_endpoint and (
+            self.roboflow_api_key or self.roboflow_model_id
+        ):
+            raise ValueError(
+                "hosted Roboflow cannot be combined with the local vision worker"
             )
         if self.lighthouse_endpoint:
             if not self.lighthouse_api_key:

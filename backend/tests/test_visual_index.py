@@ -1,7 +1,5 @@
 import json
 from pathlib import Path
-import sys
-import types
 
 import numpy as np
 import pytest
@@ -233,30 +231,29 @@ def test_visual_search_before_indexing_returns_empty(tmp_path, monkeypatch) -> N
     assert index.search("query") == []
 
 
+def test_visual_inference_never_falls_back_into_the_backend_process(tmp_path) -> None:
+    index = SiglipVisualIndex(tmp_path / "index", model_name="test")
+    frame = tmp_path / "frame.jpg"
+    frame.write_bytes(b"fixture")
+
+    with pytest.raises(RuntimeError, match="vision worker is not configured"):
+        index._image_vectors([frame])
+    with pytest.raises(RuntimeError, match="vision worker is not configured"):
+        index._text_vectors("query")
+
+
 def test_visual_index_checks_the_configured_model_revision(tmp_path, monkeypatch) -> None:
     revision = "b" * 40
-    calls: list[tuple[str, str, str | None]] = []
-    import huggingface_hub
-
-    monkeypatch.setitem(sys.modules, "torch", types.ModuleType("torch"))
-    monkeypatch.setitem(sys.modules, "transformers", types.ModuleType("transformers"))
-
-    def cached(model: str, filename: str, *, revision: str | None = None) -> str:
-        calls.append((model, filename, revision))
-        return str(tmp_path / filename)
-
-    monkeypatch.setattr(huggingface_hub, "try_to_load_from_cache", cached)
     index = SiglipVisualIndex(
         tmp_path / "index",
         model_name="organization/model",
         model_revision=revision,
     )
 
-    assert index.status().state.value == "ready"
-    assert calls == [
-        ("organization/model", "config.json", revision),
-        ("organization/model", "model.safetensors", revision),
-    ]
+    status = index.status()
+
+    assert status.state.value == "needs_configuration"
+    assert "vision worker" in status.detail
 
 
 def test_visual_index_reports_legacy_vectors_as_requiring_reindex(tmp_path, monkeypatch) -> None:
@@ -267,19 +264,18 @@ def test_visual_index_reports_legacy_vectors_as_requiring_reindex(tmp_path, monk
     (video_dir / "metadata.json").write_text("[]", encoding="utf-8")
     (video_dir / "model.txt").write_text("organization/model", encoding="utf-8")
 
-    monkeypatch.setitem(sys.modules, "torch", types.ModuleType("torch"))
-    monkeypatch.setitem(sys.modules, "transformers", types.ModuleType("transformers"))
-    import huggingface_hub
+    class ReadyInferenceClient:
+        identity = {"siglip_specification_hash": "fixture-siglip-specification"}
 
-    monkeypatch.setattr(
-        huggingface_hub,
-        "try_to_load_from_cache",
-        lambda *_args, **_kwargs: str(tmp_path / "cached"),
-    )
+        @staticmethod
+        def capability():
+            return type("Capability", (), {"ready": True, "detail": "ready"})()
+
     index = SiglipVisualIndex(
         tmp_path / "index",
         model_name="organization/model",
         model_revision=revision,
+        inference_client=ReadyInferenceClient(),  # type: ignore[arg-type]
     )
 
     status = index.status()

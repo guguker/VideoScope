@@ -4,7 +4,7 @@ from videoscope.config import AppSettings
 from videoscope.media.ffmpeg import FFmpeg
 from videoscope.providers.base import ProviderState
 from videoscope.repository import Repository
-from videoscope.runtime import create_visual_index
+from videoscope.runtime import create_vision_worker_client, create_visual_index
 from videoscope.runtime_lifecycle import ExclusiveRuntimeLock
 
 
@@ -24,7 +24,8 @@ def main() -> None:
         repository = Repository(settings.database_path)
         repository.initialize()
         ffmpeg = FFmpeg()
-        index = create_visual_index(settings)
+        vision_client = create_vision_worker_client(settings)
+        index = create_visual_index(settings, inference_client=vision_client)
         status = index.status(check_index=False)
         if status.state is not ProviderState.READY:
             raise SystemExit(status.detail)
