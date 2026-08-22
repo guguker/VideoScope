@@ -137,12 +137,20 @@ class FakeSearchAdapter:
         self.results: dict[str, tuple[BenchmarkSearchHit, ...] | Exception] = {}
         self.calls: list[tuple[str, str, tuple[str, ...]]] = []
         self.profile = None
+        self.execution_mode = None
         self.opened_assets = ()
         self.closed = False
 
-    def open_session(self, profile, assets):  # type: ignore[no-untyped-def]
+    def open_session(  # type: ignore[no-untyped-def]
+        self,
+        profile,
+        assets,
+        *,
+        execution_mode,
+    ):
         self.profile = profile
         self.opened_assets = assets
+        self.execution_mode = execution_mode
         return self
 
     def identities(self) -> ExecutionIdentities:
@@ -158,6 +166,13 @@ class FakeSearchAdapter:
                     f"stack-for-{self.profile.profile_id}",
                 ),
             ),
+        )
+
+    def lifecycle_identity(self) -> ComponentIdentity:
+        assert self.execution_mode in {"cold", "warm"}
+        return ComponentIdentity(
+            "benchmark_execution_lifecycle",
+            f"{self.execution_mode}:test-cache-policy@1",
         )
 
     def capability_state(self, asset, capability):  # type: ignore[no-untyped-def]
@@ -267,7 +282,7 @@ def test_runner_scores_multi_interval_positive_and_zero_interval_negative_cases(
     assert runner.registry.read("run-001") == run
     assert ComponentIdentity(
         "benchmark_profile",
-        "dense_siglip@1",
+        get_profile("dense_siglip").identity,
     ) in run.config_identities
     assert outcomes["multi-positive"].result_count == 3
     assert tuple(
@@ -602,6 +617,74 @@ def test_audit_recomputes_metrics_from_ranked_evidence(tmp_path) -> None:
         audit_run_manifest(_dataset(), tampered_plan)
 
 
+def test_lexical_audit_requires_the_concrete_product_environment_contract(
+    tmp_path,
+) -> None:
+    adapter = FakeSearchAdapter()
+    run = _runner(tmp_path, adapter).run(
+        _dataset(),
+        profile_id="lexical_qdrant",
+        run_id="lexical-identity-audit",
+        execution_mode="warm",
+    )
+    profile = get_profile("lexical_qdrant")
+    lifecycle = next(
+        identity.identity
+        for identity in run.config_identities
+        if identity.component_id == "benchmark_execution_lifecycle"
+    )
+    reserved = {
+        identity.component_id: identity
+        for identity in run.config_identities
+        if identity.component_id.startswith("benchmark_")
+    }
+    audited = replace(
+        run,
+        model_identities=(
+            ComponentIdentity(
+                "text_embedding",
+                "fastembed@0.8.0:mean-pooling-v1:model:repo@revision:768",
+            ),
+        ),
+        index_identities=(
+            ComponentIdentity("text_vector_index", "a" * 64),
+            ComponentIdentity("text_vector_generations", "sha256:" + "b" * 64),
+        ),
+        config_identities=(
+            *reserved.values(),
+            ComponentIdentity(
+                "benchmark_product_environment",
+                "benchmark-product-environment@1:" + "c" * 64,
+            ),
+            ComponentIdentity(
+                "evaluation_search_configuration",
+                profile.search_plan.identity.replace(
+                    "evaluation-search-plan",
+                    "evaluation-search-configuration",
+                    1,
+                ),
+            ),
+            ComponentIdentity("product_search_runtime", "sha256:" + "d" * 64),
+            ComponentIdentity("product_search_lifecycle", lifecycle),
+        ),
+    )
+
+    audit_run_manifest(_dataset(), audited)
+
+    forged = replace(
+        audited,
+        model_identities=(ComponentIdentity("model", "arbitrary"),),
+        index_identities=(ComponentIdentity("index", "arbitrary"),),
+        config_identities=tuple(
+            identity
+            for identity in audited.config_identities
+            if identity.component_id.startswith("benchmark_")
+        ),
+    )
+    with pytest.raises(BenchmarkExecutionError, match="product identity contract"):
+        audit_run_manifest(_dataset(), forged)
+
+
 def test_runner_opens_one_pinned_session_after_asset_resolution_and_closes_it(
     tmp_path,
 ) -> None:
@@ -614,6 +697,12 @@ def test_runner_opens_one_pinned_session_after_asset_resolution_and_closes_it(
         def identities(self) -> ExecutionIdentities:
             identity = ComponentIdentity("component", "identity")
             return ExecutionIdentities((identity,), (identity,), (identity,))
+
+        def lifecycle_identity(self) -> ComponentIdentity:
+            return ComponentIdentity(
+                "benchmark_execution_lifecycle",
+                "warm:test-cache-policy@1",
+            )
 
         def capability_state(self, asset, capability):  # type: ignore[no-untyped-def]
             del asset, capability
@@ -631,9 +720,22 @@ def test_runner_opens_one_pinned_session_after_asset_resolution_and_closes_it(
             self.opened_with = None
             self.session = Session()
 
-        def open_session(self, profile, assets):  # type: ignore[no-untyped-def]
-            self.opened_with = (profile.profile_id, tuple(asset.asset_id for asset in assets))
+        def open_session(  # type: ignore[no-untyped-def]
+            self,
+            profile,
+            assets,
+            *,
+            execution_mode,
+        ):
+            assert execution_mode == "warm"
+            self.opened_with = (
+                profile.profile_id,
+                tuple(asset.asset_id for asset in assets),
+            )
             return self.session
+
+        def close(self) -> None:
+            return None
 
     adapter = Adapter()
     runner = _runner(tmp_path, adapter)  # type: ignore[arg-type]
@@ -655,6 +757,44 @@ def test_runner_opens_one_pinned_session_after_asset_resolution_and_closes_it(
     ) in run.config_identities
 
 
+def test_runner_can_defer_registry_publication_until_external_cleanup_succeeds(
+    tmp_path,
+) -> None:
+    runner = _runner(tmp_path, FakeSearchAdapter())
+
+    prepared = runner.run(
+        _dataset(),
+        profile_id="dense_siglip",
+        run_id="deferred-publication",
+        execution_mode="warm",
+        publish=False,
+    )
+
+    assert runner.registry.list() == ()
+    # A concrete environment may fail here and retain its retry owner.  The
+    # immutable registry must remain untouched until that owner is closed.
+    cleanup_attempts = 0
+
+    def close_environment() -> None:
+        nonlocal cleanup_attempts
+        cleanup_attempts += 1
+        if cleanup_attempts == 1:
+            raise RuntimeError("environment cleanup failed")
+
+    with pytest.raises(RuntimeError, match="environment cleanup failed"):
+        close_environment()
+    assert runner.registry.list() == ()
+
+    close_environment()
+    runner.publish_prepared_run(prepared)
+
+    assert tuple(entry.run_id for entry in runner.registry.list()) == (
+        prepared.run_id,
+    )
+    with pytest.raises(BenchmarkExecutionError, match="not prepared"):
+        runner.publish_prepared_run(prepared)
+
+
 def test_runner_closes_invalid_or_failing_sessions_without_publishing(tmp_path) -> None:
     class InvalidSession:
         def __init__(self) -> None:
@@ -667,9 +807,18 @@ def test_runner_closes_invalid_or_failing_sessions_without_publishing(tmp_path) 
         def __init__(self) -> None:
             self.session = InvalidSession()
 
-        def open_session(self, profile, assets):  # type: ignore[no-untyped-def]
-            del profile, assets
+        def open_session(  # type: ignore[no-untyped-def]
+            self,
+            profile,
+            assets,
+            *,
+            execution_mode,
+        ):
+            del profile, assets, execution_mode
             return self.session
+
+        def close(self) -> None:
+            return None
 
     invalid = InvalidAdapter()
     runner = _runner(tmp_path / "invalid", invalid)
@@ -682,6 +831,105 @@ def test_runner_closes_invalid_or_failing_sessions_without_publishing(tmp_path) 
         )
     assert invalid.session.closed is True
     assert runner.registry.list() == ()
+
+
+def test_runner_drains_adapter_owner_after_session_open_failure(tmp_path) -> None:
+    class RetainedOwnerAdapter:
+        def __init__(self) -> None:
+            self.open_calls = 0
+            self.close_calls = 0
+            self.owner_released = False
+
+        def open_session(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
+            self.open_calls += 1
+            # Model an adapter whose internal setup already exhausted three
+            # cleanup attempts before returning the setup failure.
+            self.close_calls = 3
+            raise RuntimeError("product session open failed")
+
+        def close(self) -> None:
+            self.close_calls += 1
+            if self.close_calls < 4:
+                raise RuntimeError("adapter owner cleanup failed")
+            self.owner_released = True
+
+    adapter = RetainedOwnerAdapter()
+    runner = _runner(tmp_path / "retained-owner", adapter)
+
+    with pytest.raises(BenchmarkExecutionError, match="session is unavailable"):
+        runner.run(
+            _dataset(),
+            profile_id="dense_siglip",
+            run_id="retained-owner",
+            execution_mode="warm",
+        )
+
+    assert adapter.open_calls == 1
+    assert adapter.close_calls == 4
+    assert adapter.owner_released is True
+    assert runner.registry.list() == ()
+
+
+def test_runner_preserves_session_setup_and_adapter_cleanup_failures(tmp_path) -> None:
+    class FailingOwnerAdapter:
+        def open_session(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
+            raise RuntimeError("product session open failed")
+
+        def close(self) -> None:
+            raise RuntimeError("adapter owner cleanup failed")
+
+    runner = _runner(tmp_path / "dual-failure", FailingOwnerAdapter())
+
+    with pytest.raises(
+        BenchmarkExecutionError,
+        match="execution and search adapter cleanup failed",
+    ) as captured:
+        runner.run(
+            _dataset(),
+            profile_id="dense_siglip",
+            run_id="dual-failure",
+            execution_mode="warm",
+        )
+
+    assert isinstance(captured.value.__cause__, ExceptionGroup)
+    assert [str(error) for error in captured.value.__cause__.exceptions] == [
+        "pinned benchmark search session is unavailable",
+        "benchmark search adapter could not be closed",
+    ]
+    assert runner.registry.list() == ()
+
+
+def test_runner_exposes_retryable_adapter_cleanup_after_bounded_failure(tmp_path) -> None:
+    class RetryableOwnerAdapter:
+        def __init__(self) -> None:
+            self.close_calls = 0
+            self.owner_released = False
+
+        def open_session(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
+            raise RuntimeError("product session open failed")
+
+        def close(self) -> None:
+            self.close_calls += 1
+            if self.close_calls <= 3:
+                raise RuntimeError("adapter owner cleanup failed")
+            self.owner_released = True
+
+    adapter = RetryableOwnerAdapter()
+    runner = _runner(tmp_path / "retryable-owner", adapter)
+
+    with pytest.raises(BenchmarkExecutionError, match="resources could not be closed"):
+        runner.run(
+            _dataset(),
+            profile_id="dense_siglip",
+            run_id="retryable-owner",
+            execution_mode="warm",
+        )
+
+    assert adapter.close_calls == 3
+    assert adapter.owner_released is False
+    runner.close()
+    assert adapter.close_calls == 4
+    assert adapter.owner_released is True
 
     class CloseFailureAdapter(FakeSearchAdapter):
         def close(self) -> None:
@@ -711,6 +959,12 @@ def test_latency_excludes_capability_checks_and_scoring(tmp_path) -> None:
             identity = ComponentIdentity("component", "identity")
             return ExecutionIdentities((identity,), (identity,), (identity,))
 
+        def lifecycle_identity(self) -> ComponentIdentity:
+            return ComponentIdentity(
+                "benchmark_execution_lifecycle",
+                "warm:test-cache-policy@1",
+            )
+
         def capability_state(self, asset, capability):  # type: ignore[no-untyped-def]
             del asset, capability
             events.append("capability")
@@ -735,9 +989,19 @@ def test_latency_excludes_capability_checks_and_scoring(tmp_path) -> None:
             events.append("close")
 
     class Adapter:
-        def open_session(self, profile, assets):  # type: ignore[no-untyped-def]
+        def open_session(  # type: ignore[no-untyped-def]
+            self,
+            profile,
+            assets,
+            *,
+            execution_mode,
+        ):
             del profile, assets
+            assert execution_mode == "warm"
             return Session()
+
+        def close(self) -> None:
+            return None
 
     def score_overlap(*_values: float) -> float:
         events.append("score")

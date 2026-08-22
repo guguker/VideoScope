@@ -1,0 +1,1008 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from dataclasses import replace
+import hashlib
+import json
+import os
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from videoscope.benchmark import environment as environment_module
+from videoscope.benchmark.environment import (
+    BenchmarkEnvironmentCleanupError,
+    BenchmarkEnvironmentError,
+    open_product_benchmark_environment,
+)
+from videoscope.benchmark.product_runtime import ProductSnapshotCleanupError
+from videoscope.config import AppSettings
+from videoscope.providers.whisper import snapshot_whisper_prompt
+from videoscope.repository import Repository
+from videoscope.runtime import build_runtime
+
+
+_SHA_A = "a" * 64
+_SHA_B = "b" * 64
+_SHA_C = "c" * 64
+
+
+def _private_directory(path: Path) -> Path:
+    path.mkdir(mode=0o700)
+    path.chmod(0o700)
+    return path
+
+
+def _tree(root: Path) -> dict[str, tuple[int, bytes | None]]:
+    return {
+        path.relative_to(root).as_posix() or ".": (
+            path.stat(follow_symlinks=False).st_mode,
+            path.read_bytes() if path.is_file() else None,
+        )
+        for path in sorted((root, *root.rglob("*")))
+    }
+
+
+class _Repository:
+    is_read_only = True
+
+    def find_assets_by_sha256(self, _digest: str) -> tuple[object, ...]:
+        return ()
+
+
+class _ProductSnapshot:
+    def __init__(self, data_root: Path, media_root: Path, events: list[str]) -> None:
+        self.repository = _Repository()
+        self.data_root = data_root
+        self.media_root = media_root
+        self.identity = SimpleNamespace(snapshot_sha256=_SHA_A)
+        self._events = events
+        self.close_calls = 0
+        self.close_failures = 0
+        self.is_closed = False
+        self.session_root: Path | None = None
+        self._data_descriptor: int | None = None
+        self._media_descriptor: int | None = None
+
+    def bind_roots(self) -> None:
+        if self._data_descriptor is None:
+            self._data_descriptor = os.open(self.data_root, os.O_RDONLY)
+        if self._media_descriptor is None:
+            self._media_descriptor = os.open(self.media_root, os.O_RDONLY)
+
+    def duplicate_data_root_descriptor(self) -> int:
+        assert self._data_descriptor is not None
+        return os.dup(self._data_descriptor)
+
+    def duplicate_media_root_descriptor(self) -> int:
+        assert self._media_descriptor is not None
+        return os.dup(self._media_descriptor)
+
+    def close(self) -> None:
+        self.close_calls += 1
+        self._events.append("product.close")
+        if self.close_calls <= self.close_failures:
+            raise RuntimeError("product close failed")
+        if self.session_root is not None:
+            assert not self.session_root.exists()
+        if self._media_descriptor is not None:
+            os.close(self._media_descriptor)
+            self._media_descriptor = None
+        if self._data_descriptor is not None:
+            os.close(self._data_descriptor)
+            self._data_descriptor = None
+        self.is_closed = True
+
+
+class _FastEmbedding:
+    strict_no_fallback = True
+    identity = "fastembed@fixture"
+    dimensions = 768
+
+    def __init__(self, events: list[str]) -> None:
+        self._events = events
+
+    def ensure_ready(self) -> bool:
+        self._events.append("fastembed.ensure_ready")
+        return True
+
+    @property
+    def benchmark_identity(self) -> dict[str, object]:
+        return {
+            "embedding_identity": self.identity,
+            "model_name": "sentence-transformers/paraphrase-multilingual-mpnet-base-v2",
+            "model_repository": "xenova/paraphrase-multilingual-mpnet-base-v2",
+            "model_revision": "e5d116277351513fd260955ece953ecddde7046e",
+            "runtime_version": "fixture-runtime",
+            "algorithm_version": "fixture-algorithm",
+            "dimensions": self.dimensions,
+            "model_content_sha256": _SHA_B,
+        }
+
+
+class _FastSnapshot:
+    def __init__(self, path: Path, events: list[str]) -> None:
+        self.path = path
+        self.identity = SimpleNamespace(
+            model_name="sentence-transformers/paraphrase-multilingual-mpnet-base-v2",
+            model_repository="xenova/paraphrase-multilingual-mpnet-base-v2",
+            model_revision="e5d116277351513fd260955ece953ecddde7046e",
+            runtime_version="fixture-runtime",
+            algorithm_version="fixture-algorithm",
+            dimensions=768,
+            model_content_sha256=_SHA_B,
+        )
+        self._events = events
+
+    def create_embedding(self) -> _FastEmbedding:
+        self._events.append("fastembed.create_embedding")
+        return _FastEmbedding(self._events)
+
+
+@dataclass(frozen=True)
+class _QdrantSnapshot:
+    path: Path
+    snapshot_sha256: str = _SHA_C
+
+
+class _Index:
+    def __init__(
+        self,
+        snapshot: _QdrantSnapshot,
+        embedding: _FastEmbedding,
+        events: list[str],
+    ) -> None:
+        self.snapshot = snapshot
+        self.embedding = embedding
+        self._events = events
+        self.close_failures = 0
+        self.close_calls = 0
+        self.index_specification = SimpleNamespace(
+            canonical_json='{"fixture":true}',
+            specification_hash="d" * 64,
+        )
+
+    @property
+    def benchmark_attestation(self) -> dict[str, object]:
+        return {
+            "schema_version": 1,
+            "provider": "qdrant",
+            "strict_no_fallback": True,
+            "embedding": self.embedding.benchmark_identity,
+            "index": {
+                "index_specification_hash": "d" * 64,
+                "collection_name": "fixture",
+                "snapshot_sha256": self.snapshot.snapshot_sha256,
+            },
+        }
+
+    def close(self) -> None:
+        self.close_calls += 1
+        self._events.append("qdrant.close")
+        if self.close_calls <= self.close_failures:
+            raise RuntimeError("qdrant close failed")
+
+
+class _Adapter:
+    def __init__(
+        self,
+        search: object,
+        events: list[str],
+        environment_identity: object,
+    ) -> None:
+        self.search = search
+        self.environment_identity = environment_identity
+        self._events = events
+        self.close_failures = 0
+        self.close_calls = 0
+
+    def close(self) -> None:
+        self.close_calls += 1
+        self._events.append("adapter.close")
+        if self.close_calls <= self.close_failures:
+            raise RuntimeError("adapter close failed")
+
+
+class _SearchService:
+    def __init__(self, repository: object, vector_index: object, **kwargs: object) -> None:
+        self.repository = repository
+        self.vector_index = vector_index
+        self.kwargs = kwargs
+
+    def open_pinned_evaluation(self) -> None:
+        return None
+
+
+def _specifications() -> object:
+    stages = {
+        name: SimpleNamespace(specification_hash=character * 64)
+        for name, character in zip(
+            ("scenes", "speech", "ocr", "objects", "text_vectors"),
+            "ef012",
+            strict=True,
+        )
+    }
+    return SimpleNamespace(**stages)
+
+
+@pytest.fixture
+def environment_fakes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> SimpleNamespace:
+    events: list[str] = []
+    data_dir = tmp_path / "product" / "data"
+    media_root = data_dir / "media"
+    fastembed_root = data_dir / "models" / "fastembed"
+    qdrant_root = data_dir / "qdrant" / "text"
+    media_root.mkdir(parents=True)
+    fastembed_root.mkdir(parents=True)
+    qdrant_root.mkdir(parents=True)
+    (data_dir / "videoscope.sqlite3").write_bytes(b"product database sentinel")
+    (fastembed_root / "model.sentinel").write_bytes(b"model")
+    (qdrant_root / "index.sentinel").write_bytes(b"index")
+    (data_dir / "search-glossary.json").write_text(
+        json.dumps({"VideoScope": ["video scope"]}),
+        encoding="utf-8",
+    )
+    scratch_parent = _private_directory(tmp_path / "scratch")
+    product = _ProductSnapshot(data_dir.absolute(), media_root.absolute(), events)
+    state = SimpleNamespace(
+        events=events,
+        product=product,
+        index=None,
+        adapter=None,
+        search=None,
+        settings=None,
+        scratch_parent=scratch_parent,
+        fastembed_source=None,
+        qdrant_source=None,
+    )
+
+    def open_product(**kwargs: object) -> _ProductSnapshot:
+        events.append("product.open")
+        assert kwargs == {
+            "data_dir": data_dir.absolute(),
+            "database_path": (data_dir / "videoscope.sqlite3").absolute(),
+            "media_root": media_root.absolute(),
+            "scratch_parent": scratch_parent.absolute(),
+        }
+        product.bind_roots()
+        return product
+
+    def materialize(source: object, scratch: object, manifest: object) -> _FastSnapshot:
+        del manifest
+        events.append("fastembed.snapshot")
+        state.fastembed_source = source
+        assert getattr(source, "parts") == ("models", "fastembed")
+        assert getattr(source, "root").logical_path == data_dir.absolute()
+        assert (getattr(source, "stable_path") / "model.sentinel").read_bytes() == b"model"
+        assert getattr(scratch, "logical_path").parent == scratch_parent.absolute()
+        assert getattr(scratch, "logical_path") != getattr(product, "scratch_root", None)
+        output = getattr(scratch, "stable_path") / "fastembed-copy"
+        output.mkdir(mode=0o700)
+        (output / "model").write_bytes(b"private model")
+        (output / "model").chmod(0o600)
+        return _FastSnapshot(output, events)
+
+    def snapshot_qdrant(source: object, scratch: object) -> _QdrantSnapshot:
+        events.append("qdrant.snapshot")
+        state.qdrant_source = source
+        assert getattr(source, "parts") == ("qdrant", "text")
+        assert getattr(source, "root").logical_path == data_dir.absolute()
+        assert (getattr(source, "stable_path") / "index.sentinel").read_bytes() == b"index"
+        output = getattr(scratch, "stable_path") / "qdrant-copy"
+        output.mkdir(mode=0o700)
+        (output / "index").write_bytes(b"private index")
+        (output / "index").chmod(0o600)
+        return _QdrantSnapshot(output)
+
+    def open_index(snapshot: _QdrantSnapshot, *, embedding: _FastEmbedding) -> _Index:
+        events.append("qdrant.open")
+        index = _Index(snapshot, embedding, events)
+        state.index = index
+        return index
+
+    def make_search(repository: object, vector_index: object, **kwargs: object) -> _SearchService:
+        events.append("search.create")
+        search = _SearchService(repository, vector_index, **kwargs)
+        state.search = search
+        return search
+
+    def make_adapter(
+        search: object,
+        *,
+        environment_identity: object,
+    ) -> _Adapter:
+        events.append("adapter.create")
+        adapter = _Adapter(search, events, environment_identity)
+        state.adapter = adapter
+        return adapter
+
+    monkeypatch.setattr(environment_module, "open_product_runtime_snapshot", open_product)
+    monkeypatch.setattr(
+        environment_module,
+        "load_reviewed_fastembed_snapshot_manifest",
+        lambda: SimpleNamespace(
+            model_content_sha256=_SHA_B,
+            model_name="sentence-transformers/paraphrase-multilingual-mpnet-base-v2",
+            dimensions=768,
+        ),
+    )
+    monkeypatch.setattr(environment_module, "materialize_fastembed_snapshot", materialize)
+    monkeypatch.setattr(environment_module, "snapshot_qdrant_storage", snapshot_qdrant)
+    monkeypatch.setattr(
+        environment_module,
+        "verify_fastembed_snapshot",
+        lambda _snapshot: events.append("fastembed.verify"),
+    )
+    monkeypatch.setattr(
+        environment_module.QdrantVectorIndex,
+        "open_existing_snapshot",
+        staticmethod(open_index),
+    )
+    monkeypatch.setattr(
+        environment_module,
+        "create_indexing_specifications_from_prompt_snapshot",
+        lambda _settings, _prompt: _specifications(),
+    )
+    monkeypatch.setattr(environment_module, "SearchService", make_search)
+    monkeypatch.setattr(environment_module, "ProductBenchmarkSearchAdapter", make_adapter)
+    monkeypatch.setattr(
+        environment_module,
+        "build_runtime",
+        lambda *_args, **_kwargs: pytest.fail("build_runtime must never be called"),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        Repository,
+        "initialize",
+        lambda *_args, **_kwargs: pytest.fail("Repository.initialize must never be called"),
+    )
+    # Keep the imported production symbol live so a false-positive unused import
+    # cannot make this guard look stronger than it is.
+    assert callable(build_runtime)
+    monkeypatch.chdir(tmp_path)
+    state.settings = AppSettings(data_dir=Path("product/data"), _env_file=None)
+    return state
+
+
+def test_opens_lexical_environment_from_verified_private_snapshots_only(
+    environment_fakes: SimpleNamespace,
+) -> None:
+    state = environment_fakes
+    source_before = _tree(Path("product/data"))
+
+    environment = open_product_benchmark_environment(
+        state.settings,
+        state.scratch_parent,
+        profile_id="lexical_qdrant",
+        execution_mode="warm",
+    )
+    state.product.session_root = environment.scratch_root
+
+    assert state.events == [
+        "product.open",
+        "fastembed.snapshot",
+        "fastembed.create_embedding",
+        "fastembed.ensure_ready",
+        "qdrant.snapshot",
+        "qdrant.open",
+        "search.create",
+        "adapter.create",
+    ]
+    assert environment.repository is state.product.repository
+    assert environment.asset_resolver is not None
+    assert environment.search_adapter is state.adapter
+    assert state.adapter.environment_identity.component_id == (
+        "benchmark_product_environment"
+    )
+    assert state.adapter.environment_identity.identity == environment.identity.identity
+    assert environment.identity.profile_id == "lexical_qdrant"
+    assert environment.identity.execution_mode == "warm"
+    assert environment.identity.product_snapshot_sha256 == _SHA_A
+    assert environment.identity.fastembed_model_content_sha256 == _SHA_B
+    assert environment.identity.qdrant_snapshot_sha256 == _SHA_C
+    assert environment.identity.identity.startswith("benchmark-product-environment@1:")
+    assert state.search.kwargs["media_root"] == Path("product/data/media").absolute()
+    media_access_root = state.search.kwargs["media_access_root"]
+    assert str(media_access_root).startswith("/.vol/")
+    assert os.stat(media_access_root) == os.stat(Path("product/data/media"))
+    assert state.search.kwargs["moment_search"] is None
+    assert state.search.kwargs["visual_search"] is None
+    assert state.search.kwargs["temporal_refiner"] is None
+    assert state.search.kwargs["candidate_reranker"] is None
+    assert state.search.kwargs["evaluation_rerankers"] == {}
+    assert state.search.kwargs["semantic_text_min_score"] == state.settings.semantic_text_min_score
+    assert state.search.kwargs["visual_min_score"] == state.settings.visual_min_score
+    assert state.search.kwargs["specification_resolver"]() is state.search.kwargs[
+        "specification_resolver"
+    ]()
+    assert state.search.kwargs["lexicon"].read() == {"VideoScope": ["video scope"]}
+    assert _tree(Path("product/data")) == source_before
+
+    environment.close()
+    environment.close()
+
+    assert state.events[-4:] == [
+        "adapter.close",
+        "fastembed.verify",
+        "qdrant.close",
+        "product.close",
+    ]
+    assert state.adapter.close_calls == 1
+    assert state.index.close_calls == 1
+    assert state.product.close_calls == 1
+    assert not environment.scratch_root.exists()
+    assert list(state.scratch_parent.iterdir()) == []
+    assert _tree(Path("product/data")) == source_before
+
+
+def test_glossary_is_frozen_and_environment_identity_is_pathless(
+    environment_fakes: SimpleNamespace,
+) -> None:
+    state = environment_fakes
+    environment = open_product_benchmark_environment(
+        state.settings,
+        state.scratch_parent,
+    )
+    original = state.search.kwargs["lexicon"].read()
+    state.settings.glossary_path.write_text(
+        json.dumps({"changed": ["after-open"]}),
+        encoding="utf-8",
+    )
+
+    assert state.search.kwargs["lexicon"].read() == original
+    assert str(Path.cwd()) not in json.dumps(environment.identity.canonical_dict)
+    environment.close()
+
+
+def test_frozen_glossary_expands_queries_and_refuses_mutation(
+    environment_fakes: SimpleNamespace,
+) -> None:
+    state = environment_fakes
+    environment = open_product_benchmark_environment(state.settings, state.scratch_parent)
+    lexicon = state.search.kwargs["lexicon"]
+
+    assert lexicon.expand("find VideoScope demo") == [
+        "find VideoScope demo",
+        "VideoScope",
+        "video scope",
+    ]
+    assert lexicon.expand("unrelated") == ["unrelated"]
+    with pytest.raises(RuntimeError, match="read-only"):
+        lexicon.replace({"new": ["entry"]})
+
+    environment.close()
+
+
+def test_missing_glossary_is_a_stable_empty_snapshot(
+    environment_fakes: SimpleNamespace,
+) -> None:
+    state = environment_fakes
+    state.settings.glossary_path.unlink()
+
+    with open_product_benchmark_environment(
+        state.settings,
+        state.scratch_parent,
+    ) as environment:
+        assert state.search.kwargs["lexicon"].read() == {}
+
+    assert environment.is_closed is True
+    with pytest.raises(BenchmarkEnvironmentError, match="already closed"):
+        environment.__enter__()
+
+
+def test_indexing_specs_use_the_exact_retained_glossary_prompt_snapshot(
+    environment_fakes: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = environment_fakes
+    captured: list[object] = []
+
+    def make_specifications(_settings: AppSettings, prompt: object) -> object:
+        captured.append(prompt)
+        return _specifications()
+
+    expected = snapshot_whisper_prompt(
+        state.settings.whisper_initial_prompt,
+        state.settings.glossary_path,
+    )
+    monkeypatch.setattr(
+        environment_module,
+        "create_indexing_specifications_from_prompt_snapshot",
+        make_specifications,
+    )
+
+    environment = open_product_benchmark_environment(
+        state.settings,
+        state.scratch_parent,
+    )
+
+    assert captured == [expected]
+    environment.close()
+
+
+def test_environment_identity_rejects_tampering(
+    environment_fakes: SimpleNamespace,
+) -> None:
+    state = environment_fakes
+    environment = open_product_benchmark_environment(state.settings, state.scratch_parent)
+
+    with pytest.raises(ValueError, match="product_snapshot_sha256"):
+        replace(environment.identity, product_snapshot_sha256="not-a-digest")
+    with pytest.raises(ValueError, match="score threshold"):
+        replace(environment.identity, semantic_text_min_score=True)
+    with pytest.raises(ValueError, match="indexing identities"):
+        replace(environment.identity, indexing_specification_hashes=())
+
+    environment.close()
+
+
+def test_requires_validated_settings_before_any_product_open(
+    environment_fakes: SimpleNamespace,
+) -> None:
+    state = environment_fakes
+
+    with pytest.raises(ValueError, match="validated AppSettings"):
+        open_product_benchmark_environment(  # type: ignore[arg-type]
+            object(),
+            state.scratch_parent,
+        )
+
+    assert state.events == []
+
+
+def test_product_open_cleanup_owner_is_propagated_unchanged(
+    environment_fakes: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = environment_fakes
+
+    class PendingCleanup(ProductSnapshotCleanupError):
+        def __init__(self) -> None:
+            RuntimeError.__init__(self, "pending product cleanup")
+
+    pending = PendingCleanup()
+
+    def fail_open(**_kwargs: object) -> object:
+        raise pending
+
+    monkeypatch.setattr(environment_module, "open_product_runtime_snapshot", fail_open)
+
+    with pytest.raises(ProductSnapshotCleanupError) as captured:
+        open_product_benchmark_environment(state.settings, state.scratch_parent)
+
+    assert captured.value is pending
+    assert list(state.scratch_parent.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    ("profile_id", "execution_mode"),
+    [("dense_siglip", "warm"), ("lexical_qdrant", "cold")],
+)
+def test_rejects_unsupported_profiles_and_cold_mode_before_opening_product(
+    environment_fakes: SimpleNamespace,
+    profile_id: str,
+    execution_mode: str,
+) -> None:
+    state = environment_fakes
+
+    with pytest.raises(BenchmarkEnvironmentError, match="supports only"):
+        open_product_benchmark_environment(
+            state.settings,
+            state.scratch_parent,
+            profile_id=profile_id,
+            execution_mode=execution_mode,  # type: ignore[arg-type]
+        )
+
+    assert state.events == []
+    assert list(state.scratch_parent.iterdir()) == []
+
+
+def test_snapshot_setup_failure_rolls_back_private_scratch_then_product_lock(
+    environment_fakes: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = environment_fakes
+
+    def fail_snapshot(_source: object, scratch: object, _manifest: object) -> None:
+        state.events.append("fastembed.snapshot")
+        partial = getattr(scratch, "stable_path") / "partial"
+        partial.mkdir(mode=0o700)
+        (partial / "file").write_bytes(b"partial")
+        (partial / "file").chmod(0o600)
+        raise RuntimeError("snapshot failed")
+
+    monkeypatch.setattr(environment_module, "materialize_fastembed_snapshot", fail_snapshot)
+
+    with pytest.raises(RuntimeError, match="snapshot failed"):
+        open_product_benchmark_environment(state.settings, state.scratch_parent)
+
+    assert state.events == ["product.open", "fastembed.snapshot", "product.close"]
+    assert state.product.close_calls == 1
+    assert list(state.scratch_parent.iterdir()) == []
+
+
+def test_warm_profile_rejects_an_embedding_that_did_not_finish_warming(
+    environment_fakes: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = environment_fakes
+
+    class UnreadyEmbedding(_FastEmbedding):
+        def ensure_ready(self) -> bool:
+            self._events.append("fastembed.ensure_ready")
+            return False
+
+    def create_unready(snapshot: _FastSnapshot) -> _FastEmbedding:
+        snapshot._events.append("fastembed.create_embedding")
+        return UnreadyEmbedding(snapshot._events)
+
+    monkeypatch.setattr(_FastSnapshot, "create_embedding", create_unready)
+
+    with pytest.raises(BenchmarkEnvironmentError, match="warmed"):
+        open_product_benchmark_environment(state.settings, state.scratch_parent)
+
+    assert "qdrant.snapshot" not in state.events
+    assert state.events[:4] == [
+        "product.open",
+        "fastembed.snapshot",
+        "fastembed.create_embedding",
+        "fastembed.ensure_ready",
+    ]
+    assert state.events[-2:] == ["fastembed.verify", "product.close"]
+    assert state.product.close_calls == 1
+    assert list(state.scratch_parent.iterdir()) == []
+
+
+def test_scratch_setup_and_product_close_failure_exposes_retry_owner(
+    environment_fakes: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = environment_fakes
+    state.product.close_failures = 1
+    monkeypatch.setattr(
+        environment_module._PrivateScratch,
+        "create",
+        classmethod(lambda _cls, _parent: (_ for _ in ()).throw(RuntimeError("scratch failed"))),
+    )
+
+    with pytest.raises(BenchmarkEnvironmentCleanupError) as captured:
+        open_product_benchmark_environment(state.settings, state.scratch_parent)
+
+    error = captured.value
+    assert "scratch failed" in str(error.__cause__)
+    assert state.product.close_calls == 1
+    assert error.environment.is_closed is False
+    with pytest.raises(BenchmarkEnvironmentError, match="scratch is unavailable"):
+        _ = error.environment.scratch_root
+
+    error.environment.close()
+    assert state.product.close_calls == 2
+    assert error.environment.is_closed is True
+
+
+def test_scratch_cleanup_enforces_entry_bound_before_product_unlock(
+    environment_fakes: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = environment_fakes
+    environment = open_product_benchmark_environment(state.settings, state.scratch_parent)
+    for index in range(3):
+        path = environment.scratch_root / f"extra-{index}"
+        path.write_bytes(b"x")
+        path.chmod(0o600)
+    monkeypatch.setattr(environment_module, "_MAX_SCRATCH_ENTRIES", 2)
+
+    with pytest.raises(BenchmarkEnvironmentError, match="entry limit"):
+        environment.close()
+
+    assert state.product.close_calls == 0
+    assert environment.scratch_root.is_dir()
+
+    monkeypatch.setattr(environment_module, "_MAX_SCRATCH_ENTRIES", 200_000)
+    environment.close()
+    assert state.product.close_calls == 1
+
+
+def test_scratch_cleanup_removes_nested_private_directories(
+    environment_fakes: SimpleNamespace,
+) -> None:
+    state = environment_fakes
+    environment = open_product_benchmark_environment(state.settings, state.scratch_parent)
+    nested = environment.scratch_root / "one" / "two" / "three"
+    nested.mkdir(parents=True, mode=0o700)
+    payload = nested / "payload"
+    payload.write_bytes(b"private")
+    payload.chmod(0o600)
+
+    environment.close()
+
+    assert state.product.close_calls == 1
+    assert list(state.scratch_parent.iterdir()) == []
+
+
+def test_provider_close_failure_retains_lock_and_scratch_until_retry(
+    environment_fakes: SimpleNamespace,
+) -> None:
+    state = environment_fakes
+    environment = open_product_benchmark_environment(state.settings, state.scratch_parent)
+    state.index.close_failures = 1
+
+    with pytest.raises(BenchmarkEnvironmentError, match="Qdrant"):
+        environment.close()
+
+    assert state.adapter.close_calls == 1
+    assert state.index.close_calls == 1
+    assert state.product.close_calls == 0
+    assert environment.scratch_root.is_dir()
+
+    environment.close()
+
+    assert state.adapter.close_calls == 1
+    assert state.index.close_calls == 2
+    assert state.product.close_calls == 1
+    assert not environment.scratch_root.exists()
+
+
+def test_retained_scratch_capability_close_failure_blocks_owner_release_until_retry(
+    environment_fakes: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = environment_fakes
+    environment = open_product_benchmark_environment(state.settings, state.scratch_parent)
+    scratch_capability = environment._scratch_root
+    original_close = environment_module.RetainedDirectory.close
+    attempts = 0
+
+    def fail_once(capability: object) -> bool:
+        nonlocal attempts
+        if capability is scratch_capability:
+            attempts += 1
+            if attempts == 1:
+                raise RuntimeError("capability close failed")
+        return original_close(capability)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(environment_module.RetainedDirectory, "close", fail_once)
+
+    with pytest.raises(BenchmarkEnvironmentError, match="capability"):
+        environment.close()
+
+    assert state.index.close_calls == 1
+    assert state.product.close_calls == 0
+    assert environment.scratch_root.is_dir()
+
+    environment.close()
+    assert attempts == 2
+    assert state.index.close_calls == 1
+    assert state.product.close_calls == 1
+
+
+def test_adapter_cleanup_failure_blocks_all_later_close_phases_until_retry(
+    environment_fakes: SimpleNamespace,
+) -> None:
+    state = environment_fakes
+    environment = open_product_benchmark_environment(state.settings, state.scratch_parent)
+    state.adapter.close_failures = 1
+
+    with pytest.raises(BenchmarkEnvironmentError, match="adapter"):
+        environment.close()
+
+    assert state.index.close_calls == 0
+    assert state.product.close_calls == 0
+    assert environment.scratch_root.is_dir()
+
+    environment.close()
+    assert state.adapter.close_calls == 2
+    assert state.index.close_calls == 1
+    assert state.product.close_calls == 1
+
+
+def test_final_model_attestation_failure_reports_drift_but_still_cleans_owners(
+    environment_fakes: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = environment_fakes
+    environment = open_product_benchmark_environment(state.settings, state.scratch_parent)
+
+    def fail_verification(_snapshot: object) -> None:
+        state.events.append("fastembed.verify.failed")
+        raise RuntimeError("model bytes drifted")
+
+    monkeypatch.setattr(
+        environment_module,
+        "verify_fastembed_snapshot",
+        fail_verification,
+    )
+
+    with pytest.raises(BenchmarkEnvironmentError, match="final verification"):
+        environment.close()
+
+    assert environment.is_closed is True
+    assert state.index.close_calls == 1
+    assert state.product.close_calls == 1
+    assert list(state.scratch_parent.iterdir()) == []
+    environment.close()
+
+
+def test_invalid_qdrant_attestation_is_rejected_and_rolled_back(
+    environment_fakes: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = environment_fakes
+
+    class BadIndex(_Index):
+        @property
+        def benchmark_attestation(self) -> dict[str, object]:
+            payload = super().benchmark_attestation
+            payload["strict_no_fallback"] = False
+            return payload
+
+    def open_bad(snapshot: _QdrantSnapshot, *, embedding: _FastEmbedding) -> BadIndex:
+        state.events.append("qdrant.open")
+        index = BadIndex(snapshot, embedding, state.events)
+        state.index = index
+        return index
+
+    monkeypatch.setattr(
+        environment_module.QdrantVectorIndex,
+        "open_existing_snapshot",
+        staticmethod(open_bad),
+    )
+
+    with pytest.raises(BenchmarkEnvironmentError, match="attestation"):
+        open_product_benchmark_environment(state.settings, state.scratch_parent)
+
+    assert state.index.close_calls == 1
+    assert state.product.close_calls == 1
+    assert list(state.scratch_parent.iterdir()) == []
+
+
+def test_setup_and_cleanup_failure_exposes_retryable_retained_environment(
+    environment_fakes: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = environment_fakes
+
+    def fail_search(*_args: object, **_kwargs: object) -> object:
+        state.events.append("search.create")
+        assert state.index is not None
+        state.index.close_failures = 1
+        raise RuntimeError("search construction failed")
+
+    monkeypatch.setattr(environment_module, "SearchService", fail_search)
+
+    with pytest.raises(BenchmarkEnvironmentCleanupError) as captured:
+        open_product_benchmark_environment(state.settings, state.scratch_parent)
+
+    error = captured.value
+    assert "search construction failed" in str(error.__cause__)
+    assert state.product.close_calls == 0
+    assert error.environment.scratch_root.is_dir()
+
+    error.environment.close()
+    assert state.index.close_calls == 2
+    assert state.product.close_calls == 1
+    assert list(state.scratch_parent.iterdir()) == []
+
+
+def test_glossary_symlink_is_rejected_without_following_it(
+    environment_fakes: SimpleNamespace,
+) -> None:
+    state = environment_fakes
+    outside = Path("outside-glossary.json")
+    outside.write_text(json.dumps({"secret": ["outside"]}), encoding="utf-8")
+    state.settings.glossary_path.unlink()
+    state.settings.glossary_path.symlink_to(outside.absolute())
+
+    with pytest.raises(BenchmarkEnvironmentError, match="glossary"):
+        open_product_benchmark_environment(state.settings, state.scratch_parent)
+
+    assert outside.read_text(encoding="utf-8") == json.dumps({"secret": ["outside"]})
+    assert state.product.close_calls == 1
+    assert list(state.scratch_parent.iterdir()) == []
+
+
+def test_scratch_parent_replacement_cannot_redirect_private_snapshot_bytes(
+    environment_fakes: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    state = environment_fakes
+    original_materialize = environment_module.materialize_fastembed_snapshot
+    moved_parent = tmp_path / "scratch-moved"
+    replacement_root: Path | None = None
+
+    def swap_parent(source: object, scratch: object, manifest: object) -> object:
+        nonlocal replacement_root
+        logical_root = getattr(scratch, "logical_path")
+        state.scratch_parent.rename(moved_parent)
+        _private_directory(state.scratch_parent)
+        replacement_root = _private_directory(
+            state.scratch_parent / logical_root.name
+        )
+        snapshot = original_materialize(source, scratch, manifest)
+        assert list(replacement_root.iterdir()) == []
+        return snapshot
+
+    monkeypatch.setattr(
+        environment_module,
+        "materialize_fastembed_snapshot",
+        swap_parent,
+    )
+
+    environment = open_product_benchmark_environment(
+        state.settings,
+        state.scratch_parent,
+    )
+    environment.close()
+
+    assert replacement_root is not None
+    assert list(replacement_root.iterdir()) == []
+    assert list(moved_parent.iterdir()) == []
+    assert state.product.close_calls == 1
+    replacement_root.rmdir()
+    state.scratch_parent.rmdir()
+    moved_parent.rmdir()
+
+
+def test_product_root_replacement_after_retention_cannot_mix_component_bytes(
+    environment_fakes: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    state = environment_fakes
+    original_materialize = environment_module.materialize_fastembed_snapshot
+    lexical_data = Path("product/data").absolute()
+    moved_data = tmp_path / "product-data-moved"
+
+    def swap_product_root(
+        source: object,
+        scratch: object,
+        manifest: object,
+    ) -> object:
+        lexical_data.rename(moved_data)
+        replacement_model = lexical_data / "models" / "fastembed"
+        replacement_qdrant = lexical_data / "qdrant" / "text"
+        replacement_media = lexical_data / "media"
+        replacement_model.mkdir(parents=True)
+        replacement_qdrant.mkdir(parents=True)
+        replacement_media.mkdir(parents=True)
+        (replacement_model / "model.sentinel").write_bytes(b"replacement model")
+        (replacement_qdrant / "index.sentinel").write_bytes(b"replacement index")
+        (lexical_data / "search-glossary.json").write_text(
+            json.dumps({"replacement": ["unsafe"]}),
+            encoding="utf-8",
+        )
+        return original_materialize(source, scratch, manifest)
+
+    monkeypatch.setattr(
+        environment_module,
+        "materialize_fastembed_snapshot",
+        swap_product_root,
+    )
+
+    environment = open_product_benchmark_environment(
+        state.settings,
+        state.scratch_parent,
+    )
+
+    assert state.search.kwargs["lexicon"].read() == {
+        "VideoScope": ["video scope"]
+    }
+    assert (
+        Path(getattr(state.fastembed_source, "stable_path")) / "model.sentinel"
+    ).read_bytes() == b"model"
+    assert (
+        Path(getattr(state.qdrant_source, "stable_path")) / "index.sentinel"
+    ).read_bytes() == b"index"
+    assert (
+        Path("product/data/models/fastembed/model.sentinel").read_bytes()
+        == b"replacement model"
+    )
+
+    environment.close()
+    assert state.product.close_calls == 1
+    assert list(state.scratch_parent.iterdir()) == []

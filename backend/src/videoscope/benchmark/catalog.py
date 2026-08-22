@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hmac
+from itertools import islice
 import math
 from pathlib import Path
 import re
@@ -155,15 +156,36 @@ class LocalAssetResolver:
     def resolve(self, portable: BenchmarkAsset) -> ResolvedAsset:
         if not isinstance(portable, BenchmarkAsset):
             raise AssetResolutionError("asset_contract_invalid")
+        explicit_video_id = self._bindings.get(portable.asset_id)
+        candidate_limit = 1 if explicit_video_id is not None else 2
         try:
-            candidates_value = self._repository.find_assets_by_sha256(portable.sha256)
-            candidates = tuple(candidates_value)
+            bounded_lookup = getattr(
+                self._repository,
+                "find_assets_by_sha256_bounded",
+                None,
+            )
+            if callable(bounded_lookup):
+                candidates_value = bounded_lookup(
+                    portable.sha256,
+                    limit=candidate_limit,
+                    video_id=explicit_video_id,
+                )
+                enumeration_limit = candidate_limit
+            else:
+                candidates_value = self._repository.find_assets_by_sha256(
+                    portable.sha256
+                )
+                enumeration_limit = 32 if explicit_video_id is not None else 2
+            candidates = tuple(
+                islice(iter(candidates_value), enumeration_limit + 1)
+            )
         except Exception as exc:
             raise AssetResolutionError("asset_lookup_failed") from exc
+        if len(candidates) > enumeration_limit:
+            raise AssetResolutionError("asset_lookup_overflow")
         if not candidates:
             raise AssetResolutionError("asset_missing")
 
-        explicit_video_id = self._bindings.get(portable.asset_id)
         if explicit_video_id is not None:
             matching_candidates = tuple(
                 item

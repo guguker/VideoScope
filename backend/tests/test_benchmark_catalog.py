@@ -258,6 +258,28 @@ def test_local_asset_resolver_sanitizes_repository_failure() -> None:
     assert "/Users/person" not in str(caught.value)
 
 
+def test_local_asset_resolver_bounds_untrusted_candidate_enumeration() -> None:
+    class OverflowingRepository:
+        def __init__(self) -> None:
+            self.consumed = 0
+
+        def find_assets_by_sha256(self, _digest: str):  # type: ignore[no-untyped-def]
+            for index in range(1_000_000):
+                self.consumed += 1
+                yield replace(
+                    _repository_asset(),
+                    video_id=f"video-{index}",
+                )
+
+    repository = OverflowingRepository()
+
+    with pytest.raises(AssetResolutionError) as caught:
+        LocalAssetResolver(repository).resolve(_dataset().assets[0])  # type: ignore[arg-type]
+
+    assert caught.value.code == "asset_lookup_overflow"
+    assert repository.consumed == 3
+
+
 def test_local_asset_resolver_rejects_ambiguous_content_bindings() -> None:
     first = _repository_asset()
     second = replace(first, video_id="video-local-b")

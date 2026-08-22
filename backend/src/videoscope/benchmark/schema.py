@@ -12,6 +12,9 @@ from urllib.parse import urlsplit
 DATASET_SCHEMA_VERSION = 1
 RUN_SCHEMA_VERSION = 2
 MAX_RESULT_EVIDENCE_PER_CASE = 100
+MAX_DATASET_ASSETS = 128
+MAX_ASSET_BYTES = 16 * 1024**3
+MAX_DATASET_MEDIA_BYTES = 128 * 1024**3
 MEASUREMENT_PROTOCOL_COMPONENT_ID = "benchmark_measurement_protocol"
 NOT_MEASURED_PROTOCOL_IDENTITY = "not-measured@1"
 LEGACY_UNMEASURED_PROTOCOL_IDENTITY = "legacy-unmeasured@1"
@@ -218,6 +221,8 @@ class BenchmarkAsset:
         if not isinstance(self.sha256, str) or not _SHA256_RE.fullmatch(self.sha256):
             raise BenchmarkDataError("sha256 must be a lowercase 64-character SHA-256")
         _require_positive_int(self.byte_size, "byte_size")
+        if self.byte_size > MAX_ASSET_BYTES:
+            raise BenchmarkDataError("asset exceeds the benchmark byte size limit")
         duration = _require_finite_float(
             self.duration_seconds,
             "duration_seconds",
@@ -358,6 +363,15 @@ class BenchmarkDataset:
         cases = _validate_typed_tuple(self.cases, QueryCase, "cases")
         if not assets:
             raise BenchmarkDataError("assets must not be empty")
+        if len(assets) > MAX_DATASET_ASSETS:
+            raise BenchmarkDataError("dataset exceeds the benchmark asset count limit")
+        aggregate_media_bytes = 0
+        for asset in assets:
+            aggregate_media_bytes += asset.byte_size
+            if aggregate_media_bytes > MAX_DATASET_MEDIA_BYTES:
+                raise BenchmarkDataError(
+                    "dataset exceeds the aggregate media byte limit"
+                )
         _require_unique(tuple(asset.asset_id for asset in assets), "asset ids")
         digests = tuple(asset.sha256 for asset in assets)
         if len(digests) != len(set(digests)):
