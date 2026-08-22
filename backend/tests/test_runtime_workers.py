@@ -3,7 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from videoscope.config import AppSettings
+from videoscope.model_manifest import fastembed_cache_snapshot_path
 from videoscope.providers.base import ProviderState, ProviderStatus
 from videoscope.providers.roboflow import RoboflowDetector
 from videoscope.repository import Repository
@@ -13,6 +16,24 @@ from videoscope.providers.vision_worker_client import (
 )
 from videoscope.providers.whisper_worker import WhisperWorkerClient
 import videoscope.runtime as runtime_module
+from videoscope.search.vector_index import EmptyVectorIndex
+
+
+class _FakeIndexingToolchain:
+    identity = "sha256:" + "1" * 64
+
+    def __init__(self, ffmpeg) -> None:  # type: ignore[no-untyped-def]
+        self.ffmpeg = ffmpeg
+        self.verify_calls = 0
+        self.create_calls = 0
+
+    def verify_current(self) -> str:
+        self.verify_calls += 1
+        return self.identity
+
+    def create_ffmpeg(self):  # type: ignore[no-untyped-def]
+        self.create_calls += 1
+        return self.ffmpeg
 
 
 def _worker_settings(tmp_path: Path) -> AppSettings:
@@ -193,7 +214,8 @@ def test_build_runtime_keeps_configured_down_workers_on_the_indexer(
     qwen = FakeProvider("qwen-video", ProviderState.NEEDS_CONFIGURATION)
     internvideo = FakeProvider("internvideo", ProviderState.NEEDS_CONFIGURATION)
 
-    monkeypatch.setattr(runtime_module, "FFmpeg", lambda: SimpleNamespace())
+    attested_ffmpeg = runtime_module.FFmpeg()
+    indexing_toolchain = _FakeIndexingToolchain(attested_ffmpeg)
     monkeypatch.setattr(runtime_module, "SceneDetector", lambda **_kwargs: scenes)
     monkeypatch.setattr(runtime_module, "PaddleOCRReader", lambda **_kwargs: ocr)
     monkeypatch.setattr(
@@ -221,16 +243,37 @@ def test_build_runtime_keeps_configured_down_workers_on_the_indexer(
         "create_lighthouse_retriever",
         lambda _settings, _ffmpeg: lighthouse,
     )
-    monkeypatch.setattr(
-        runtime_module,
-        "create_semantic_embedding",
-        lambda **_kwargs: SimpleNamespace(dimensions=2, identity="fixture-embedding"),
+    embedding_contract = runtime_module._reviewed_text_embedding_contract(settings)
+    verified_model = settings.temp_dir / "verified-fastembed-fixture"
+    verified_model.mkdir()
+    text_embedding = runtime_module.SemanticEmbedding(
+        model_name=embedding_contract.model_name,
+        model_repository=embedding_contract.model_repository,
+        model_revision=embedding_contract.model_revision,
+        expected_runtime_version=embedding_contract.runtime_version,
+        algorithm_version=embedding_contract.algorithm_version,
+        dimensions=embedding_contract.dimensions,
+        strict=True,
+        specific_model_path=verified_model,
+        model_content_sha256=embedding_contract.model_content_sha256,
+        model_verifier=lambda: None,
     )
     monkeypatch.setattr(
         runtime_module,
-        "QdrantVectorIndex",
-        lambda *_args, **_kwargs: qdrant,
+        "create_reviewed_semantic_embedding_runtime",
+        lambda **_kwargs: SimpleNamespace(
+            embedding=text_embedding,
+            close=lambda: True,
+        ),
     )
+    qdrant_embeddings: list[object] = []
+
+    def qdrant_factory(*_args, **kwargs):  # type: ignore[no-untyped-def]
+        qdrant_embeddings.append(kwargs["embedding"])
+        return qdrant
+
+    qdrant_factory.id = "qdrant"  # type: ignore[attr-defined]
+    monkeypatch.setattr(runtime_module, "QdrantVectorIndex", qdrant_factory)
     monkeypatch.setattr(
         runtime_module,
         "create_qwen_reranker",
@@ -258,8 +301,86 @@ def test_build_runtime_keeps_configured_down_workers_on_the_indexer(
     monkeypatch.setattr(runtime_module, "WhisperTranscriber", unexpected_in_process)
     monkeypatch.setattr(runtime_module, "RoboflowDetector", unexpected_in_process)
 
-    runtime = runtime_module.build_runtime(settings, repository)
+    runtime = runtime_module.build_runtime(
+        settings,
+        repository,
+        indexing_toolchain=indexing_toolchain,  # type: ignore[arg-type]
+    )
 
+    assert runtime.queue.indexer.ffmpeg is attested_ffmpeg
     assert runtime.queue.indexer.speech is speech
     assert runtime.queue.indexer.objects is vision
     assert runtime.queue.indexer.visual_index is visual
+    assert runtime.queue.indexer.vector_index is qdrant
+    assert runtime.text_embedding_runtime.embedding is text_embedding
+    assert text_embedding.strict_no_fallback is True
+    assert qdrant_embeddings == [text_embedding]
+    assert indexing_toolchain.verify_calls == 1
+    assert indexing_toolchain.create_calls == 1
+
+    expected_plan = object()
+    captured_plan_inputs: list[tuple[object, object]] = []
+
+    def plan_snapshot(candidate_settings, *, indexing_toolchain):  # type: ignore[no-untyped-def]
+        captured_plan_inputs.append((candidate_settings, indexing_toolchain))
+        return expected_plan
+
+    monkeypatch.setattr(
+        runtime_module,
+        "create_video_index_plan_snapshot",
+        plan_snapshot,
+    )
+
+    assert runtime.video_index_plan_factory() is expected_plan
+    assert captured_plan_inputs == [(settings, indexing_toolchain)]
+    assert indexing_toolchain.verify_calls == 1
+    assert indexing_toolchain.create_calls == 1
+
+
+@pytest.mark.parametrize("cache_state", ["missing", "corrupt"])
+def test_build_runtime_starts_lexical_only_without_reviewed_fastembed_cache(
+    tmp_path: Path,
+    cache_state: str,
+) -> None:
+    settings = AppSettings(
+        _env_file=None,
+        data_dir=tmp_path / "clean-data",
+        ocr_worker_python=tmp_path / "missing-ocr-python",
+        ocr_worker_script=(
+            Path(__file__).parents[2] / "scripts" / "paddle-ocr-worker.py"
+        ),
+    )
+    settings.ensure_directories()
+    repository = Repository(settings.database_path)
+    repository.initialize()
+
+    cache_snapshot = fastembed_cache_snapshot_path(
+        settings.models_dir / "fastembed",
+        settings.text_embedding_model,
+    )
+    assert cache_snapshot is not None
+    if cache_state == "corrupt":
+        cache_snapshot.mkdir(parents=True)
+        (cache_snapshot / "config.json").write_text("{}", encoding="utf-8")
+    else:
+        assert list((settings.models_dir / "fastembed").glob("**/*")) == []
+
+    runtime = runtime_module.build_runtime(
+        settings,
+        repository,
+        indexing_toolchain=_FakeIndexingToolchain(runtime_module.FFmpeg()),  # type: ignore[arg-type]
+    )
+    runtime.start()
+    try:
+        assert runtime.text_embedding_runtime is None
+        assert isinstance(runtime.queue.indexer.vector_index, EmptyVectorIndex)
+        assert runtime.search.vector_index is runtime.queue.indexer.vector_index
+        qdrant = runtime.generation_store
+        assert qdrant.status().state is ProviderState.UNAVAILABLE
+        assert qdrant.embedding.strict_no_fallback is True
+        assert qdrant.embedding.backend == "unavailable"
+        with pytest.raises(RuntimeError, match="reviewed semantic embedding"):
+            qdrant.embedding.embed(["must never use a fallback"])
+    finally:
+        assert runtime.close() is True
+    assert list(settings.temp_dir.glob(".videoscope-fastembed-*")) == []

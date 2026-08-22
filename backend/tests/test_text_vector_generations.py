@@ -206,7 +206,7 @@ def test_schema_v8_migration_preserves_v5_rows_and_is_idempotent(tmp_path) -> No
     migrated.initialize()
     migrated.initialize()
 
-    assert migrated.schema_version() == LATEST_SCHEMA_VERSION == 8
+    assert migrated.schema_version() == LATEST_SCHEMA_VERSION == 9
     assert migrated.get_video("video-1") is not None
     assert [item.id for item in migrated.list_active_segments("video-1", StageKind.SPEECH)] == [
         "speech-1"
@@ -482,4 +482,48 @@ def test_corrupt_active_vector_pointer_and_manifest_fail_closed(tmp_path) -> Non
             video_ids=["video-1"],
             text_specification=text,
             semantic_specifications=semantic,
+        )
+
+
+def test_benchmark_text_binding_rejects_declared_size_before_materialization(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = _repository_with_video(tmp_path)
+    semantic = _semantic_specifications()
+    text = _text_specification(semantic)
+    _start_text_run(repository, text, run_id="text-run-1")
+    plan = repository.reserve_text_vector_generation(
+        "text-run-1",
+        index_specification=_index_specification(),
+        semantic_specifications=semantic,
+        generation_id="text-generation-1",
+    )
+    repository.commit_text_vector_generation(
+        "text-run-1",
+        receipt=_complete_receipt(plan),
+    )
+    with repository._connect() as connection:
+        connection.execute("DROP TRIGGER text_vector_generations_immutable_update")
+        connection.execute(
+            "UPDATE text_vector_generations SET point_count = ? WHERE generation_id = ?",
+            (1_000_000_000, plan.generation_id),
+        )
+    monkeypatch.setattr(
+        Repository,
+        "_validate_referenced_text_vector_inputs",
+        classmethod(
+            lambda *_args, **_kwargs: pytest.fail(
+                "oversized point declarations must fail before materialization"
+            )
+        ),
+    )
+
+    with pytest.raises(ValueError, match="benchmark point limit"):
+        repository.get_text_vector_search_binding_bounded(
+            plan.generation_id,
+            max_points=10,
+            max_segments=10,
+            max_text_bytes=1024,
+            max_metadata_bytes=1024,
         )

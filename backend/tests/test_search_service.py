@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 import pytest
 
 from videoscope.artifacts import (
@@ -8,15 +10,23 @@ from videoscope.artifacts import (
 )
 from videoscope.repository import Repository, SegmentRecord
 from videoscope.search.service import (
+    EvaluationSearchConfiguration,
     SearchDependencyError,
+    SearchAssetBinding,
     SearchService,
     _hybridize,
     corroborate_lighthouse_hits,
     refine_speech_hit,
 )
 from videoscope.search.vector_index import EmptyVectorIndex, MemoryVectorIndex
-from videoscope.search.fusion import EvidenceHit
+from videoscope.search.fusion import EvidenceHit, FusedResult
 from videoscope.search.visual_index import SiglipVisualIndex
+from videoscope.providers.base import ProviderState, ProviderStatus
+
+
+_PINNED_SOURCE_SHA256 = (
+    "84d89877f0d4041efb6bf91a16f0248f2fd573e6af05c19f96bedb9f882f7882"
+)
 
 
 def _stage_specification(kind: StageKind) -> StageSpecification:
@@ -24,6 +34,36 @@ def _stage_specification(kind: StageKind) -> StageSpecification:
         kind=kind,
         schema_version=1,
         implementation_revision=f"tests.search.{kind.value}.v1",
+    )
+
+
+def _attest_memory_index(index: MemoryVectorIndex) -> None:
+    index.benchmark_attestation = lambda: {  # type: ignore[attr-defined]
+        "embedding": {
+            "algorithm_version": "hash-embedding-test-v1",
+            "dimensions": index.index_specification.dimensions,
+            "embedding_identity": index.index_specification.embedding_identity,
+            "model_content_sha256": "8" * 64,
+            "model_name": "memory-vector-test-model",
+            "model_repository": "local-test-fixture",
+            "model_revision": "test-revision@1",
+            "runtime_version": "memory-vector-test-runtime@1",
+        },
+        "index": {
+            "collection_name": index.index_specification.collection_name,
+            "index_specification_hash": index.index_specification.specification_hash,
+            "snapshot_sha256": "7" * 64,
+        },
+        "provider": index.id,
+        "schema_version": 1,
+        "strict_no_fallback": True,
+    }
+    index.validate_generation_for_benchmark_snapshot = (  # type: ignore[attr-defined]
+        lambda binding: index.validate_generation(binding, exhaustive=True)
+    )
+    index.verify_benchmark_snapshot_current = lambda: True  # type: ignore[attr-defined]
+    index.release_benchmark_snapshot_bindings = (  # type: ignore[attr-defined]
+        lambda _bindings: None
     )
 
 
@@ -245,13 +285,14 @@ class StaleMomentSearch(RecordingMomentSearch):
 def _repository_with_video(tmp_path) -> Repository:
     repository = Repository(tmp_path / "search.sqlite3")
     repository.initialize()
+    (tmp_path / "video-1.mp4").write_bytes(b"0123456789")
     repository.create_video_with_asset(
         video_id="video-1",
         original_name="match.mp4",
         stored_name="video-1.mp4",
         media_path=str(tmp_path / "video-1.mp4"),
         size_bytes=10,
-        source_sha256="0" * 64,
+        source_sha256=_PINNED_SOURCE_SHA256,
     )
     repository.update_video("video-1", status="ready")
     return repository
@@ -841,3 +882,980 @@ def test_search_scopes_every_provider_and_output_to_ready_videos(tmp_path) -> No
     assert visual_index.video_ids == ["video-1"]
     assert moment_search.video_ids == ["video-1"]
     assert {result.video_id for result in results} == {"video-1"}
+
+
+def _pinned_asset_binding() -> SearchAssetBinding:
+    return SearchAssetBinding(
+        external_id="portable-asset",
+        video_id="video-1",
+        source_sha256=_PINNED_SOURCE_SHA256,
+        byte_size=10,
+        duration_seconds=12.0,
+    )
+
+
+def _text_evaluation_configuration() -> EvaluationSearchConfiguration:
+    return EvaluationSearchConfiguration(
+        modalities=("objects", "ocr", "speech"),
+        modality_weights=(("objects", 0.92), ("ocr", 0.88), ("speech", 1.0)),
+        text_search="lexical_and_semantic",
+        visual_search="disabled",
+        temporal_refinement=False,
+        lighthouse=False,
+        reranker="none",
+        reranker_trigger="disabled",
+        reranker_candidate_limit=0,
+        result_limit=20,
+    )
+
+
+class _ForbiddenQueryRouter:
+    @staticmethod
+    def route(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        raise AssertionError("the pinned evaluation boundary must not call QueryRouter")
+
+
+class _ForbiddenVisualProvider:
+    def __getattribute__(self, name: str):  # type: ignore[no-untyped-def]
+        if name.startswith("__"):
+            return object.__getattribute__(self, name)
+        raise AssertionError("the text-only plan must not inspect or call visual search")
+
+
+def _ready_generation_search_service(tmp_path):  # type: ignore[no-untyped-def]
+    repository = _repository_with_video(tmp_path)
+    repository.update_video("video-1", duration=12.0)
+    specifications = _indexing_specifications()
+    speech = SegmentRecord(
+        id="speech-current",
+        video_id="video-1",
+        start=3,
+        end=6,
+        modality="speech",
+        text="player made winning basket",
+        confidence=0.9,
+        metadata={},
+        thumbnail_path=None,
+    )
+    _publish_segments(repository, specifications.speech, [speech])
+    _publish_segments(repository, specifications.ocr, [])
+    _publish_segments(repository, specifications.objects, [])
+    index = MemoryVectorIndex()
+    _attest_memory_index(index)
+    _publish_text_vectors(repository, index, specifications)
+    service = SearchService(
+        repository,
+        index,
+        visual_search=_ForbiddenVisualProvider(),  # type: ignore[arg-type]
+        query_router=_ForbiddenQueryRouter(),  # type: ignore[arg-type]
+        specification_resolver=lambda: specifications,
+        media_root=tmp_path,
+    )
+    return repository, specifications, index, service
+
+
+def test_pinned_evaluation_bypasses_router_and_uses_exact_text_generations(
+    tmp_path,
+) -> None:
+    repository, specifications, index, service = _ready_generation_search_service(
+        tmp_path
+    )
+    del repository, specifications
+    searched: list[tuple[tuple[str, ...], set[str] | None, bool]] = []
+    original_search = index.search_generations
+
+    def recording_search(
+        query,
+        *,
+        bindings,
+        modalities=None,
+        limit=50,
+        exhaustive_validation=False,
+    ):  # type: ignore[no-untyped-def]
+        searched.append(
+            (
+                tuple(binding.generation_id for binding in bindings),
+                modalities,
+                exhaustive_validation,
+            )
+        )
+        return original_search(
+            query,
+            bindings=bindings,
+            modalities=modalities,
+            limit=limit,
+            exhaustive_validation=exhaustive_validation,
+        )
+
+    index.search_generations = recording_search  # type: ignore[method-assign]
+    session = service.open_pinned_evaluation(
+        _text_evaluation_configuration(),
+        (_pinned_asset_binding(),),
+    )
+
+    results = session.search("winning basket", ("video-1",), limit=20)
+
+    assert results[0].video_id == "video-1"
+    assert len(searched) == 1
+    generation_ids, modalities, exhaustive = searched[0]
+    assert len(generation_ids) == 1
+    assert modalities == {"objects", "ocr", "speech"}
+    assert exhaustive is False
+
+
+def test_pinned_evaluation_invalidates_instead_of_following_new_active_pointer(
+    tmp_path,
+) -> None:
+    repository, specifications, index, service = _ready_generation_search_service(
+        tmp_path
+    )
+    session = service.open_pinned_evaluation(
+        _text_evaluation_configuration(),
+        (_pinned_asset_binding(),),
+    )
+    original_generation = repository.get_active_text_vector_generation("video-1")
+    assert original_generation is not None
+    replacement_generation = _publish_text_vectors(repository, index, specifications)
+    assert replacement_generation != original_generation.generation_id
+
+    assert session.capability_state("video-1", "text_vectors") == "stale"
+    with pytest.raises(SearchDependencyError, match="changed"):
+        session.search("winning basket", ("video-1",), limit=20)
+
+
+class _PinnedVisualProvider:
+    id = "siglip2"
+    model_identity = "siglip-model@revision"
+
+    def __init__(self) -> None:
+        self.generation_id = "1" * 32
+        self.descriptor_generation_id: str | None = None
+        self.forced_descriptor_calls = 0
+        self.search_calls: list[dict[str, str]] = []
+
+    @property
+    def specification_identity(self) -> str:
+        return "2" * 64
+
+    def status(self, *, check_index: bool = True) -> ProviderStatus:
+        del check_index
+        return ProviderStatus(self.id, self.id, ProviderState.READY, "ready")
+
+    def active_generation_id(self, _video_id: str) -> str:
+        return self.generation_id
+
+    def generation_descriptor(
+        self,
+        video_id: str,
+        generation_id: str,
+        *,
+        force_content_validation: bool = False,
+    ) -> dict[str, object] | None:
+        if force_content_validation:
+            self.forced_descriptor_calls += 1
+        if generation_id != self.generation_id:
+            return None
+        return {
+            "content_sha256": "6" * 64,
+            "duration_seconds": 12.0,
+            "generation_id": self.descriptor_generation_id or generation_id,
+            "source_sha256": _PINNED_SOURCE_SHA256,
+            "source_size_bytes": 10,
+            "specification_hash": self.specification_identity,
+            "video_id": video_id,
+        }
+
+    def search_generations(
+        self,
+        query: str,
+        *,
+        generation_bindings: dict[str, dict[str, object]],
+        limit: int,
+    ) -> list[EvidenceHit]:
+        del limit
+        self.search_calls.append(
+            {
+                video_id: str(binding["generation_id"])
+                for video_id, binding in generation_bindings.items()
+            }
+        )
+        return [
+            EvidenceHit(
+                "video-1",
+                "visual:pinned",
+                4,
+                8,
+                "visual",
+                0.9,
+                query,
+            )
+        ]
+
+
+class _PinnedLighthouseProvider:
+    id = "lighthouse"
+
+    def __init__(self) -> None:
+        self.generation_id = "3" * 32
+        self.search_calls: list[dict[str, str]] = []
+        self.forced_descriptor_calls = 0
+
+    @property
+    def identity(self) -> dict[str, object]:
+        return {
+            "model_identity": "lighthouse-model@revision",
+            "runtime_identity": "lighthouse-runtime@revision",
+            "specification_hash": "4" * 64,
+        }
+
+    def status(self) -> ProviderStatus:
+        return ProviderStatus(self.id, self.id, ProviderState.READY, "ready")
+
+    def active_generation_id(self, _video_id: str) -> str:
+        return self.generation_id
+
+    def generation_descriptor(
+        self,
+        video_id: str,
+        generation_id: str,
+        *,
+        force_content_validation: bool = False,
+    ) -> dict[str, object] | None:
+        if force_content_validation:
+            self.forced_descriptor_calls += 1
+        if generation_id != self.generation_id:
+            return None
+        return {
+            "duration_seconds": 12.0,
+            "generation_id": generation_id,
+            "manifest_sha256": "7" * 64,
+            "source_sha256": _PINNED_SOURCE_SHA256,
+            "source_size_bytes": 10,
+            "specification_hash": "4" * 64,
+            "video_id": video_id,
+        }
+
+    def search_generations(
+        self,
+        query: str,
+        generation_bindings: dict[str, dict[str, object]],
+        *,
+        limit: int,
+    ) -> list[EvidenceHit]:
+        del limit
+        self.search_calls.append(
+            {
+                video_id: str(binding["generation_id"])
+                for video_id, binding in generation_bindings.items()
+            }
+        )
+        return [
+            EvidenceHit(
+                "video-1",
+                "lighthouse:pinned",
+                4,
+                8,
+                "lighthouse",
+                0.85,
+                query,
+            )
+        ]
+
+
+class _PinnedTemporalRefiner:
+    identity = {"implementation": "pinned-refiner-v1"}
+
+    def __init__(self) -> None:
+        self.called = False
+
+    @staticmethod
+    def benchmark_attestation() -> dict[str, object]:
+        return {
+            "ffmpeg_identity": "ffmpeg-test-binary@sha256:" + "9" * 64,
+            "implementation_identity": "pinned-refiner-v1",
+            "runtime_identity": "temporal-test-runtime@1",
+            "scorer_identity": "siglip-test-scorer@revision",
+            "scratch_policy_identity": "isolated-session-scratch@1",
+            "source_bound": True,
+            "strict_complete": True,
+        }
+
+    def refine_strict(
+        self,
+        _query: str,
+        hits: list[EvidenceHit],
+    ) -> list[EvidenceHit]:
+        self.called = True
+        return hits
+
+
+class _PinnedReranker:
+    def __init__(self, provider_id: str, top_candidates: int) -> None:
+        self.id = provider_id
+        self.top_candidates = top_candidates
+        self.called = False
+        self.last_candidate_count = 0
+
+    @property
+    def identity(self) -> dict[str, object]:
+        return {"provider": self.id, "model": f"{self.id}-model@revision"}
+
+    def status(self) -> ProviderStatus:
+        return ProviderStatus(self.id, self.id, ProviderState.READY, "ready")
+
+    def benchmark_attestation(self) -> dict[str, object]:
+        return {
+            "candidate_limit": self.top_candidates,
+            "model_identity": f"{self.id}-model@revision",
+            "protocol_identity": f"{self.id}-protocol@1",
+            "provider": self.id,
+            "runtime_identity": f"{self.id}-runtime@1",
+            "source_bound": True,
+            "strict_complete": True,
+        }
+
+    def rerank_strict(self, _query: str, candidates):  # type: ignore[no-untyped-def]
+        self.called = True
+        self.last_candidate_count = len(candidates)
+        return list(reversed(candidates))
+
+
+def _full_evaluation_configuration(
+    reranker: str,
+) -> EvaluationSearchConfiguration:
+    candidate_limit = {"qwen": 12, "internvideo": 4}[reranker]
+    return EvaluationSearchConfiguration(
+        modalities=("lighthouse", "objects", "ocr", "speech", "visual"),
+        modality_weights=(
+            ("lighthouse", 0.78),
+            ("objects", 0.92),
+            ("ocr", 0.88),
+            ("speech", 1.0),
+            ("visual", 1.08),
+        ),
+        text_search="lexical_and_semantic",
+        visual_search="dense_siglip",
+        temporal_refinement=True,
+        lighthouse=True,
+        reranker=reranker,
+        reranker_trigger="all_candidates",
+        reranker_candidate_limit=candidate_limit,
+        result_limit=20,
+    )
+
+
+def test_pinned_evaluation_uses_exact_weights_and_only_selected_reranker(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    repository, specifications, index, _service = _ready_generation_search_service(
+        tmp_path
+    )
+    visual = _PinnedVisualProvider()
+    lighthouse = _PinnedLighthouseProvider()
+    refiner = _PinnedTemporalRefiner()
+    qwen = _PinnedReranker("qwen-video", 12)
+    internvideo = _PinnedReranker("internvideo", 4)
+    service = SearchService(
+        repository,
+        index,
+        moment_search=lighthouse,
+        visual_search=visual,
+        query_router=_ForbiddenQueryRouter(),  # type: ignore[arg-type]
+        temporal_refiner=refiner,
+        evaluation_rerankers={"qwen": qwen, "internvideo": internvideo},
+        specification_resolver=lambda: specifications,
+        media_root=tmp_path,
+    )
+    import videoscope.search.service as service_module
+
+    weights: list[dict[str, float] | None] = []
+    original_fuse = service_module.fuse_hits
+
+    def recording_fuse(hits, **kwargs):  # type: ignore[no-untyped-def]
+        weights.append(kwargs.get("modality_weights"))
+        original_fuse(hits, **kwargs)
+        return [
+            FusedResult(
+                video_id="video-1",
+                start=float(index * 2),
+                end=float(index * 2 + 1),
+                score=1.0 - index / 10,
+                modalities=["visual"],
+                evidence=[
+                    EvidenceHit(
+                        video_id="video-1",
+                        segment_id=f"candidate-{index}",
+                        start=float(index * 2),
+                        end=float(index * 2 + 1),
+                        modality="visual",
+                        score=1.0 - index / 10,
+                        text="candidate",
+                    )
+                ],
+            )
+            for index in range(6)
+        ]
+
+    monkeypatch.setattr(service_module, "fuse_hits", recording_fuse)
+    configuration = _full_evaluation_configuration("internvideo")
+    session = service.open_pinned_evaluation(
+        configuration,
+        (_pinned_asset_binding(),),
+    )
+
+    results = session.search("Мозгов", ("video-1",), limit=20)
+
+    assert results
+    assert visual.search_calls == [{"video-1": "1" * 32}]
+    assert lighthouse.search_calls == [{"video-1": "3" * 32}]
+    assert refiner.called
+    assert internvideo.called
+    assert internvideo.last_candidate_count == 4
+    assert not qwen.called
+    assert weights == [dict(configuration.modality_weights)]
+    assert [result.start for result in results] == [6.0, 4.0, 2.0, 0.0, 8.0, 10.0]
+
+    session.close()
+
+    assert visual.forced_descriptor_calls == 1
+    assert lighthouse.forced_descriptor_calls == 1
+
+
+def test_pinned_evaluation_marks_visual_pointer_drift_stale(tmp_path) -> None:
+    repository, specifications, index, _service = _ready_generation_search_service(
+        tmp_path
+    )
+    visual = _PinnedVisualProvider()
+    service = SearchService(
+        repository,
+        index,
+        visual_search=visual,
+        temporal_refiner=_PinnedTemporalRefiner(),
+        specification_resolver=lambda: specifications,
+        media_root=tmp_path,
+    )
+    configuration = EvaluationSearchConfiguration(
+        modalities=("objects", "ocr", "speech", "visual"),
+        modality_weights=(
+            ("objects", 0.92),
+            ("ocr", 0.88),
+            ("speech", 1.0),
+            ("visual", 1.08),
+        ),
+        text_search="lexical_and_semantic",
+        visual_search="dense_siglip",
+        temporal_refinement=True,
+        lighthouse=False,
+        reranker="none",
+        reranker_trigger="disabled",
+        reranker_candidate_limit=0,
+        result_limit=20,
+    )
+    session = service.open_pinned_evaluation(
+        configuration,
+        (_pinned_asset_binding(),),
+    )
+    visual.generation_id = "5" * 32
+
+    assert session.capability_state("video-1", "visual_dense") == "stale"
+    with pytest.raises(SearchDependencyError, match="changed"):
+        session.search("query", ("video-1",), limit=20)
+
+
+def test_pinned_evaluation_rejects_cross_generation_visual_descriptor(
+    tmp_path,
+) -> None:
+    repository, specifications, index, _service = _ready_generation_search_service(
+        tmp_path
+    )
+    visual = _PinnedVisualProvider()
+    visual.descriptor_generation_id = "a" * 32
+    service = SearchService(
+        repository,
+        index,
+        visual_search=visual,
+        specification_resolver=lambda: specifications,
+        media_root=tmp_path,
+    )
+    configuration = EvaluationSearchConfiguration(
+        modalities=("visual",),
+        modality_weights=(("visual", 1.08),),
+        text_search="disabled",
+        visual_search="dense_siglip",
+        temporal_refinement=False,
+        lighthouse=False,
+        reranker="none",
+        reranker_trigger="disabled",
+        reranker_candidate_limit=0,
+        result_limit=20,
+    )
+
+    session = service.open_pinned_evaluation(
+        configuration,
+        (_pinned_asset_binding(),),
+    )
+
+    assert session.capability_state("video-1", "visual_dense") == "stale"
+    with pytest.raises(SearchDependencyError, match="unavailable"):
+        session.search("query", ("video-1",), limit=20)
+
+
+def test_pinned_text_requires_attested_no_fallback_query_embedding(tmp_path) -> None:
+    repository, _specifications, index, service = _ready_generation_search_service(
+        tmp_path
+    )
+    del repository
+    del index.benchmark_attestation  # type: ignore[attr-defined]
+
+    session = service.open_pinned_evaluation(
+        _text_evaluation_configuration(),
+        (_pinned_asset_binding(),),
+    )
+
+    assert session.capability_state("video-1", "text_vectors") == "not_configured"
+    with pytest.raises(SearchDependencyError, match="unavailable"):
+        session.search("query", ("video-1",), limit=20)
+
+
+def test_pinned_temporal_refinement_requires_runtime_and_scratch_attestation(
+    tmp_path,
+) -> None:
+    repository, specifications, index, _service = _ready_generation_search_service(
+        tmp_path
+    )
+    visual = _PinnedVisualProvider()
+    refiner = _PinnedTemporalRefiner()
+    refiner.benchmark_attestation = None  # type: ignore[method-assign]
+    service = SearchService(
+        repository,
+        index,
+        visual_search=visual,
+        temporal_refiner=refiner,
+        specification_resolver=lambda: specifications,
+        media_root=tmp_path,
+    )
+    configuration = EvaluationSearchConfiguration(
+        modalities=("objects", "ocr", "speech", "visual"),
+        modality_weights=(
+            ("objects", 0.92),
+            ("ocr", 0.88),
+            ("speech", 1.0),
+            ("visual", 1.08),
+        ),
+        text_search="lexical_and_semantic",
+        visual_search="dense_siglip",
+        temporal_refinement=True,
+        lighthouse=False,
+        reranker="none",
+        reranker_trigger="disabled",
+        reranker_candidate_limit=0,
+        result_limit=20,
+    )
+
+    session = service.open_pinned_evaluation(
+        configuration,
+        (_pinned_asset_binding(),),
+    )
+
+    assert (
+        session.capability_state("video-1", "temporal_refinement")
+        == "not_configured"
+    )
+    with pytest.raises(SearchDependencyError, match="unavailable"):
+        session.search("query", ("video-1",), limit=20)
+
+
+def test_dense_only_identity_excludes_unselected_text_components(tmp_path) -> None:
+    repository, specifications, index, _service = _ready_generation_search_service(
+        tmp_path
+    )
+    visual = _PinnedVisualProvider()
+    service = SearchService(
+        repository,
+        index,
+        visual_search=visual,
+        specification_resolver=lambda: specifications,
+        media_root=tmp_path,
+    )
+    configuration = EvaluationSearchConfiguration(
+        modalities=("visual",),
+        modality_weights=(("visual", 1.08),),
+        text_search="disabled",
+        visual_search="dense_siglip",
+        temporal_refinement=False,
+        lighthouse=False,
+        reranker="none",
+        reranker_trigger="disabled",
+        reranker_candidate_limit=0,
+        result_limit=20,
+    )
+
+    session = service.open_pinned_evaluation(
+        configuration,
+        (_pinned_asset_binding(),),
+    )
+    identities = session.identities()
+
+    assert {item.component_id for item in identities.model} == {"visual_embedding"}
+    assert {item.component_id for item in identities.index} == {
+        "visual_generations"
+    }
+    index.index_specification = replace(  # type: ignore[misc]
+        index.index_specification,
+        embedding_identity="unrelated-text-model@2",
+    )
+    assert session.capability_state("video-1", "visual_dense") == "complete"
+
+
+def test_pinned_evaluation_rehashes_source_for_every_profile(tmp_path) -> None:
+    _repository, _specifications, _index, service = _ready_generation_search_service(
+        tmp_path
+    )
+    session = service.open_pinned_evaluation(
+        _text_evaluation_configuration(),
+        (_pinned_asset_binding(),),
+    )
+    (tmp_path / "video-1.mp4").write_bytes(b"9876543210")
+
+    assert session.capability_state("video-1", "text_vectors") == "stale"
+    with pytest.raises(SearchDependencyError, match="changed"):
+        session.search("query", ("video-1",), limit=20)
+    with pytest.raises(SearchDependencyError, match="final identity"):
+        session.close()
+
+
+def test_pinned_evaluation_hashes_media_only_at_open_and_close(tmp_path) -> None:
+    repository, _specifications, _index, service = _ready_generation_search_service(
+        tmp_path
+    )
+    native_verify = repository.verify_existing_asset_identity
+    calls = 0
+
+    def recording_verify(video_id, *, media_root):  # type: ignore[no-untyped-def]
+        nonlocal calls
+        calls += 1
+        return native_verify(video_id, media_root=media_root)
+
+    repository.verify_existing_asset_identity = recording_verify  # type: ignore[method-assign]
+    session = service.open_pinned_evaluation(
+        _text_evaluation_configuration(),
+        (_pinned_asset_binding(),),
+    )
+
+    assert calls == 1
+    assert session.capability_state("video-1", "text_vectors") == "complete"
+    assert session.capability_state("video-1", "text_vectors") == "complete"
+    assert session.search("winning basket", ("video-1",), limit=20)
+    assert session.search("winning basket", ("video-1",), limit=20)
+    assert calls == 1
+
+    session.close()
+
+    assert calls == 2
+
+
+@pytest.mark.parametrize("final_snapshot_is_current", [True, False])
+def test_pinned_evaluation_releases_text_attestation_after_final_verification(
+    tmp_path,
+    final_snapshot_is_current,
+) -> None:  # type: ignore[no-untyped-def]
+    _repository, _specifications, index, service = _ready_generation_search_service(
+        tmp_path
+    )
+    released: list[tuple[object, ...]] = []
+
+    def release(bindings):  # type: ignore[no-untyped-def]
+        released.append(bindings)
+
+    index.release_benchmark_snapshot_bindings = release  # type: ignore[attr-defined]
+    session = service.open_pinned_evaluation(
+        _text_evaluation_configuration(),
+        (_pinned_asset_binding(),),
+    )
+    text_binding = session._states[0].text_binding
+    assert text_binding is not None
+    index.verify_benchmark_snapshot_current = (  # type: ignore[attr-defined]
+        lambda: final_snapshot_is_current
+    )
+
+    if final_snapshot_is_current:
+        session.close()
+    else:
+        with pytest.raises(SearchDependencyError, match="final identity"):
+            session.close()
+
+    assert released == [(text_binding,)]
+    session.close()
+    assert released == [(text_binding,)]
+
+
+@pytest.mark.parametrize("release_fails", [False, True])
+def test_pinned_evaluation_releases_text_attestation_when_construction_fails(
+    tmp_path,
+    monkeypatch,
+    release_fails,
+) -> None:  # type: ignore[no-untyped-def]
+    _repository, _specifications, index, service = _ready_generation_search_service(
+        tmp_path
+    )
+    validated: list[object] = []
+    released: list[tuple[object, ...]] = []
+    native_validate = index.validate_generation_for_benchmark_snapshot
+
+    def validate(binding):  # type: ignore[no-untyped-def]
+        validated.append(binding)
+        return native_validate(binding)
+
+    def release(bindings):  # type: ignore[no-untyped-def]
+        released.append(bindings)
+        if release_fails:
+            raise RuntimeError("attestation release failed")
+
+    def fail_identity_build(_session):  # type: ignore[no-untyped-def]
+        raise RuntimeError("identity build failed")
+
+    index.validate_generation_for_benchmark_snapshot = validate  # type: ignore[attr-defined]
+    index.release_benchmark_snapshot_bindings = release  # type: ignore[attr-defined]
+    monkeypatch.setattr(
+        "videoscope.search.service.PinnedProductSearchSession._build_identities",
+        fail_identity_build,
+    )
+
+    with pytest.raises(RuntimeError, match="identity build failed") as captured:
+        service.open_pinned_evaluation(
+            _text_evaluation_configuration(),
+            (_pinned_asset_binding(),),
+        )
+
+    assert len(validated) == 1
+    assert released == [(validated[0],)]
+    if release_fails:
+        assert any(
+            "attestation release failed" in note
+            for note in getattr(captured.value, "__notes__", ())
+        )
+
+
+def test_pinned_evaluation_requires_text_attestation_release_capability(tmp_path) -> None:
+    _repository, _specifications, index, service = _ready_generation_search_service(
+        tmp_path
+    )
+    del index.release_benchmark_snapshot_bindings  # type: ignore[attr-defined]
+
+    session = service.open_pinned_evaluation(
+        _text_evaluation_configuration(),
+        (_pinned_asset_binding(),),
+    )
+
+    assert session.capability_state("video-1", "text_vectors") == "not_configured"
+    session.close()
+
+
+def test_pinned_search_latency_excludes_full_sqlite_generation_revalidation(
+    tmp_path,
+) -> None:
+    repository, _specifications, _index, service = _ready_generation_search_service(
+        tmp_path
+    )
+    native_text_binding = repository.get_text_vector_search_binding
+    native_segment_snapshot = repository.get_segment_generation_snapshot
+    calls = {"text_binding": 0, "segment_snapshot": 0}
+
+    def recording_text_binding(generation_id):  # type: ignore[no-untyped-def]
+        calls["text_binding"] += 1
+        return native_text_binding(generation_id)
+
+    def recording_segment_snapshot(generation_id):  # type: ignore[no-untyped-def]
+        calls["segment_snapshot"] += 1
+        return native_segment_snapshot(generation_id)
+
+    repository.get_text_vector_search_binding = recording_text_binding  # type: ignore[method-assign]
+    repository.get_segment_generation_snapshot = recording_segment_snapshot  # type: ignore[method-assign]
+    session = service.open_pinned_evaluation(
+        _text_evaluation_configuration(),
+        (_pinned_asset_binding(),),
+    )
+    assert session.capability_state("video-1", "text_vectors") == "complete"
+    calls.update(text_binding=0, segment_snapshot=0)
+
+    assert session.search("winning basket", ("video-1",), limit=20)
+    assert session.search("winning basket", ("video-1",), limit=20)
+
+    assert calls == {"text_binding": 0, "segment_snapshot": 0}
+    session.close()
+    assert calls == {"text_binding": 0, "segment_snapshot": 0}
+
+
+def test_pinned_text_preflight_uses_only_bounded_repository_materializers(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository, _specifications, _index, service = _ready_generation_search_service(
+        tmp_path
+    )
+    bounded_binding = repository.get_text_vector_search_binding_bounded
+    bounded_segments = repository.get_segment_generation_snapshot_bounded
+    calls = {"binding": 0, "segments": 0}
+
+    def recording_binding(generation_id, **limits):  # type: ignore[no-untyped-def]
+        calls["binding"] += 1
+        return bounded_binding(generation_id, **limits)
+
+    def recording_segments(generation_id, **limits):  # type: ignore[no-untyped-def]
+        calls["segments"] += 1
+        return bounded_segments(generation_id, **limits)
+
+    monkeypatch.setattr(
+        repository,
+        "get_text_vector_search_binding_bounded",
+        recording_binding,
+    )
+    monkeypatch.setattr(
+        repository,
+        "get_segment_generation_snapshot_bounded",
+        recording_segments,
+    )
+    monkeypatch.setattr(
+        repository,
+        "get_text_vector_search_binding",
+        lambda *_args: pytest.fail("benchmark preflight used an unbounded binding read"),
+    )
+    monkeypatch.setattr(
+        repository,
+        "get_segment_generation_snapshot",
+        lambda *_args: pytest.fail("benchmark preflight used an unbounded segment read"),
+    )
+
+    session = service.open_pinned_evaluation(
+        _text_evaluation_configuration(),
+        (_pinned_asset_binding(),),
+    )
+
+    assert session.capability_state("video-1", "text_vectors") == "complete"
+    assert calls["binding"] == 2
+    assert calls["segments"] >= 2
+    session.close()
+    assert calls == {"binding": 3, "segments": 9}
+
+
+def test_pinned_evaluation_requires_canonical_media_root(tmp_path) -> None:
+    repository, specifications, index, _service = _ready_generation_search_service(
+        tmp_path
+    )
+    service = SearchService(
+        repository,
+        index,
+        specification_resolver=lambda: specifications,
+    )
+
+    with pytest.raises(SearchDependencyError, match="canonical media root"):
+        service.open_pinned_evaluation(
+            _text_evaluation_configuration(),
+            (_pinned_asset_binding(),),
+        )
+
+
+def test_pinned_evaluation_rejects_unbounded_asset_and_media_scope_before_reads(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository, _specifications, _index, service = _ready_generation_search_service(
+        tmp_path
+    )
+    monkeypatch.setattr(
+        repository,
+        "get_video",
+        lambda *_args: pytest.fail("scope limits must precede repository reads"),
+    )
+    too_many = tuple(
+        SearchAssetBinding(
+            external_id=f"asset-{index}",
+            video_id=f"video-{index}",
+            source_sha256=f"{index + 1:064x}",
+            byte_size=1,
+            duration_seconds=1.0,
+        )
+        for index in range(129)
+    )
+    with pytest.raises(SearchDependencyError, match="asset limit"):
+        service.open_pinned_evaluation(_text_evaluation_configuration(), too_many)
+
+    oversized = SearchAssetBinding(
+        external_id="oversized",
+        video_id="oversized",
+        source_sha256="f" * 64,
+        byte_size=16 * 1024**3 + 1,
+        duration_seconds=1.0,
+    )
+    with pytest.raises(SearchDependencyError, match="media byte limit"):
+        service.open_pinned_evaluation(
+            _text_evaluation_configuration(),
+            (oversized,),
+        )
+
+
+def test_pinned_evaluation_enforces_aggregate_text_budget(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _repository, _specifications, _index, service = _ready_generation_search_service(
+        tmp_path
+    )
+    original = service.open_pinned_evaluation(
+        _text_evaluation_configuration(),
+        (_pinned_asset_binding(),),
+    )
+    template = original._states[0]
+    original._closed = True
+    monkeypatch.setattr("videoscope.search.service._BENCHMARK_MAX_TEXT_POINTS", 1)
+    monkeypatch.setattr(
+        "videoscope.search.service.PinnedProductSearchSession._pin_asset",
+        lambda _self, binding: replace(template, binding=binding),
+    )
+    assets = (
+        _pinned_asset_binding(),
+        SearchAssetBinding(
+            external_id="portable-asset-2",
+            video_id="video-2",
+            source_sha256="e" * 64,
+            byte_size=10,
+            duration_seconds=12.0,
+        ),
+    )
+
+    with pytest.raises(SearchDependencyError, match="aggregate point limit"):
+        service.open_pinned_evaluation(_text_evaluation_configuration(), assets)
+
+
+def test_pinned_evaluation_rejects_database_path_outside_canonical_media_root(
+    tmp_path,
+) -> None:
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    source = outside / "video-1.mp4"
+    source.write_bytes(b"0123456789")
+    repository = Repository(tmp_path / "outside.sqlite3")
+    repository.initialize()
+    repository.create_video_with_asset(
+        video_id="video-1",
+        original_name="match.mp4",
+        stored_name="video-1.mp4",
+        media_path=str(source),
+        size_bytes=10,
+        source_sha256=_PINNED_SOURCE_SHA256,
+    )
+    repository.update_video("video-1", status="ready", duration=12.0)
+    service = SearchService(
+        repository,
+        MemoryVectorIndex(),
+        media_root=managed,
+    )
+
+    with pytest.raises(SearchDependencyError, match="media source"):
+        service.open_pinned_evaluation(
+            _text_evaluation_configuration(),
+            (_pinned_asset_binding(),),
+        )

@@ -1,7 +1,9 @@
 from pathlib import Path
+import subprocess
 
 import pytest
 
+import videoscope.media.ffmpeg as ffmpeg_module
 from videoscope.media.ffmpeg import FFmpeg, MediaProbe
 
 
@@ -82,3 +84,62 @@ def test_frame_sample_command_rejects_invalid_step(tmp_path) -> None:
             10,
             0,
         )
+
+
+def test_attested_adapter_does_not_inherit_ambient_process_environment(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    tool = tmp_path / "ffmpeg-fixture"
+    tool.write_text(
+        "#!/bin/sh\n"
+        "if [ -n \"${VIDEOSCOPE_AMBIENT_MARKER-}\" ]; then exit 73; fi\n"
+        "printf '%s' '{\"format\":{\"duration\":\"1\"},"
+        "\"streams\":[{\"codec_type\":\"video\",\"width\":1,"
+        "\"height\":1,\"avg_frame_rate\":\"1/1\"}]}'\n",
+        encoding="utf-8",
+    )
+    tool.chmod(0o555)
+    monkeypatch.setenv("VIDEOSCOPE_AMBIENT_MARKER", "hostile")
+
+    with pytest.raises(subprocess.CalledProcessError):
+        FFmpeg(str(tool), str(tool)).probe(tmp_path / "source.mp4")
+
+    attested = FFmpeg.from_attested_paths(tool.resolve(), tool.resolve())
+    assert attested.probe(tmp_path / "source.mp4").duration == 1.0
+
+
+def test_every_attested_subprocess_path_uses_the_frozen_empty_environment(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    binary = (tmp_path / "reviewed-ffmpeg").resolve()
+    binary.touch()
+    runner = FFmpeg.from_attested_paths(binary, binary)
+    calls: list[dict[str, object]] = []
+
+    def run(arguments, **kwargs):  # type: ignore[no-untyped-def]
+        calls.append(kwargs)
+        stdout: str | bytes = b""
+        if kwargs.get("text"):
+            stdout = (
+                '{"format":{"duration":"1"},"streams":'
+                '[{"codec_type":"video","width":1,"height":1,'
+                '"avg_frame_rate":"1/1"}]}'
+            )
+        return subprocess.CompletedProcess(arguments, 0, stdout=stdout, stderr=b"")
+
+    monkeypatch.setattr(ffmpeg_module.subprocess, "run", run)
+    source = tmp_path / "source.mp4"
+    runner.probe(source)
+    runner.export_clip(source, tmp_path / "clip.mp4", 0, 1)
+    runner.extract_frame(source, tmp_path / "frame.jpg", 0)
+    runner.extract_frames(source, tmp_path / "frames", 0, 1, step=0.5)
+    runner.export_montage(
+        [(source, 0, 1), (source, 1, 2)],
+        tmp_path / "montage.mp4",
+        tmp_path / "temp",
+    )
+
+    assert len(calls) == 7
+    assert all(call["env"] == {} for call in calls)

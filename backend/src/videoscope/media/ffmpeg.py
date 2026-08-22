@@ -5,7 +5,11 @@ import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
+
+
+ATTESTED_SUBPROCESS_ENVIRONMENT_POLICY = "empty-v1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,9 +40,33 @@ class FFmpeg:
     def __init__(self, ffmpeg_binary: str = "ffmpeg", ffprobe_binary: str = "ffprobe") -> None:
         self.ffmpeg_binary = ffmpeg_binary
         self.ffprobe_binary = ffprobe_binary
+        self._subprocess_environment: MappingProxyType[str, str] | None = None
+
+    @classmethod
+    def from_attested_paths(cls, ffmpeg_binary: Path, ffprobe_binary: Path) -> FFmpeg:
+        """Build an adapter from already-attested, exact executable paths."""
+        if (
+            not isinstance(ffmpeg_binary, Path)
+            or not isinstance(ffprobe_binary, Path)
+            or not ffmpeg_binary.is_absolute()
+            or not ffprobe_binary.is_absolute()
+        ):
+            raise ValueError("attested FFmpeg paths must be absolute")
+        adapter = cls(str(ffmpeg_binary), str(ffprobe_binary))
+        adapter._subprocess_environment = MappingProxyType({})
+        return adapter
+
+    def _run(
+        self,
+        arguments: list[str],
+        **kwargs: Any,
+    ) -> subprocess.CompletedProcess[Any]:
+        if self._subprocess_environment is not None:
+            kwargs["env"] = self._subprocess_environment
+        return subprocess.run(arguments, **kwargs)
 
     def _run_json(self, arguments: list[str]) -> dict[str, Any]:
-        completed = subprocess.run(
+        completed = self._run(
             arguments,
             check=True,
             capture_output=True,
@@ -120,7 +148,7 @@ class FFmpeg:
 
     def export_clip(self, source: Path, destination: Path, start: float, end: float) -> None:
         destination.parent.mkdir(parents=True, exist_ok=True)
-        subprocess.run(
+        self._run(
             self.build_clip_command(source, destination, start, end),
             check=True,
             capture_output=True,
@@ -156,7 +184,7 @@ class FFmpeg:
             "2",
             str(destination),
         ]
-        subprocess.run(command, check=True, capture_output=True, timeout=120)
+        self._run(command, check=True, capture_output=True, timeout=120)
 
     def build_frame_sample_command(
         self,
@@ -207,7 +235,7 @@ class FFmpeg:
         for existing in destination.glob("sample-*.jpg"):
             existing.unlink(missing_ok=True)
         pattern = destination / "sample-%04d.jpg"
-        subprocess.run(
+        self._run(
             self.build_frame_sample_command(
                 source,
                 pattern,
@@ -252,7 +280,7 @@ class FFmpeg:
                 "".join(f"file '{path.as_posix()}'\n" for path in clip_paths),
                 encoding="utf-8",
             )
-            subprocess.run(
+            self._run(
                 [
                     self.ffmpeg_binary,
                     "-hide_banner",

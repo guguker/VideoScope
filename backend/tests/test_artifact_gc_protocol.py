@@ -262,7 +262,7 @@ def test_schema_v8_preserves_v6_gc_rows_and_adds_recoverable_audit(tmp_path) -> 
     repository.initialize()
     repository.initialize()
 
-    assert repository.schema_version() == LATEST_SCHEMA_VERSION == 8
+    assert repository.schema_version() == LATEST_SCHEMA_VERSION == 9
     jobs = repository.list_pending_artifact_gc_jobs(limit=10)
     assert [(job.job_id, job.state, job.attempt) for job in jobs] == [
         ("legacy-gc-job", "pending", 2)

@@ -645,7 +645,7 @@ def test_v5_migrates_a_copy_without_claiming_legacy_segments_current(tmp_path) -
     copied.initialize()
 
     assert source.schema_version() == 4
-    assert copied.schema_version() == LATEST_SCHEMA_VERSION == 8
+    assert copied.schema_version() == LATEST_SCHEMA_VERSION == 9
     assert [item.id for item in copied.list_segments("legacy-video")] == ["legacy-speech"]
     assert copied.get_active_segment_generation("legacy-video", StageKind.SPEECH) is None
     assert copied.list_active_segments("legacy-video", StageKind.SPEECH) == []

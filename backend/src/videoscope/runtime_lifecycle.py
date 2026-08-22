@@ -427,6 +427,86 @@ class ExclusiveRuntimeLock:
                     "runtime data path must not contain a symbolic link"
                 )
 
+    @staticmethod
+    def _stable_identity(metadata: os.stat_result) -> tuple[int, ...]:
+        return (
+            metadata.st_dev,
+            metadata.st_ino,
+            metadata.st_mode,
+            metadata.st_nlink,
+            metadata.st_uid,
+            metadata.st_gid,
+        )
+
+    @classmethod
+    def _open_existing_data_directory(cls, path: Path) -> int:
+        """Retain an existing directory through an all-component no-follow chain."""
+        cls._reject_symbolic_link_ancestors(path)
+        absolute = Path(os.path.abspath(path))
+        nofollow = getattr(os, "O_NOFOLLOW", 0)
+        directory = getattr(os, "O_DIRECTORY", 0)
+        if not nofollow or not directory:
+            raise RuntimeError("secure runtime lock access is unavailable")
+        flags = os.O_RDONLY | nofollow | directory | getattr(os, "O_CLOEXEC", 0)
+        try:
+            descriptor = os.open(absolute.anchor, flags)
+        except OSError as error:
+            raise RuntimeError("runtime data directory is unavailable") from error
+        try:
+            for part in absolute.parts[1:]:
+                try:
+                    observed = os.stat(
+                        part,
+                        dir_fd=descriptor,
+                        follow_symlinks=False,
+                    )
+                except OSError as error:
+                    raise RuntimeError("runtime data directory is unavailable") from error
+                if stat.S_ISLNK(observed.st_mode):
+                    raise RuntimeError(
+                        "runtime data path must not contain a symbolic link"
+                    )
+                if not stat.S_ISDIR(observed.st_mode):
+                    raise RuntimeError(
+                        "runtime data directory must be a regular directory"
+                    )
+                child: int | None = None
+                try:
+                    child = os.open(part, flags, dir_fd=descriptor)
+                    opened = os.fstat(child)
+                    current = os.stat(
+                        part,
+                        dir_fd=descriptor,
+                        follow_symlinks=False,
+                    )
+                except OSError as error:
+                    if child is not None:
+                        os.close(child)
+                    raise RuntimeError("runtime data directory is unavailable") from error
+                assert child is not None
+                if not (
+                    cls._stable_identity(observed)
+                    == cls._stable_identity(opened)
+                    == cls._stable_identity(current)
+                ):
+                    os.close(child)
+                    raise RuntimeError("runtime data path changed while opening")
+                os.close(descriptor)
+                descriptor = child
+            return descriptor
+        except BaseException:
+            os.close(descriptor)
+            raise
+
+    @staticmethod
+    def _is_private_managed_lock(metadata: os.stat_result) -> bool:
+        return (
+            stat.S_ISREG(metadata.st_mode)
+            and metadata.st_nlink == 1
+            and metadata.st_uid == os.geteuid()
+            and stat.S_IMODE(metadata.st_mode) == 0o600
+        )
+
     def acquire(self) -> None:
         if self._file_descriptor is not None:
             raise RuntimeError("runtime lock is already acquired")
@@ -463,6 +543,64 @@ class ExclusiveRuntimeLock:
         except Exception:
             os.close(file_descriptor)
             raise
+        self._file_descriptor = file_descriptor
+
+    def acquire_existing(self) -> None:
+        """Acquire the persistent lock without creating or changing filesystem state."""
+        if self._file_descriptor is not None:
+            raise RuntimeError("runtime lock is already acquired")
+        directory_descriptor = self._open_existing_data_directory(self.data_dir)
+        file_descriptor: int | None = None
+        try:
+            try:
+                observed = os.stat(
+                    self.filename,
+                    dir_fd=directory_descriptor,
+                    follow_symlinks=False,
+                )
+            except FileNotFoundError as error:
+                raise RuntimeError("runtime lock is unavailable") from error
+            except OSError as error:
+                raise RuntimeError("runtime lock could not be inspected") from error
+            if not self._is_private_managed_lock(observed):
+                raise RuntimeError("runtime lock must be a managed regular file")
+
+            flags = os.O_RDWR | getattr(os, "O_CLOEXEC", 0)
+            flags |= getattr(os, "O_NOFOLLOW", 0)
+            try:
+                file_descriptor = os.open(
+                    self.filename,
+                    flags,
+                    dir_fd=directory_descriptor,
+                )
+                opened = os.fstat(file_descriptor)
+                current = os.stat(
+                    self.filename,
+                    dir_fd=directory_descriptor,
+                    follow_symlinks=False,
+                )
+            except OSError as error:
+                raise RuntimeError("runtime lock could not be opened") from error
+            if not (
+                self._is_private_managed_lock(opened)
+                and self._is_private_managed_lock(current)
+                and self._stable_identity(observed)
+                == self._stable_identity(opened)
+                == self._stable_identity(current)
+            ):
+                raise RuntimeError("runtime lock must be a managed regular file")
+            try:
+                fcntl.flock(file_descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as error:
+                raise RuntimeError(
+                    "another VideoScope process already owns this data directory"
+                ) from error
+        except Exception:
+            if file_descriptor is not None:
+                os.close(file_descriptor)
+            raise
+        finally:
+            os.close(directory_descriptor)
         self._file_descriptor = file_descriptor
 
     def close(self) -> None:

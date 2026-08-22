@@ -1,3 +1,4 @@
+from pathlib import Path
 import re
 
 from videoscope.model_manifest import (
@@ -30,3 +31,25 @@ def test_fastembed_runtime_uses_the_downloaded_pinned_snapshot() -> None:
     assert repository == FASTEMBED_REPOSITORY
     assert revision == MODEL_REVISIONS[FASTEMBED_REPOSITORY]
     assert fastembed_snapshot("custom/model") == (None, None)
+
+
+def test_fastembed_cache_resolver_names_only_the_exact_reviewed_revision(
+    tmp_path: Path,
+) -> None:
+    from videoscope.model_manifest import fastembed_cache_snapshot_path
+
+    resolved = fastembed_cache_snapshot_path(
+        tmp_path / "cache",
+        TEXT_EMBEDDING_MODEL,
+    )
+
+    assert resolved == (
+        (tmp_path / "cache").absolute()
+        / "models--xenova--paraphrase-multilingual-mpnet-base-v2"
+        / "snapshots"
+        / MODEL_REVISIONS[FASTEMBED_REPOSITORY]
+    )
+    assert fastembed_cache_snapshot_path(
+        tmp_path / "cache",
+        "custom/unreviewed",
+    ) is None

@@ -25,6 +25,7 @@ from videoscope.providers.whisper import (
     WhisperPromptSnapshot,
     WhisperTranscriber,
     snapshot_whisper_prompt,
+    snapshot_whisper_prompt_from_content,
 )
 from videoscope.providers.whisper_worker import (
     MAX_RESPONSE_BYTES,
@@ -1488,6 +1489,34 @@ def test_prompt_snapshot_is_live_per_run_and_reads_glossary_without_following_sy
 
     with pytest.raises(ValueError, match="bounded worker contract"):
         snapshot_whisper_prompt("x" * 16_001, None)
+
+
+def test_prompt_snapshot_from_frozen_content_matches_the_production_normalizer(
+    tmp_path: Path,
+) -> None:
+    raw = '{"Мозгов":["Mozgov"],"Карри":["Curry"]}'.encode()
+    glossary = tmp_path / "glossary.json"
+    glossary.write_bytes(raw)
+
+    from_file = snapshot_whisper_prompt("initial", glossary)
+    from_content = snapshot_whisper_prompt_from_content(
+        "initial",
+        raw,
+        glossary_state="ready",
+    )
+
+    assert from_content == from_file
+    assert snapshot_whisper_prompt_from_content(
+        None,
+        None,
+        glossary_state="missing",
+    ).glossary_state == "missing"
+    with pytest.raises(ValueError, match="content and state"):
+        snapshot_whisper_prompt_from_content(
+            None,
+            raw,
+            glossary_state="missing",
+        )
 
 
 def test_prompt_snapshot_contains_glossary_read_errors(

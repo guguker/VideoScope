@@ -177,6 +177,34 @@ def test_repository_asset_lookup_fails_closed_on_corrupt_video_link(tmp_path) ->
         repository.find_assets_by_sha256(digest)
 
 
+def test_repository_exposes_a_bounded_asset_lookup_for_benchmark_preflight(
+    tmp_path,
+) -> None:
+    repository = Repository(tmp_path / "videoscope.sqlite3")
+    repository.initialize()
+    digest = "a" * 64
+    for index in range(5):
+        repository.create_video_with_asset(
+            video_id=f"video-{index}",
+            original_name=f"video-{index}.mp4",
+            stored_name=f"video-{index}.mp4",
+            media_path=str(tmp_path / f"video-{index}.mp4"),
+            size_bytes=10,
+            source_sha256=digest,
+        )
+        repository.update_video(f"video-{index}", duration=12.5)
+
+    bounded = repository.find_assets_by_sha256_bounded(digest, limit=2)
+    explicit = repository.find_assets_by_sha256_bounded(
+        digest,
+        limit=1,
+        video_id="video-3",
+    )
+
+    assert [item.video_id for item in bounded] == ["video-0", "video-1", "video-2"]
+    assert [item.video_id for item in explicit] == ["video-3"]
+
+
 def test_asset_collision_rolls_back_video_and_preserves_original_asset(tmp_path) -> None:
     repository = Repository(tmp_path / "videoscope.sqlite3")
     repository.initialize()

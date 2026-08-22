@@ -27,6 +27,20 @@ VideoId: TypeAlias = Annotated[
     str,
     Field(min_length=1, max_length=64, pattern=VIDEO_ID_PATTERN),
 ]
+JobId: TypeAlias = Annotated[
+    str,
+    Field(
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+    ),
+]
+JobIntent: TypeAlias = Literal["ingest", "reindex"]
+JobState: TypeAlias = Literal["queued", "running", "complete", "failed", "cancelled"]
+JobSymbol: TypeAlias = Annotated[
+    str,
+    Field(min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_-]{0,63}$"),
+]
 EvaluationLabelSource: TypeAlias = Literal["gold", "silver"]
 EvaluationVariantName: TypeAlias = Literal[
     "auto",
@@ -154,6 +168,26 @@ class ErrorResponse(ContractModel):
     detail: str
 
 
+class JobSummaryResponse(ContractModel):
+    job_id: JobId
+    intent: JobIntent
+    state: JobState
+    progress: float = Field(ge=0, le=1)
+    stage: JobSymbol
+    attempt: int = Field(ge=1, le=1_000_000)
+    cancel_requested_at: str | None = Field(default=None, max_length=64)
+    error_code: JobSymbol | None = None
+    created_at: str = Field(min_length=1, max_length=64)
+    started_at: str | None = Field(default=None, max_length=64)
+    finished_at: str | None = Field(default=None, max_length=64)
+    updated_at: str = Field(min_length=1, max_length=64)
+
+
+class JobResponse(JobSummaryResponse):
+    video_id: VideoId
+    retry_of_job_id: JobId | None = None
+
+
 class VideoResponse(ContractModel):
     id: str
     original_name: str
@@ -171,6 +205,7 @@ class VideoResponse(ContractModel):
     updated_at: str
     media_url: str
     thumbnail_url: str | None
+    latest_job: JobSummaryResponse | None = None
 
 
 class ReindexResponse(ContractModel):

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 import hashlib
 import json
 import logging
@@ -47,6 +47,24 @@ from videoscope.artifacts import (
     validate_error_code,
     validate_stage_transition,
 )
+from videoscope.jobs import (
+    JobFenceError,
+    JobKind,
+    JobState,
+    JobTransitionError,
+    PriorVideoState,
+    VideoIndexIntent,
+    VideoIndexJob,
+    VideoIndexPlanSnapshot,
+    advance_job,
+    cancel_job,
+    complete_job,
+    fail_job,
+    request_job_cancellation,
+    retry_job,
+    start_job,
+    video_index_idempotency_hash,
+)
 from videoscope.search.text_matching import lexical_match
 
 
@@ -58,7 +76,27 @@ SEGMENT_STAGE_MODALITIES = {
     StageKind.OCR: "ocr",
     StageKind.OBJECTS: "objects",
 }
-LATEST_SCHEMA_VERSION = 8
+EXTERNAL_INDEX_STAGE_KINDS = (
+    StageKind.VISUAL_DENSE,
+    StageKind.LIGHTHOUSE,
+)
+_VIDEO_INDEX_STAGE_KINDS = (
+    StageKind.SCENES,
+    StageKind.SPEECH,
+    StageKind.OCR,
+    StageKind.OBJECTS,
+    StageKind.TEXT_VECTORS,
+    StageKind.VISUAL_DENSE,
+    StageKind.LIGHTHOUSE,
+)
+_VIDEO_INDEX_COMPLETION_STAGE_STATES = frozenset(
+    {
+        StageState.COMPLETE,
+        StageState.FAILED,
+        StageState.NOT_CONFIGURED,
+    }
+)
+LATEST_SCHEMA_VERSION = 9
 _DATABASE_INITIALIZE_LOCK = Lock()
 _ASSET_IDENTITY_LOCKS_GUARD = Lock()
 _ASSET_IDENTITY_LOCKS: WeakValueDictionary[tuple[str, str], Any] = WeakValueDictionary()
@@ -73,11 +111,271 @@ ARTIFACT_GC_BACKOFF_LEVEL_MAX = 7
 ARTIFACT_GC_SCAN_LIMIT_MAX = 64
 ARTIFACT_GC_AUDIT_RETENTION_ATTEMPTS = 256
 REPOSITORY_BATCH_LIMIT_MAX = 1_000
+VIDEO_INDEX_JOB_SCAN_LIMIT_MAX = 64
+VIDEO_INDEX_PLAN_JSON_MAX_BYTES = 1024 * 1024
+EXTERNAL_INDEX_DESCRIPTOR_JSON_MAX_BYTES = 16 * 1024
+_EXTERNAL_GENERATION_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 ARTIFACT_GC_TRANSIENT_LEGACY_ERROR_CODES = (
     "artifact_gc_storage_unavailable",
     "artifact_gc_lease_expired",
     "artifact_gc_attempts_exhausted",
 )
+_READ_ONLY_REQUIRED_TABLES = frozenset(
+    {
+        "active_segment_generations",
+        "active_external_index_generations",
+        "active_text_vector_generations",
+        "artifact_gc_attempts",
+        "artifact_gc_jobs",
+        "artifact_gc_quarantines",
+        "assets",
+        "external_index_generations",
+        "segment_generations",
+        "segments",
+        "stage_runs",
+        "stage_specifications",
+        "text_vector_build_inputs",
+        "text_vector_builds",
+        "text_vector_generation_inputs",
+        "text_vector_generation_tombstones",
+        "text_vector_generations",
+        "text_vector_index_specifications",
+        "videos",
+        "video_index_jobs",
+        "video_index_job_quarantines",
+    }
+)
+_READ_ONLY_REQUIRED_INDEXES = frozenset(
+    {
+        "idx_artifact_gc_jobs_ready",
+        "idx_external_index_generations_video_stage",
+        "idx_segment_generations_video_stage",
+        "idx_segments_generation",
+        "idx_segments_modality",
+        "idx_segments_video_time",
+        "idx_stage_runs_state",
+        "idx_stage_runs_video_spec",
+        "idx_text_vector_builds_expiry",
+        "idx_text_vector_generations_video_completed",
+        "idx_videos_asset_id",
+        "idx_stage_runs_job_id",
+        "idx_video_index_jobs_active_idempotency",
+        "idx_video_index_jobs_active_video",
+        "idx_video_index_jobs_ready",
+        "idx_video_index_jobs_retry_child",
+        "idx_video_index_jobs_video_history",
+        "idx_video_index_job_quarantines_job_sequence",
+    }
+)
+_READ_ONLY_REQUIRED_TRIGGERS = frozenset(
+    {
+        "artifact_gc_attempts_bounded_delete",
+        "artifact_gc_attempts_identity_immutable_update",
+        "artifact_gc_attempts_terminal_immutable_update",
+        "artifact_gc_jobs_attempt_fence",
+        "artifact_gc_jobs_backoff_monotonic",
+        "artifact_gc_jobs_immutable_delete",
+        "artifact_gc_jobs_reject_committed_insert",
+        "artifact_gc_jobs_reject_committed_update",
+        "artifact_gc_jobs_state_transition",
+        "artifact_gc_jobs_target_immutable_update",
+        "artifact_gc_jobs_terminal_immutable_update",
+        "artifact_gc_quarantines_immutable_delete",
+        "artifact_gc_quarantines_immutable_update",
+        "assets_immutable_update",
+        "active_segment_generations_job_owner_insert",
+        "active_segment_generations_job_owner_update",
+        "active_text_vector_generations_job_owner_insert",
+        "active_text_vector_generations_job_owner_update",
+        "active_external_index_generations_job_owner_insert",
+        "active_external_index_generations_job_owner_update",
+        "external_index_generation_run_identity_insert",
+        "external_index_generations_immutable_delete",
+        "external_index_generations_immutable_update",
+        "generated_segments_generation_immutable",
+        "generated_segments_immutable_delete",
+        "generated_segments_immutable_update",
+        "generated_segments_validate_insert",
+        "segment_generation_run_identity_insert",
+        "segment_generations_immutable_delete",
+        "segment_generations_immutable_update",
+        "text_vector_build_run_identity_insert",
+        "text_vector_builds_identity_immutable_update",
+        "text_vector_builds_quarantine_immutable_update",
+        "text_vector_builds_recovery_transition",
+        "text_vector_builds_require_generation_tombstone",
+        "text_vector_builds_require_terminal_tombstone_delete",
+        "text_vector_generation_inputs_immutable_delete",
+        "text_vector_generation_inputs_immutable_update",
+        "text_vector_generation_run_identity_insert",
+        "text_vector_generation_tombstones_immutable_delete",
+        "text_vector_generation_tombstones_target_immutable",
+        "text_vector_generation_tombstones_valid_transition",
+        "text_vector_generations_immutable_delete",
+        "text_vector_generations_immutable_update",
+        "text_vector_generations_require_building_tombstone",
+        "text_vector_index_specifications_immutable_delete",
+        "text_vector_index_specifications_immutable_update",
+        "videos_asset_id_immutable",
+        "stage_runs_job_id_immutable_update",
+        "stage_runs_video_index_job_ownership_insert",
+        "stage_runs_video_index_job_active_update",
+        "stage_runs_video_index_job_identity_insert",
+        "video_index_jobs_cancel_request_immutable",
+        "video_index_jobs_execution_fence",
+        "video_index_jobs_identity_immutable_update",
+        "video_index_jobs_immutable_delete",
+        "video_index_jobs_progress_monotonic",
+        "video_index_jobs_reject_active_stage_completion",
+        "video_index_jobs_require_exact_stage_receipts",
+        "video_index_jobs_retry_identity_insert",
+        "video_index_jobs_source_identity_insert",
+        "video_index_jobs_state_transition",
+        "video_index_jobs_terminal_immutable_update",
+        "video_index_jobs_updated_at_monotonic",
+        "video_index_job_quarantines_immutable_delete",
+        "video_index_job_quarantines_immutable_update",
+    }
+)
+_READ_ONLY_REQUIRED_COLUMNS = {
+    "videos": frozenset(
+        {
+            "asset_id",
+            "created_at",
+            "display_name",
+            "id",
+            "media_path",
+            "size_bytes",
+            "stored_name",
+            "updated_at",
+        }
+    ),
+    "segments": frozenset(
+        {
+            "confidence",
+            "end",
+            "generation_id",
+            "id",
+            "metadata_json",
+            "modality",
+            "start",
+            "text",
+            "video_id",
+        }
+    ),
+    "assets": frozenset({"asset_id", "created_at", "sha256", "size_bytes"}),
+    "segment_generations": frozenset(
+        {
+            "completed_at",
+            "generation_id",
+            "run_id",
+            "source_sha256",
+            "specification_hash",
+            "stage_kind",
+            "updates_video_thumbnail",
+            "video_thumbnail_path",
+            "video_id",
+        }
+    ),
+    "text_vector_generations": frozenset(
+        {
+            "collection_name",
+            "generation_id",
+            "index_specification_hash",
+            "run_id",
+            "source_sha256",
+            "specification_hash",
+            "video_id",
+        }
+    ),
+    "external_index_generations": frozenset(
+        {
+            "completed_at",
+            "descriptor_json",
+            "descriptor_sha256",
+            "generation_id",
+            "artifact_specification_hash",
+            "run_id",
+            "source_sha256",
+            "specification_hash",
+            "stage_kind",
+            "video_id",
+        }
+    ),
+    "active_external_index_generations": frozenset(
+        {"activated_at", "generation_id", "stage_kind", "video_id"}
+    ),
+    "text_vector_builds": frozenset(
+        {
+            "generation_id",
+            "quarantined_at",
+            "recovery_error_code",
+            "recovery_state",
+            "run_id",
+            "source_sha256",
+            "video_id",
+        }
+    ),
+    "artifact_gc_jobs": frozenset(
+        {
+            "attempt",
+            "available_at",
+            "backoff_level",
+            "generation_id",
+            "job_id",
+            "lease_expires_at",
+            "lease_token",
+            "state",
+            "worker_id",
+        }
+    ),
+    "artifact_gc_attempts": frozenset(
+        {
+            "attempt",
+            "claimed_at",
+            "job_id",
+            "lease_expires_at",
+            "lease_token",
+            "worker_id",
+        }
+    ),
+    "artifact_gc_quarantines": frozenset(
+        {"error_code", "quarantined_at", "sequence"}
+    ),
+    "stage_runs": frozenset({"job_id"}),
+    "video_index_jobs": frozenset(
+        {
+            "attempt",
+            "cancel_requested_at",
+            "created_at",
+            "error_code",
+            "execution_token",
+            "finished_at",
+            "idempotency_hash",
+            "intent",
+            "job_id",
+            "kind",
+            "plan_hash",
+            "plan_json",
+            "prior_video_error_code",
+            "prior_video_progress",
+            "prior_video_stage",
+            "prior_video_status",
+            "progress",
+            "retry_of_job_id",
+            "source_sha256",
+            "stage",
+            "started_at",
+            "state",
+            "updated_at",
+            "video_id",
+        }
+    ),
+    "video_index_job_quarantines": frozenset(
+        {"error_code", "job_sequence", "quarantined_at", "sequence"}
+    ),
+}
 
 
 def _now() -> str:
@@ -133,6 +431,291 @@ def _ensure_supported_schema_version(version: int) -> None:
             "database schema is newer than this VideoScope build: "
             f"{version} > {LATEST_SCHEMA_VERSION}"
         )
+
+
+def _validate_latest_read_only_schema(connection: sqlite3.Connection) -> None:
+    version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+    if version < LATEST_SCHEMA_VERSION:
+        raise RuntimeError(
+            "database schema is older than this VideoScope build: "
+            f"{version} < {LATEST_SCHEMA_VERSION}"
+        )
+    if version > LATEST_SCHEMA_VERSION:
+        raise RuntimeError(
+            "database schema is newer than this VideoScope build: "
+            f"{version} > {LATEST_SCHEMA_VERSION}"
+        )
+    integrity = connection.execute("PRAGMA quick_check(1)").fetchone()
+    if integrity is None or integrity[0] != "ok":
+        raise RuntimeError("database integrity validation failed")
+    objects = {
+        kind: {
+            str(row["name"])
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = ?",
+                (kind,),
+            ).fetchall()
+        }
+        for kind in ("table", "index", "trigger")
+    }
+    if (
+        not _READ_ONLY_REQUIRED_TABLES <= objects["table"]
+        or not _READ_ONLY_REQUIRED_INDEXES <= objects["index"]
+        or not _READ_ONLY_REQUIRED_TRIGGERS <= objects["trigger"]
+    ):
+        raise RuntimeError("database schema is incomplete or corrupt")
+    for table_name, required_columns in _READ_ONLY_REQUIRED_COLUMNS.items():
+        columns = {
+            str(row["name"])
+            for row in connection.execute(
+                f"PRAGMA table_info({table_name})"
+            ).fetchall()
+        }
+        if not required_columns <= columns:
+            raise RuntimeError("database schema is incomplete or corrupt")
+
+
+def _validate_read_only_database_path(path: Path) -> Path:
+    absolute = Path(os.path.abspath(path))
+    try:
+        final = _stat_retained_volume_path(absolute)
+        if final is None:
+            candidates = tuple(reversed((absolute, *absolute.parents)))
+            for candidate in candidates:
+                metadata = os.lstat(candidate)
+                if stat.S_ISLNK(metadata.st_mode):
+                    raise RuntimeError(
+                        "read-only database path must not contain a symbolic link"
+                    )
+            final = os.stat(absolute, follow_symlinks=False)
+    except RuntimeError:
+        raise
+    except OSError as error:
+        raise RuntimeError("read-only database is unavailable") from error
+    if not stat.S_ISREG(final.st_mode) or final.st_nlink != 1:
+        raise RuntimeError("read-only database must be a managed regular file")
+    return absolute
+
+
+def _read_stable_sqlite_header(path: Path) -> bytes:
+    try:
+        observed = os.stat(path, follow_symlinks=False)
+        descriptor = os.open(
+            path,
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+    except OSError as error:
+        raise RuntimeError("read-only database is unavailable") from error
+    try:
+        opened = os.fstat(descriptor)
+        header = os.read(descriptor, 100)
+        after = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+    try:
+        current = os.stat(path, follow_symlinks=False)
+    except OSError as error:
+        raise RuntimeError("read-only database changed while opening") from error
+    if (
+        not stat.S_ISREG(opened.st_mode)
+        or len(header) != 100
+        or header[:16] != b"SQLite format 3\x00"
+    ):
+        raise RuntimeError("read-only database is unavailable or corrupt")
+    identities = tuple(
+        _file_identity(value)
+        for value in (observed, opened, after, current)
+    )
+    if len(set(identities)) != 1:
+        raise RuntimeError("read-only database changed while opening")
+    return header
+
+
+def _validate_existing_sqlite_sidecar(path: Path, *, label: str) -> None:
+    try:
+        sidecar_stat = _stat_retained_volume_path(path)
+        if sidecar_stat is None:
+            for candidate in reversed((path, *path.parents)):
+                metadata = os.lstat(candidate)
+                if stat.S_ISLNK(metadata.st_mode):
+                    raise RuntimeError(
+                        f"read-only database {label} must be a managed regular file"
+                    )
+            sidecar_stat = os.stat(path, follow_symlinks=False)
+    except FileNotFoundError as error:
+        raise RuntimeError(f"read-only database {label} is unavailable") from error
+    except OSError as error:
+        raise RuntimeError(f"read-only database {label} is unavailable") from error
+    if not stat.S_ISREG(sidecar_stat.st_mode) or sidecar_stat.st_nlink != 1:
+        raise RuntimeError(
+            f"read-only database {label} must be a managed regular file"
+        )
+
+
+def _sqlite_sidecar_exists(path: Path, *, label: str) -> bool:
+    try:
+        os.lstat(path)
+    except FileNotFoundError:
+        return False
+    except OSError as error:
+        raise RuntimeError(
+            f"read-only database {label} could not be inspected"
+        ) from error
+    return True
+
+
+def _require_existing_wal_sidecars(database_path: Path) -> bool:
+    """Validate SQLite journal state and return whether immutable open is required."""
+
+    header = _read_stable_sqlite_header(database_path)
+    if header[18] not in {1, 2} or header[19] not in {1, 2}:
+        raise RuntimeError("read-only database is unavailable or corrupt")
+    wal_path = Path(f"{database_path}-wal")
+    shm_path = Path(f"{database_path}-shm")
+    wal_exists = _sqlite_sidecar_exists(wal_path, label="WAL")
+    shm_exists = _sqlite_sidecar_exists(shm_path, label="SHM")
+    is_wal = 2 in {header[18], header[19]}
+    if not is_wal:
+        if _sqlite_sidecar_exists(
+            Path(f"{database_path}-journal"),
+            label="rollback journal",
+        ):
+            raise RuntimeError(
+                "read-only DELETE database has an existing rollback journal"
+            )
+        if wal_exists or shm_exists:
+            raise RuntimeError(
+                "read-only DELETE database has unexpected WAL sidecars"
+            )
+        return False
+    if wal_exists != shm_exists:
+        raise RuntimeError(
+            "read-only database WAL and SHM sidecars must either both exist or both be absent"
+        )
+    if not wal_exists:
+        # A cleanly closed WAL database is fully checkpointed into the main file.
+        # Immutable mode prevents SQLite from recreating sidecars while reading it.
+        return True
+    _validate_existing_sqlite_sidecar(
+        wal_path,
+        label="WAL",
+    )
+    _validate_existing_sqlite_sidecar(
+        shm_path,
+        label="SHM",
+    )
+    return False
+
+
+def _reject_symbolic_link_components(path: Path) -> None:
+    absolute = Path(os.path.abspath(path))
+    try:
+        retained = _stat_retained_volume_path(absolute)
+    except (OSError, RuntimeError, ValueError) as error:
+        raise AssetIdentityError(
+            "asset media must be a managed regular file"
+        ) from error
+    if retained is not None:
+        return
+    for candidate in reversed((absolute, *absolute.parents)):
+        try:
+            metadata = os.lstat(candidate)
+        except OSError as error:
+            raise AssetIdentityError(
+                "asset media must be a managed regular file"
+            ) from error
+        if stat.S_ISLNK(metadata.st_mode):
+            raise AssetIdentityError("asset media must be a managed regular file")
+
+
+def _retained_volume_components(
+    path: Path,
+) -> tuple[int, int, tuple[str, ...]] | None:
+    absolute = Path(os.path.abspath(path))
+    parts = absolute.parts
+    if len(parts) < 4 or parts[0] != os.sep or parts[1] != ".vol":
+        return None
+    device_text, inode_text = parts[2], parts[3]
+    if (
+        not device_text.isdecimal()
+        or not inode_text.isdecimal()
+        or str(int(device_text)) != device_text
+        or str(int(inode_text)) != inode_text
+        or int(device_text) <= 0
+        or int(inode_text) <= 0
+    ):
+        raise RuntimeError("retained volume path is invalid")
+    descendants = tuple(parts[4:])
+    if any(
+        not component
+        or component in {".", ".."}
+        or "/" in component
+        or "\x00" in component
+        for component in descendants
+    ):
+        raise RuntimeError("retained volume path is invalid")
+    return int(device_text), int(inode_text), descendants
+
+
+def _stat_retained_volume_path(path: Path) -> os.stat_result | None:
+    retained = _retained_volume_components(path)
+    if retained is None:
+        return None
+    device, inode, descendants = retained
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    if not getattr(os, "O_DIRECTORY", 0) or not getattr(os, "O_NOFOLLOW", 0):
+        raise RuntimeError("retained volume paths are unsupported")
+    descriptor = os.open(f"/.vol/{device}/{inode}", flags)
+    try:
+        root = os.fstat(descriptor)
+        if (
+            not stat.S_ISDIR(root.st_mode)
+            or root.st_dev != device
+            or root.st_ino != inode
+        ):
+            raise RuntimeError("retained volume root identity changed")
+        if not descendants:
+            return root
+        for index, component in enumerate(descendants):
+            observed = os.stat(
+                component,
+                dir_fd=descriptor,
+                follow_symlinks=False,
+            )
+            if index == len(descendants) - 1:
+                if stat.S_ISLNK(observed.st_mode):
+                    raise RuntimeError("retained volume path contains a symbolic link")
+                return observed
+            child = os.open(component, flags, dir_fd=descriptor)
+            try:
+                opened = os.fstat(child)
+                current = os.stat(
+                    component,
+                    dir_fd=descriptor,
+                    follow_symlinks=False,
+                )
+                if not (
+                    stat.S_ISDIR(observed.st_mode)
+                    and _file_identity(observed)
+                    == _file_identity(opened)
+                    == _file_identity(current)
+                ):
+                    raise RuntimeError("retained volume path changed while opening")
+            except BaseException:
+                os.close(child)
+                raise
+            os.close(descriptor)
+            descriptor = child
+    finally:
+        os.close(descriptor)
+    raise RuntimeError("retained volume path is invalid")
 
 
 def _asset_identity_lock(database_path: Path, video_id: str) -> Any:
@@ -427,6 +1010,7 @@ def _migration_5_add_segment_generations(connection: sqlite3.Connection) -> None
             FROM stage_runs AS runs
             JOIN stage_specifications AS specifications
               ON specifications.specification_hash = runs.specification_hash
+            JOIN videos AS videos ON videos.id = runs.video_id
             WHERE runs.run_id = NEW.run_id
               AND runs.video_id = NEW.video_id
               AND runs.specification_hash = NEW.specification_hash
@@ -1660,6 +2244,881 @@ def _migration_8_add_recoverable_artifact_gc(connection: sqlite3.Connection) -> 
     )
 
 
+def _ensure_stage_run_video_index_job_linkage(
+    connection: sqlite3.Connection,
+) -> None:
+    stage_columns = {
+        str(row[1])
+        for row in connection.execute("PRAGMA table_info(stage_runs)").fetchall()
+    }
+    if "job_id" not in stage_columns:
+        connection.execute(
+            """
+            ALTER TABLE stage_runs
+            ADD COLUMN job_id TEXT REFERENCES video_index_jobs(job_id)
+            """
+        )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_stage_runs_job_id ON stage_runs(job_id)"
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS stage_runs_video_index_job_ownership_insert
+        BEFORE INSERT ON stage_runs
+        WHEN NEW.job_id IS NULL AND EXISTS (
+            SELECT 1 FROM video_index_jobs AS jobs
+            WHERE jobs.video_id = NEW.video_id
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'durable video index job must own stage run');
+        END
+        """
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS stage_runs_video_index_job_identity_insert
+        BEFORE INSERT ON stage_runs
+        WHEN NEW.job_id IS NOT NULL AND NOT EXISTS (
+            SELECT 1 FROM video_index_jobs AS jobs
+            WHERE jobs.job_id = NEW.job_id
+              AND jobs.video_id = NEW.video_id
+              AND jobs.source_sha256 = NEW.source_sha256
+              AND jobs.state = 'running'
+              AND jobs.cancel_requested_at IS NULL
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'stage run video index job identity mismatch');
+        END
+        """
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS stage_runs_job_id_immutable_update
+        BEFORE UPDATE OF job_id ON stage_runs
+        WHEN NEW.job_id IS NOT OLD.job_id
+        BEGIN
+            SELECT RAISE(ABORT, 'stage run video index job link is immutable');
+        END
+        """
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS stage_runs_video_index_job_active_update
+        BEFORE UPDATE OF state ON stage_runs
+        WHEN OLD.job_id IS NOT NULL
+          AND NEW.state NOT IN ('failed', 'cancelled')
+          AND NOT EXISTS (
+              SELECT 1 FROM video_index_jobs AS jobs
+              WHERE jobs.job_id = OLD.job_id
+                AND jobs.state = 'running'
+                AND jobs.cancel_requested_at IS NULL
+          )
+        BEGIN
+            SELECT RAISE(ABORT, 'stage run video index job is no longer active');
+        END
+        """
+    )
+
+
+def _ensure_video_index_job_completion_receipts(
+    connection: sqlite3.Connection,
+) -> None:
+    """Reject raw-SQL success without one exact terminal receipt per plan stage."""
+    connection.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS video_index_jobs_require_exact_stage_receipts
+        BEFORE UPDATE OF state ON video_index_jobs
+        WHEN NEW.state = 'complete'
+          AND NOT EXISTS (
+              SELECT 1 FROM stage_runs AS active_runs
+              WHERE active_runs.job_id = OLD.job_id
+                AND active_runs.state IN ('queued', 'running')
+          )
+          AND (
+              (SELECT COUNT(*) FROM stage_runs AS runs
+               WHERE runs.job_id = OLD.job_id) != 7
+              OR
+              (SELECT COUNT(DISTINCT specifications.stage_kind)
+               FROM stage_runs AS runs
+               JOIN stage_specifications AS specifications
+                 ON specifications.specification_hash = runs.specification_hash
+               WHERE runs.job_id = OLD.job_id) != 7
+              OR EXISTS (
+                  SELECT 1
+                  FROM stage_runs AS runs
+                  JOIN stage_specifications AS specifications
+                    ON specifications.specification_hash = runs.specification_hash
+                  WHERE runs.job_id = OLD.job_id
+                    AND (
+                        runs.video_id IS NOT OLD.video_id
+                        OR runs.source_sha256 IS NOT OLD.source_sha256
+                        OR runs.state NOT IN ('complete', 'failed', 'not_configured')
+                        OR specifications.stage_kind NOT IN (
+                            'scenes', 'speech', 'ocr', 'objects', 'text_vectors',
+                            'visual_dense', 'lighthouse'
+                        )
+                        OR specifications.canonical_json IS NOT json_extract(
+                            OLD.plan_json,
+                            '$.stages.' || specifications.stage_kind
+                        )
+                    )
+              )
+          )
+        BEGIN
+            SELECT RAISE(
+                ABORT,
+                'video index job requires exact planned stage receipts'
+            );
+        END
+        """
+    )
+
+
+def _ensure_video_index_staged_activation(
+    connection: sqlite3.Connection,
+) -> None:
+    generation_columns = {
+        str(row[1])
+        for row in connection.execute(
+            "PRAGMA table_info(segment_generations)"
+        ).fetchall()
+    }
+    if "video_thumbnail_path" not in generation_columns:
+        connection.execute(
+            "ALTER TABLE segment_generations ADD COLUMN video_thumbnail_path TEXT"
+        )
+    if "updates_video_thumbnail" not in generation_columns:
+        connection.execute(
+            """
+            ALTER TABLE segment_generations
+            ADD COLUMN updates_video_thumbnail INTEGER NOT NULL DEFAULT 0
+                CHECK(updates_video_thumbnail IN (0, 1))
+            """
+        )
+    connection.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS active_segment_generations_job_owner_insert
+        BEFORE INSERT ON active_segment_generations
+        WHEN EXISTS (
+            SELECT 1
+            FROM segment_generations AS generations
+            JOIN stage_runs AS runs ON runs.run_id = generations.run_id
+            WHERE generations.generation_id = NEW.generation_id
+              AND runs.job_id IS NOT NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM video_index_jobs AS jobs
+                  WHERE jobs.job_id = runs.job_id AND jobs.state = 'complete'
+              )
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'video index job is not complete');
+        END
+        """
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS active_segment_generations_job_owner_update
+        BEFORE UPDATE OF generation_id, activated_at
+        ON active_segment_generations
+        WHEN EXISTS (
+            SELECT 1
+            FROM segment_generations AS generations
+            JOIN stage_runs AS runs ON runs.run_id = generations.run_id
+            WHERE generations.generation_id = NEW.generation_id
+              AND runs.job_id IS NOT NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM video_index_jobs AS jobs
+                  WHERE jobs.job_id = runs.job_id AND jobs.state = 'complete'
+              )
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'video index job is not complete');
+        END
+        """
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS active_text_vector_generations_job_owner_insert
+        BEFORE INSERT ON active_text_vector_generations
+        WHEN EXISTS (
+            SELECT 1
+            FROM text_vector_generations AS generations
+            JOIN stage_runs AS runs ON runs.run_id = generations.run_id
+            WHERE generations.generation_id = NEW.generation_id
+              AND runs.job_id IS NOT NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM video_index_jobs AS jobs
+                  WHERE jobs.job_id = runs.job_id AND jobs.state = 'complete'
+              )
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'video index job is not complete');
+        END
+        """
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS active_text_vector_generations_job_owner_update
+        BEFORE UPDATE OF generation_id, activated_at
+        ON active_text_vector_generations
+        WHEN EXISTS (
+            SELECT 1
+            FROM text_vector_generations AS generations
+            JOIN stage_runs AS runs ON runs.run_id = generations.run_id
+            WHERE generations.generation_id = NEW.generation_id
+              AND runs.job_id IS NOT NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM video_index_jobs AS jobs
+                  WHERE jobs.job_id = runs.job_id AND jobs.state = 'complete'
+              )
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'video index job is not complete');
+        END
+        """
+    )
+
+
+def _ensure_external_index_generations(connection: sqlite3.Connection) -> None:
+    external_kinds = _sql_values(
+        [kind.value for kind in EXTERNAL_INDEX_STAGE_KINDS]
+    )
+    connection.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS external_index_generations (
+            video_id TEXT NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+            stage_kind TEXT NOT NULL CHECK(stage_kind IN ({external_kinds})),
+            generation_id TEXT NOT NULL CHECK(
+                length(generation_id) = 32
+                AND generation_id NOT GLOB '*[^0-9a-f]*'
+            ),
+            specification_hash TEXT NOT NULL
+                REFERENCES stage_specifications(specification_hash),
+            artifact_specification_hash TEXT NOT NULL CHECK(
+                length(artifact_specification_hash) = 64
+                AND artifact_specification_hash NOT GLOB '*[^0-9a-f]*'
+            ),
+            source_sha256 TEXT NOT NULL CHECK(
+                length(source_sha256) = 64
+                AND source_sha256 NOT GLOB '*[^0-9a-f]*'
+            ),
+            run_id TEXT NOT NULL UNIQUE REFERENCES stage_runs(run_id),
+            descriptor_json TEXT NOT NULL CHECK(
+                typeof(descriptor_json) = 'text'
+                AND length(CAST(descriptor_json AS BLOB)) BETWEEN 1
+                    AND {EXTERNAL_INDEX_DESCRIPTOR_JSON_MAX_BYTES}
+                AND json_valid(descriptor_json)
+                AND json_type(descriptor_json, '$') = 'object'
+            ),
+            descriptor_sha256 TEXT NOT NULL CHECK(
+                length(descriptor_sha256) = 64
+                AND descriptor_sha256 NOT GLOB '*[^0-9a-f]*'
+            ),
+            completed_at TEXT NOT NULL,
+            PRIMARY KEY(video_id, stage_kind, generation_id)
+        )
+        """
+    )
+    connection.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS active_external_index_generations (
+            video_id TEXT NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+            stage_kind TEXT NOT NULL CHECK(stage_kind IN ({external_kinds})),
+            generation_id TEXT NOT NULL,
+            activated_at TEXT NOT NULL,
+            PRIMARY KEY(video_id, stage_kind),
+            FOREIGN KEY(video_id, stage_kind, generation_id)
+                REFERENCES external_index_generations(
+                    video_id, stage_kind, generation_id
+                )
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_external_index_generations_video_stage
+        ON external_index_generations(video_id, stage_kind, completed_at)
+        """
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS external_index_generation_run_identity_insert
+        BEFORE INSERT ON external_index_generations
+        WHEN NOT EXISTS (
+            SELECT 1
+            FROM stage_runs AS runs
+            JOIN stage_specifications AS specifications
+              ON specifications.specification_hash = runs.specification_hash
+            JOIN videos ON videos.id = runs.video_id
+            JOIN assets ON assets.asset_id = videos.asset_id
+            WHERE runs.run_id = NEW.run_id
+              AND runs.video_id = NEW.video_id
+              AND runs.specification_hash = NEW.specification_hash
+              AND runs.source_sha256 = NEW.source_sha256
+              AND runs.state = 'running'
+              AND runs.output_generation IS NULL
+              AND specifications.stage_kind = NEW.stage_kind
+              AND (
+                    (NEW.stage_kind = 'visual_dense'
+                     AND json_extract(
+                         specifications.canonical_json,
+                         '$.parameters.visual_specification_hash'
+                     ) = NEW.artifact_specification_hash)
+                 OR (NEW.stage_kind = 'lighthouse'
+                     AND json_extract(
+                         specifications.canonical_json,
+                         '$.parameters.specification_hash'
+                     ) = NEW.artifact_specification_hash)
+              )
+              AND json_extract(NEW.descriptor_json, '$.video_id') = NEW.video_id
+              AND json_extract(NEW.descriptor_json, '$.generation_id') = NEW.generation_id
+              AND json_extract(NEW.descriptor_json, '$.specification_hash')
+                    = NEW.artifact_specification_hash
+              AND json_extract(NEW.descriptor_json, '$.source_sha256')
+                    = NEW.source_sha256
+              AND json_type(NEW.descriptor_json, '$.source_size_bytes') = 'integer'
+              AND json_extract(NEW.descriptor_json, '$.source_size_bytes')
+                    = assets.size_bytes
+              AND videos.size_bytes = assets.size_bytes
+              AND json_type(NEW.descriptor_json, '$.duration_seconds')
+                    IN ('integer', 'real')
+              AND videos.duration IS NOT NULL
+              AND json_extract(NEW.descriptor_json, '$.duration_seconds')
+                    = videos.duration
+              AND (
+                    (NEW.stage_kind = 'visual_dense'
+                     AND json_type(NEW.descriptor_json, '$.content_sha256') = 'text'
+                     AND json_type(NEW.descriptor_json, '$.manifest_sha256') IS NULL)
+                 OR (NEW.stage_kind = 'lighthouse'
+                     AND json_type(NEW.descriptor_json, '$.manifest_sha256') = 'text'
+                     AND json_type(NEW.descriptor_json, '$.content_sha256') IS NULL)
+              )
+              AND (SELECT COUNT(*) FROM json_each(NEW.descriptor_json)) = 7
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'external index generation run identity mismatch');
+        END
+        """
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS external_index_generations_immutable_update
+        BEFORE UPDATE ON external_index_generations
+        BEGIN
+            SELECT RAISE(ABORT, 'external index generation is immutable');
+        END
+        """
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS external_index_generations_immutable_delete
+        BEFORE DELETE ON external_index_generations
+        WHEN EXISTS (SELECT 1 FROM videos WHERE id = OLD.video_id)
+        BEGIN
+            SELECT RAISE(ABORT, 'external index generation is immutable');
+        END
+        """
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS active_external_index_generations_job_owner_insert
+        BEFORE INSERT ON active_external_index_generations
+        WHEN NOT EXISTS (
+            SELECT 1
+            FROM external_index_generations AS generations
+            JOIN stage_runs AS runs ON runs.run_id = generations.run_id
+            LEFT JOIN video_index_jobs AS jobs ON jobs.job_id = runs.job_id
+            WHERE generations.video_id = NEW.video_id
+              AND generations.stage_kind = NEW.stage_kind
+              AND generations.generation_id = NEW.generation_id
+              AND generations.completed_at = NEW.activated_at
+              AND (runs.job_id IS NULL OR jobs.state = 'complete')
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'video index job is not complete');
+        END
+        """
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS active_external_index_generations_job_owner_update
+        BEFORE UPDATE OF generation_id, activated_at
+        ON active_external_index_generations
+        WHEN NOT EXISTS (
+            SELECT 1
+            FROM external_index_generations AS generations
+            JOIN stage_runs AS runs ON runs.run_id = generations.run_id
+            LEFT JOIN video_index_jobs AS jobs ON jobs.job_id = runs.job_id
+            WHERE generations.video_id = NEW.video_id
+              AND generations.stage_kind = NEW.stage_kind
+              AND generations.generation_id = NEW.generation_id
+              AND generations.completed_at = NEW.activated_at
+              AND (runs.job_id IS NULL OR jobs.state = 'complete')
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'video index job is not complete');
+        END
+        """
+    )
+
+
+def _ensure_video_index_job_quarantines(
+    connection: sqlite3.Connection,
+) -> None:
+    existing = connection.execute(
+        """
+        SELECT 1 FROM sqlite_master
+        WHERE type = 'table' AND name = 'video_index_job_quarantines'
+        """
+    ).fetchone()
+    if existing is not None:
+        columns = {
+            str(row[1])
+            for row in connection.execute(
+                "PRAGMA table_info(video_index_job_quarantines)"
+            ).fetchall()
+        }
+        required = set(_READ_ONLY_REQUIRED_COLUMNS["video_index_job_quarantines"])
+        if not required <= columns:
+            raise ValueError("video index job quarantine schema is incomplete")
+    else:
+        connection.execute(
+            """
+            CREATE TABLE video_index_job_quarantines (
+                sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_sequence INTEGER NOT NULL REFERENCES video_index_jobs(sequence),
+                error_code TEXT NOT NULL CHECK(error_code = 'job_record_corrupt'),
+                quarantined_at TEXT NOT NULL
+            )
+            """
+        )
+    connection.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS
+        idx_video_index_job_quarantines_job_sequence
+        ON video_index_job_quarantines(job_sequence)
+        """
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS video_index_job_quarantines_immutable_update
+        BEFORE UPDATE ON video_index_job_quarantines
+        BEGIN
+            SELECT RAISE(ABORT, 'video index job quarantine is immutable');
+        END
+        """
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS video_index_job_quarantines_immutable_delete
+        BEFORE DELETE ON video_index_job_quarantines
+        BEGIN
+            SELECT RAISE(ABORT, 'video index job quarantine is immutable');
+        END
+        """
+    )
+
+
+def _migration_9_add_durable_video_index_jobs(
+    connection: sqlite3.Connection,
+) -> None:
+    """Add append-only, fenced video-index work without inferring legacy history."""
+    _migration_8_add_recoverable_artifact_gc(connection)
+    table_names = {
+        str(row[0])
+        for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        ).fetchall()
+    }
+    index_names = {
+        str(row[0])
+        for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'index'"
+        ).fetchall()
+    }
+    trigger_names = {
+        str(row[0])
+        for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'trigger'"
+        ).fetchall()
+    }
+    stage_columns = {
+        str(row[1])
+        for row in connection.execute("PRAGMA table_info(stage_runs)").fetchall()
+    }
+    required_indexes = {
+        "idx_stage_runs_job_id",
+        "idx_video_index_jobs_active_idempotency",
+        "idx_video_index_jobs_active_video",
+        "idx_video_index_jobs_ready",
+        "idx_video_index_jobs_retry_child",
+        "idx_video_index_jobs_video_history",
+    }
+    required_triggers = {
+        "stage_runs_job_id_immutable_update",
+        "stage_runs_video_index_job_ownership_insert",
+        "stage_runs_video_index_job_active_update",
+        "stage_runs_video_index_job_identity_insert",
+        "video_index_jobs_cancel_request_immutable",
+        "video_index_jobs_execution_fence",
+        "video_index_jobs_identity_immutable_update",
+        "video_index_jobs_immutable_delete",
+        "video_index_jobs_progress_monotonic",
+        "video_index_jobs_reject_active_stage_completion",
+        "video_index_jobs_retry_identity_insert",
+        "video_index_jobs_source_identity_insert",
+        "video_index_jobs_state_transition",
+        "video_index_jobs_terminal_immutable_update",
+        "video_index_jobs_updated_at_monotonic",
+    }
+    markers_present = any(
+        (
+            "video_index_jobs" in table_names,
+            "job_id" in stage_columns,
+            bool(required_indexes & index_names),
+            bool(required_triggers & trigger_names),
+        )
+    )
+    if markers_present:
+        job_columns = {
+            str(row[1])
+            for row in connection.execute(
+                "PRAGMA table_info(video_index_jobs)"
+            ).fetchall()
+        }
+        required_columns = set(_READ_ONLY_REQUIRED_COLUMNS["video_index_jobs"])
+        job_indexes = required_indexes - {"idx_stage_runs_job_id"}
+        job_triggers = {
+            name for name in required_triggers if not name.startswith("stage_runs_")
+        }
+        if (
+            "video_index_jobs" not in table_names
+            or not required_columns <= job_columns
+            or not job_indexes <= index_names
+            or not job_triggers <= trigger_names
+        ):
+            raise ValueError("durable video index job migration is incomplete or corrupt")
+        _ensure_video_index_job_quarantines(connection)
+        _ensure_stage_run_video_index_job_linkage(connection)
+        _ensure_video_index_job_completion_receipts(connection)
+        _ensure_video_index_staged_activation(connection)
+        _ensure_external_index_generations(connection)
+        return
+
+    connection.execute(
+        f"""
+        CREATE TABLE video_index_jobs (
+            sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id TEXT NOT NULL UNIQUE,
+            kind TEXT NOT NULL CHECK(kind = 'video_index'),
+            intent TEXT NOT NULL CHECK(intent IN ('ingest', 'reindex')),
+            video_id TEXT NOT NULL REFERENCES videos(id),
+            source_sha256 TEXT NOT NULL CHECK(
+                length(source_sha256) = 64
+                AND source_sha256 NOT GLOB '*[^0-9a-f]*'
+            ),
+            plan_hash TEXT NOT NULL CHECK(
+                length(plan_hash) = 64
+                AND plan_hash NOT GLOB '*[^0-9a-f]*'
+            ),
+            plan_json TEXT NOT NULL CHECK(
+                typeof(plan_json) = 'text'
+                AND length(CAST(plan_json AS BLOB)) BETWEEN 1 AND {VIDEO_INDEX_PLAN_JSON_MAX_BYTES}
+            ),
+            idempotency_hash TEXT NOT NULL CHECK(
+                length(idempotency_hash) = 64
+                AND idempotency_hash NOT GLOB '*[^0-9a-f]*'
+            ),
+            state TEXT NOT NULL CHECK(
+                state IN ('queued', 'running', 'complete', 'failed', 'cancelled')
+            ),
+            progress REAL NOT NULL CHECK(
+                typeof(progress) IN ('real', 'integer')
+                AND progress >= 0.0 AND progress <= 1.0
+            ),
+            stage TEXT NOT NULL CHECK(
+                length(stage) BETWEEN 1 AND 64
+                AND stage GLOB '[a-z]*'
+                AND stage NOT GLOB '*[^a-z0-9_-]*'
+            ),
+            attempt INTEGER NOT NULL CHECK(attempt >= 1),
+            retry_of_job_id TEXT REFERENCES video_index_jobs(job_id),
+            prior_video_status TEXT,
+            prior_video_progress REAL,
+            prior_video_stage TEXT,
+            prior_video_error_code TEXT,
+            execution_token TEXT UNIQUE CHECK(
+                execution_token IS NULL OR (
+                    length(execution_token) BETWEEN 16 AND 256
+                    AND execution_token GLOB '[A-Za-z0-9]*'
+                    AND execution_token NOT GLOB '*[^A-Za-z0-9._~-]*'
+                )
+            ),
+            cancel_requested_at TEXT,
+            error_code TEXT CHECK(
+                error_code IS NULL OR (
+                    length(error_code) BETWEEN 1 AND 64
+                    AND error_code GLOB '[a-z]*'
+                    AND error_code NOT GLOB '*[^a-z0-9_-]*'
+                )
+            ),
+            created_at TEXT NOT NULL,
+            started_at TEXT,
+            finished_at TEXT,
+            updated_at TEXT NOT NULL,
+            CHECK(retry_of_job_id IS NULL OR retry_of_job_id <> job_id),
+            CHECK(
+                (retry_of_job_id IS NULL AND attempt = 1)
+                OR (retry_of_job_id IS NOT NULL AND attempt >= 2)
+            ),
+            CHECK(
+                (intent = 'ingest'
+                    AND prior_video_status IS NULL
+                    AND prior_video_progress IS NULL
+                    AND prior_video_stage IS NULL
+                    AND prior_video_error_code IS NULL)
+                OR
+                (intent = 'reindex'
+                    AND prior_video_status IS NOT NULL
+                    AND prior_video_progress BETWEEN 0.0 AND 1.0
+                    AND prior_video_stage IS NOT NULL)
+            ),
+            CHECK(
+                (state = 'queued'
+                    AND progress = 0.0 AND stage = 'queued'
+                    AND execution_token IS NULL
+                    AND cancel_requested_at IS NULL
+                    AND error_code IS NULL
+                    AND started_at IS NULL AND finished_at IS NULL
+                    AND updated_at = created_at)
+                OR
+                (state = 'running'
+                    AND progress < 1.0
+                    AND stage NOT IN ('queued', 'complete', 'failed', 'cancelled')
+                    AND execution_token IS NOT NULL
+                    AND started_at IS NOT NULL
+                    AND finished_at IS NULL
+                    AND error_code IS NULL)
+                OR
+                (state = 'complete'
+                    AND progress = 1.0 AND stage = 'complete'
+                    AND execution_token IS NULL
+                    AND cancel_requested_at IS NULL
+                    AND error_code IS NULL
+                    AND started_at IS NOT NULL AND finished_at IS NOT NULL)
+                OR
+                (state = 'failed'
+                    AND stage = 'failed'
+                    AND execution_token IS NULL
+                    AND cancel_requested_at IS NULL
+                    AND error_code IS NOT NULL
+                    AND started_at IS NOT NULL AND finished_at IS NOT NULL)
+                OR
+                (state = 'cancelled'
+                    AND stage = 'cancelled'
+                    AND execution_token IS NULL
+                    AND cancel_requested_at IS NOT NULL
+                    AND error_code IS NULL
+                    AND finished_at IS NOT NULL
+                    AND (started_at IS NOT NULL OR progress = 0.0))
+            )
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE UNIQUE INDEX idx_video_index_jobs_active_video
+        ON video_index_jobs(video_id)
+        WHERE state IN ('queued', 'running')
+        """
+    )
+    connection.execute(
+        """
+        CREATE UNIQUE INDEX idx_video_index_jobs_active_idempotency
+        ON video_index_jobs(idempotency_hash)
+        WHERE state IN ('queued', 'running')
+        """
+    )
+    connection.execute(
+        """
+        CREATE UNIQUE INDEX idx_video_index_jobs_retry_child
+        ON video_index_jobs(retry_of_job_id)
+        WHERE retry_of_job_id IS NOT NULL
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX idx_video_index_jobs_ready
+        ON video_index_jobs(state, sequence)
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX idx_video_index_jobs_video_history
+        ON video_index_jobs(video_id, sequence DESC)
+        """
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER video_index_jobs_source_identity_insert
+        BEFORE INSERT ON video_index_jobs
+        WHEN NOT EXISTS (
+            SELECT 1
+            FROM videos
+            JOIN assets ON assets.asset_id = videos.asset_id
+            WHERE videos.id = NEW.video_id
+              AND assets.sha256 = NEW.source_sha256
+              AND videos.size_bytes = assets.size_bytes
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'video index job source identity mismatch');
+        END
+        """
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER video_index_jobs_retry_identity_insert
+        BEFORE INSERT ON video_index_jobs
+        WHEN NEW.retry_of_job_id IS NOT NULL AND NOT EXISTS (
+            SELECT 1 FROM video_index_jobs AS parent
+            WHERE parent.job_id = NEW.retry_of_job_id
+              AND parent.state IN ('failed', 'cancelled')
+              AND NEW.attempt = parent.attempt + 1
+              AND NEW.kind = parent.kind
+              AND NEW.intent = parent.intent
+              AND NEW.video_id = parent.video_id
+              AND NEW.source_sha256 = parent.source_sha256
+              AND NEW.plan_hash = parent.plan_hash
+              AND NEW.plan_json = parent.plan_json
+              AND NEW.idempotency_hash = parent.idempotency_hash
+              AND NEW.prior_video_status IS parent.prior_video_status
+              AND NEW.prior_video_progress IS parent.prior_video_progress
+              AND NEW.prior_video_stage IS parent.prior_video_stage
+              AND NEW.prior_video_error_code IS parent.prior_video_error_code
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'video index retry identity mismatch');
+        END
+        """
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER video_index_jobs_identity_immutable_update
+        BEFORE UPDATE OF
+            job_id, kind, intent, video_id, source_sha256, plan_hash,
+            plan_json, idempotency_hash, attempt, retry_of_job_id,
+            prior_video_status, prior_video_progress, prior_video_stage,
+            prior_video_error_code, created_at
+        ON video_index_jobs
+        BEGIN
+            SELECT RAISE(ABORT, 'video index job identity is immutable');
+        END
+        """
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER video_index_jobs_state_transition
+        BEFORE UPDATE OF state ON video_index_jobs
+        WHEN NOT (
+            NEW.state = OLD.state
+            OR (OLD.state = 'queued' AND NEW.state IN ('running', 'cancelled'))
+            OR (OLD.state = 'running'
+                AND NEW.state IN ('complete', 'failed', 'cancelled'))
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'invalid video index job state transition');
+        END
+        """
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER video_index_jobs_terminal_immutable_update
+        BEFORE UPDATE ON video_index_jobs
+        WHEN OLD.state IN ('complete', 'failed', 'cancelled')
+        BEGIN
+            SELECT RAISE(ABORT, 'terminal video index job is immutable');
+        END
+        """
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER video_index_jobs_reject_active_stage_completion
+        BEFORE UPDATE OF state ON video_index_jobs
+        WHEN NEW.state = 'complete' AND EXISTS (
+            SELECT 1 FROM stage_runs AS runs
+            WHERE runs.job_id = OLD.job_id
+              AND runs.state IN ('queued', 'running')
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'video index job has active stage runs');
+        END
+        """
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER video_index_jobs_progress_monotonic
+        BEFORE UPDATE OF progress ON video_index_jobs
+        WHEN NEW.progress < OLD.progress
+        BEGIN
+            SELECT RAISE(ABORT, 'video index job progress must be monotonic');
+        END
+        """
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER video_index_jobs_execution_fence
+        BEFORE UPDATE OF execution_token ON video_index_jobs
+        WHEN OLD.execution_token IS NOT NEW.execution_token AND NOT (
+            (OLD.state = 'queued' AND NEW.state = 'running'
+                AND OLD.execution_token IS NULL AND NEW.execution_token IS NOT NULL)
+            OR
+            (OLD.state = 'running'
+                AND NEW.state IN ('complete', 'failed', 'cancelled')
+                AND OLD.execution_token IS NOT NULL AND NEW.execution_token IS NULL)
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'invalid video index execution fence transition');
+        END
+        """
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER video_index_jobs_cancel_request_immutable
+        BEFORE UPDATE OF cancel_requested_at ON video_index_jobs
+        WHEN OLD.cancel_requested_at IS NOT NULL
+          AND NEW.cancel_requested_at IS NOT OLD.cancel_requested_at
+        BEGIN
+            SELECT RAISE(ABORT, 'video index cancellation request is immutable');
+        END
+        """
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER video_index_jobs_updated_at_monotonic
+        BEFORE UPDATE OF updated_at ON video_index_jobs
+        WHEN NEW.updated_at < OLD.updated_at
+        BEGIN
+            SELECT RAISE(ABORT, 'video index updated timestamp must be monotonic');
+        END
+        """
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER video_index_jobs_immutable_delete
+        BEFORE DELETE ON video_index_jobs
+        BEGIN
+            SELECT RAISE(ABORT, 'video index job is immutable');
+        END
+        """
+    )
+
+    _ensure_video_index_job_quarantines(connection)
+    _ensure_stage_run_video_index_job_linkage(connection)
+    _ensure_video_index_job_completion_receipts(connection)
+    _ensure_video_index_staged_activation(connection)
+    _ensure_external_index_generations(connection)
+
+
 _SCHEMA_MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (1, _migration_1_create_library_schema),
     (2, _migration_2_add_video_display_name),
@@ -1669,6 +3128,7 @@ _SCHEMA_MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...]
     (6, _migration_6_add_text_vector_generations),
     (7, _migration_7_add_crash_safe_artifact_gc),
     (8, _migration_8_add_recoverable_artifact_gc),
+    (9, _migration_9_add_durable_video_index_jobs),
 )
 
 _STAGE_RUN_SELECT = """
@@ -1768,6 +3228,36 @@ _ARTIFACT_GC_SELECT = """
     FROM artifact_gc_jobs
 """
 
+_VIDEO_INDEX_JOB_SELECT = """
+    SELECT
+        sequence,
+        job_id,
+        kind,
+        intent,
+        video_id,
+        source_sha256,
+        plan_hash,
+        plan_json,
+        idempotency_hash,
+        state,
+        progress,
+        stage,
+        attempt,
+        retry_of_job_id,
+        prior_video_status,
+        prior_video_progress,
+        prior_video_stage,
+        prior_video_error_code,
+        execution_token,
+        cancel_requested_at,
+        error_code,
+        created_at,
+        started_at,
+        finished_at,
+        updated_at
+    FROM video_index_jobs
+"""
+
 
 def _canonical_sha256(payload: object) -> str:
     encoded = json.dumps(
@@ -1778,6 +3268,122 @@ def _canonical_sha256(payload: object) -> str:
         allow_nan=False,
     ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _validate_external_index_descriptor(
+    descriptor: object,
+    *,
+    stage_kind: StageKind,
+    video_id: str,
+    generation_id: str,
+    artifact_specification_hash: str,
+    source_sha256: str,
+    source_size_bytes: int,
+    duration_seconds: float,
+) -> tuple[dict[str, object], str, str]:
+    digest_field = (
+        "content_sha256"
+        if stage_kind is StageKind.VISUAL_DENSE
+        else "manifest_sha256"
+        if stage_kind is StageKind.LIGHTHOUSE
+        else None
+    )
+    expected_keys = {
+        "duration_seconds",
+        "generation_id",
+        "source_sha256",
+        "source_size_bytes",
+        "specification_hash",
+        "video_id",
+    }
+    if digest_field is not None:
+        expected_keys.add(digest_field)
+    invalid = (
+        digest_field is None
+        or not isinstance(descriptor, dict)
+        or set(descriptor) != expected_keys
+        or descriptor.get("video_id") != video_id
+        or descriptor.get("generation_id") != generation_id
+        or descriptor.get("specification_hash") != artifact_specification_hash
+        or descriptor.get("source_sha256") != source_sha256
+        or descriptor.get("source_size_bytes") != source_size_bytes
+        or type(descriptor.get("source_size_bytes")) is not int
+        or type(descriptor.get(digest_field)) is not str
+        or _SHA256_RE.fullmatch(str(descriptor.get(digest_field))) is None
+    )
+    duration = descriptor.get("duration_seconds") if isinstance(descriptor, dict) else None
+    if (
+        invalid
+        or isinstance(duration, bool)
+        or not isinstance(duration, Real)
+        or not math.isfinite(float(duration))
+        or not 0 < float(duration) <= 24 * 60 * 60
+        or isinstance(duration_seconds, bool)
+        or not isinstance(duration_seconds, Real)
+        or not math.isfinite(float(duration_seconds))
+        or not math.isclose(
+            float(duration),
+            float(duration_seconds),
+            rel_tol=1e-9,
+            abs_tol=1e-6,
+        )
+    ):
+        raise ValueError("external index canonical descriptor is invalid")
+    normalized = dict(descriptor)
+    normalized["duration_seconds"] = float(duration)
+    try:
+        canonical = json.dumps(
+            normalized,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+    except (RecursionError, TypeError, ValueError) as error:
+        raise ValueError("external index canonical descriptor is invalid") from error
+    encoded = canonical.encode("utf-8")
+    if not 1 <= len(encoded) <= EXTERNAL_INDEX_DESCRIPTOR_JSON_MAX_BYTES:
+        raise ValueError("external index canonical descriptor is invalid")
+    return normalized, canonical, hashlib.sha256(encoded).hexdigest()
+
+
+def _external_video_duration(
+    connection: sqlite3.Connection,
+    video_id: str,
+) -> float:
+    row = connection.execute(
+        "SELECT duration FROM videos WHERE id = ?",
+        (video_id,),
+    ).fetchone()
+    duration = row["duration"] if row is not None else None
+    if (
+        isinstance(duration, bool)
+        or not isinstance(duration, Real)
+        or not math.isfinite(float(duration))
+        or not 0 < float(duration) <= 24 * 60 * 60
+    ):
+        raise ValueError("external index video duration is invalid")
+    return float(duration)
+
+
+def _external_artifact_specification_hash(
+    specification: StageSpecification,
+) -> str:
+    parameter_name = (
+        "visual_specification_hash"
+        if specification.kind is StageKind.VISUAL_DENSE
+        else "specification_hash"
+        if specification.kind is StageKind.LIGHTHOUSE
+        else None
+    )
+    value = (
+        specification.parameters.get(parameter_name)
+        if parameter_name is not None
+        else None
+    )
+    if type(value) is not str or _SHA256_RE.fullmatch(value) is None:
+        raise ValueError("external stage artifact specification is invalid")
+    return value
 
 
 def _text_vector_input_manifest(
@@ -1849,6 +3455,15 @@ class VideoRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class VideoIndexRecoveryReport:
+    examined_count: int
+    retry_job_ids: tuple[str, ...]
+    cancelled_job_ids: tuple[str, ...]
+    quarantined_count: int
+    has_more: bool
+
+
+@dataclass(frozen=True, slots=True)
 class SegmentRecord:
     id: str
     video_id: str
@@ -1859,6 +3474,36 @@ class SegmentRecord:
     confidence: float
     metadata: dict[str, Any]
     thumbnail_path: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class ExternalIndexGeneration:
+    video_id: str
+    stage_kind: StageKind
+    generation_id: str
+    specification_hash: str
+    artifact_specification_hash: str
+    source_sha256: str
+    run_id: str
+    descriptor: dict[str, object]
+    descriptor_sha256: str
+    completed_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class ExternalIndexReleaseSnapshot:
+    """One SQLite snapshot of durable external bindings for product search."""
+
+    job_backed_video_ids: frozenset[str]
+    visual_dense: dict[str, dict[str, object]]
+    lighthouse: dict[str, dict[str, object]]
+
+    def bindings_for(self, kind: StageKind) -> dict[str, dict[str, object]]:
+        if kind is StageKind.VISUAL_DENSE:
+            return {key: dict(value) for key, value in self.visual_dense.items()}
+        if kind is StageKind.LIGHTHOUSE:
+            return {key: dict(value) for key, value in self.lighthouse.items()}
+        raise ValueError("external release snapshot requires an external stage")
 
 
 @dataclass(frozen=True, slots=True)
@@ -1903,16 +3548,63 @@ class Repository:
         "error",
     }
 
-    def __init__(self, database_path: Path) -> None:
+    def __init__(self, database_path: Path, *, read_only: bool = False) -> None:
         self.database_path = Path(database_path)
+        self._read_only = read_only
+        self._read_only_uri: str | None = None
+        if read_only:
+            absolute = _validate_read_only_database_path(self.database_path)
+            immutable = _require_existing_wal_sidecars(absolute)
+            self.database_path = absolute
+            immutable_parameter = "&immutable=1" if immutable else ""
+            self._read_only_uri = (
+                f"{absolute.as_uri()}?mode=ro{immutable_parameter}"
+            )
+            try:
+                connection = self._connect()
+                try:
+                    _validate_latest_read_only_schema(connection)
+                finally:
+                    connection.close()
+            except RuntimeError:
+                raise
+            except (OSError, sqlite3.Error) as error:
+                raise RuntimeError("read-only database is unavailable or corrupt") from error
+
+    @classmethod
+    def open_read_only(cls, database_path: Path) -> Repository:
+        """Open and validate the exact current schema without database writes.
+
+        SQLite may update lock bytes in an already-existing WAL ``-shm`` file.
+        A caller requiring a byte-identical source tree must first copy the
+        database and its WAL under the persistent runtime lock, then open that
+        private snapshot here.
+        """
+        return cls(database_path, read_only=True)
+
+    @property
+    def is_read_only(self) -> bool:
+        return self._read_only
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.database_path, timeout=30)
+        if self._read_only:
+            assert self._read_only_uri is not None
+            connection = sqlite3.connect(
+                self._read_only_uri,
+                timeout=30,
+                uri=True,
+            )
+        else:
+            connection = sqlite3.connect(self.database_path, timeout=30)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
+        if self._read_only:
+            connection.execute("PRAGMA query_only = ON")
         return connection
 
     def initialize(self) -> None:
+        if self._read_only:
+            raise RuntimeError("read-only repository cannot be initialized")
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
         with _DATABASE_INITIALIZE_LOCK:
             with self._connect() as connection:
@@ -1931,7 +3623,7 @@ class Repository:
                         migration(connection)
                         connection.execute(f"PRAGMA user_version = {version}")
                     if current_version == LATEST_SCHEMA_VERSION:
-                        _migration_8_add_recoverable_artifact_gc(connection)
+                        _migration_9_add_durable_video_index_jobs(connection)
                     connection.commit()
                 except Exception:
                     connection.rollback()
@@ -2107,6 +3799,1508 @@ class Repository:
                 raise RuntimeError("persisted video with asset is corrupt") from error
         return record
 
+    @staticmethod
+    def _insert_video_index_job(
+        connection: sqlite3.Connection,
+        *,
+        job: VideoIndexJob,
+        plan: VideoIndexPlanSnapshot,
+    ) -> None:
+        if not isinstance(job, VideoIndexJob):
+            raise ValueError("video index job must be validated")
+        if not isinstance(plan, VideoIndexPlanSnapshot):
+            raise ValueError("video index plan must be validated")
+        if plan.plan_hash != job.plan_hash:
+            raise ValueError("video index job plan identity mismatch")
+        prior = job.prior_video_state
+        connection.execute(
+            """
+            INSERT INTO video_index_jobs (
+                job_id, kind, intent, video_id, source_sha256,
+                plan_hash, plan_json, idempotency_hash, state, progress,
+                stage, attempt, retry_of_job_id, prior_video_status,
+                prior_video_progress, prior_video_stage,
+                prior_video_error_code, execution_token,
+                cancel_requested_at, error_code, created_at, started_at,
+                finished_at, updated_at
+            ) VALUES (
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?
+            )
+            """,
+            (
+                job.job_id,
+                job.kind.value,
+                job.intent.value,
+                job.video_id,
+                job.source_sha256,
+                job.plan_hash,
+                plan.canonical_json,
+                job.idempotency_hash,
+                job.state.value,
+                job.progress,
+                job.stage,
+                job.attempt,
+                job.retry_of_job_id,
+                prior.status if prior is not None else None,
+                prior.progress if prior is not None else None,
+                prior.stage if prior is not None else None,
+                prior.error_code if prior is not None else None,
+                job.execution_token,
+                job.cancel_requested_at,
+                job.error_code,
+                job.created_at,
+                job.started_at,
+                job.finished_at,
+                job.updated_at,
+            ),
+        )
+
+    @classmethod
+    def _video_index_job_from_row(
+        cls,
+        connection: sqlite3.Connection,
+        row: sqlite3.Row,
+        *,
+        validate_retry: bool = True,
+    ) -> tuple[VideoIndexJob, VideoIndexPlanSnapshot]:
+        try:
+            plan = VideoIndexPlanSnapshot.from_canonical_json(row["plan_json"])
+            if plan.plan_hash != row["plan_hash"]:
+                raise ValueError("video index plan hash mismatch")
+            intent = VideoIndexIntent(row["intent"])
+            prior: PriorVideoState | None = None
+            if intent is VideoIndexIntent.REINDEX:
+                prior = PriorVideoState(
+                    status=row["prior_video_status"],
+                    progress=row["prior_video_progress"],
+                    stage=row["prior_video_stage"],
+                    error_code=row["prior_video_error_code"],
+                )
+            job = VideoIndexJob(
+                job_id=row["job_id"],
+                kind=row["kind"],
+                intent=intent,
+                video_id=row["video_id"],
+                source_sha256=row["source_sha256"],
+                plan_hash=row["plan_hash"],
+                idempotency_hash=row["idempotency_hash"],
+                state=row["state"],
+                progress=row["progress"],
+                stage=row["stage"],
+                attempt=row["attempt"],
+                retry_of_job_id=row["retry_of_job_id"],
+                prior_video_state=prior,
+                execution_token=row["execution_token"],
+                cancel_requested_at=row["cancel_requested_at"],
+                error_code=row["error_code"],
+                created_at=row["created_at"],
+                started_at=row["started_at"],
+                finished_at=row["finished_at"],
+                updated_at=row["updated_at"],
+            )
+            source = connection.execute(
+                """
+                SELECT
+                    assets.sha256,
+                    assets.size_bytes AS asset_size_bytes,
+                    videos.size_bytes AS video_size_bytes
+                FROM videos
+                JOIN assets ON assets.asset_id = videos.asset_id
+                WHERE videos.id = ?
+                """,
+                (job.video_id,),
+            ).fetchone()
+            if (
+                source is None
+                or source["sha256"] != job.source_sha256
+                or source["asset_size_bytes"] != source["video_size_bytes"]
+            ):
+                raise ValueError("video index source identity mismatch")
+            if validate_retry and job.retry_of_job_id is not None:
+                parent_row = connection.execute(
+                    f"{_VIDEO_INDEX_JOB_SELECT} WHERE job_id = ?",
+                    (job.retry_of_job_id,),
+                ).fetchone()
+                if parent_row is None:
+                    raise ValueError("video index retry parent is missing")
+                parent, parent_plan = cls._video_index_job_from_row(
+                    connection,
+                    parent_row,
+                    validate_retry=False,
+                )
+                if (
+                    parent.state not in {JobState.FAILED, JobState.CANCELLED}
+                    or job.attempt != parent.attempt + 1
+                    or job.kind is not parent.kind
+                    or job.intent is not parent.intent
+                    or job.video_id != parent.video_id
+                    or job.source_sha256 != parent.source_sha256
+                    or job.plan_hash != parent.plan_hash
+                    or plan.canonical_json != parent_plan.canonical_json
+                    or job.idempotency_hash != parent.idempotency_hash
+                    or job.prior_video_state != parent.prior_video_state
+                ):
+                    raise ValueError("video index retry lineage mismatch")
+            return job, plan
+        except (KeyError, TypeError, ValueError, RecursionError) as error:
+            raise ValueError("persisted video index job is corrupt") from error
+
+    @classmethod
+    def _get_video_index_job(
+        cls,
+        connection: sqlite3.Connection,
+        job_id: str,
+    ) -> tuple[VideoIndexJob, VideoIndexPlanSnapshot] | None:
+        row = connection.execute(
+            f"{_VIDEO_INDEX_JOB_SELECT} WHERE job_id = ?",
+            (job_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return cls._video_index_job_from_row(connection, row)
+
+    @staticmethod
+    def _new_queued_video_index_job(
+        *,
+        job_id: str,
+        intent: VideoIndexIntent,
+        video_id: str,
+        source_sha256: str,
+        plan: VideoIndexPlanSnapshot,
+        prior_video_state: PriorVideoState | None,
+        timestamp: str,
+    ) -> VideoIndexJob:
+        return VideoIndexJob(
+            job_id=job_id,
+            kind=JobKind.VIDEO_INDEX,
+            intent=intent,
+            video_id=video_id,
+            source_sha256=source_sha256,
+            plan_hash=plan.plan_hash,
+            idempotency_hash=video_index_idempotency_hash(
+                kind=JobKind.VIDEO_INDEX,
+                intent=intent,
+                video_id=video_id,
+                source_sha256=source_sha256,
+                plan_hash=plan.plan_hash,
+            ),
+            state=JobState.QUEUED,
+            progress=0.0,
+            stage=JobState.QUEUED.value,
+            attempt=1,
+            retry_of_job_id=None,
+            prior_video_state=prior_video_state,
+            execution_token=None,
+            cancel_requested_at=None,
+            error_code=None,
+            created_at=timestamp,
+            started_at=None,
+            finished_at=None,
+            updated_at=timestamp,
+        )
+
+    def create_video_with_asset_and_index_job(
+        self,
+        *,
+        video_id: str,
+        original_name: str,
+        stored_name: str,
+        media_path: str,
+        size_bytes: int,
+        source_sha256: str,
+        plan: VideoIndexPlanSnapshot,
+        job_id: str | None = None,
+    ) -> tuple[VideoRecord, VideoIndexJob]:
+        if not isinstance(plan, VideoIndexPlanSnapshot):
+            raise ValueError("video index plan must be validated")
+        resolved_job_id = uuid4().hex if job_id is None else job_id
+        validate_artifact_identifier(resolved_job_id, field_name="video index job id")
+        timestamp = _now()
+        asset = AssetRecord.from_digest(
+            sha256=source_sha256,
+            size_bytes=size_bytes,
+            created_at=timestamp,
+        )
+        candidate = self._new_queued_video_index_job(
+            job_id=resolved_job_id,
+            intent=VideoIndexIntent.INGEST,
+            video_id=video_id,
+            source_sha256=source_sha256,
+            plan=plan,
+            prior_video_state=None,
+            timestamp=timestamp,
+        )
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            persisted_asset = self._persist_asset(connection, asset)
+            self._insert_video(
+                connection,
+                video_id=video_id,
+                original_name=original_name,
+                stored_name=stored_name,
+                media_path=media_path,
+                size_bytes=size_bytes,
+                asset_id=persisted_asset.asset_id,
+                timestamp=timestamp,
+            )
+            self._insert_video_index_job(
+                connection,
+                job=candidate,
+                plan=plan,
+            )
+            video_row = connection.execute(
+                "SELECT * FROM videos WHERE id = ?",
+                (video_id,),
+            ).fetchone()
+            job_row = connection.execute(
+                f"{_VIDEO_INDEX_JOB_SELECT} WHERE job_id = ?",
+                (candidate.job_id,),
+            ).fetchone()
+            if video_row is None or job_row is None:
+                raise RuntimeError("video index upload transaction was not persisted")
+            video = VideoRecord(**dict(video_row))
+            job, _persisted_plan = self._video_index_job_from_row(
+                connection,
+                job_row,
+            )
+        return video, job
+
+    @staticmethod
+    def _normalised_prior_video_state(video: VideoRecord) -> PriorVideoState:
+        error_code = video.error
+        try:
+            return PriorVideoState(
+                status=video.status,
+                progress=video.progress,
+                stage=video.stage,
+                error_code=error_code,
+            )
+        except ValueError:
+            if error_code is None:
+                raise
+            return PriorVideoState(
+                status=video.status,
+                progress=video.progress,
+                stage=video.stage,
+                error_code=None,
+            )
+
+    def enqueue_video_reindex_job(
+        self,
+        video_id: str,
+        *,
+        plan: VideoIndexPlanSnapshot,
+        job_id: str | None = None,
+    ) -> VideoIndexJob:
+        if not isinstance(plan, VideoIndexPlanSnapshot):
+            raise ValueError("video index plan must be validated")
+        resolved_job_id = uuid4().hex if job_id is None else job_id
+        validate_artifact_identifier(resolved_job_id, field_name="video index job id")
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            video_row = connection.execute(
+                "SELECT * FROM videos WHERE id = ?",
+                (video_id,),
+            ).fetchone()
+            if video_row is None:
+                raise KeyError(video_id)
+            video = VideoRecord(**dict(video_row))
+            asset = self._get_video_asset(connection, video_id)
+            if asset is None:
+                raise AssetIdentityError("video asset identity is unavailable")
+            requested_hash = video_index_idempotency_hash(
+                kind=JobKind.VIDEO_INDEX,
+                intent=VideoIndexIntent.REINDEX,
+                video_id=video_id,
+                source_sha256=asset.sha256,
+                plan_hash=plan.plan_hash,
+            )
+            active_row = connection.execute(
+                f"""
+                {_VIDEO_INDEX_JOB_SELECT}
+                WHERE video_id = ? AND state IN ('queued', 'running')
+                ORDER BY sequence DESC LIMIT 1
+                """,
+                (video_id,),
+            ).fetchone()
+            if active_row is not None:
+                active, active_plan = self._video_index_job_from_row(
+                    connection,
+                    active_row,
+                )
+                if (
+                    active.idempotency_hash == requested_hash
+                    and active_plan.canonical_json == plan.canonical_json
+                ):
+                    return active
+                raise JobTransitionError("video already has active indexing work")
+            timestamp = _now()
+            candidate = self._new_queued_video_index_job(
+                job_id=resolved_job_id,
+                intent=VideoIndexIntent.REINDEX,
+                video_id=video_id,
+                source_sha256=asset.sha256,
+                plan=plan,
+                prior_video_state=self._normalised_prior_video_state(video),
+                timestamp=timestamp,
+            )
+            self._insert_video_index_job(
+                connection,
+                job=candidate,
+                plan=plan,
+            )
+            cursor = connection.execute(
+                """
+                UPDATE videos
+                SET status = 'queued', progress = 0.0, stage = 'queued',
+                    error = NULL, updated_at = ?
+                WHERE id = ?
+                """,
+                (timestamp, video_id),
+            )
+            if cursor.rowcount != 1:
+                raise RuntimeError("video changed during reindex enqueue")
+            row = connection.execute(
+                f"{_VIDEO_INDEX_JOB_SELECT} WHERE job_id = ?",
+                (candidate.job_id,),
+            ).fetchone()
+            assert row is not None
+            persisted, _persisted_plan = self._video_index_job_from_row(
+                connection,
+                row,
+            )
+            return persisted
+
+    def get_video_index_job(self, job_id: str) -> VideoIndexJob | None:
+        validate_artifact_identifier(job_id, field_name="video index job id")
+        with self._connect() as connection:
+            resolved = self._get_video_index_job(connection, job_id)
+        return resolved[0] if resolved is not None else None
+
+    def get_video_index_job_plan(
+        self,
+        job_id: str,
+    ) -> VideoIndexPlanSnapshot | None:
+        validate_artifact_identifier(job_id, field_name="video index job id")
+        with self._connect() as connection:
+            resolved = self._get_video_index_job(connection, job_id)
+        return resolved[1] if resolved is not None else None
+
+    def count_video_index_job_quarantines(self) -> int:
+        with self._connect() as connection:
+            return int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM video_index_job_quarantines"
+                ).fetchone()[0]
+            )
+
+    def list_video_index_jobs(
+        self,
+        *,
+        video_id: str | None = None,
+        limit: int = 100,
+    ) -> tuple[VideoIndexJob, ...]:
+        resolved_limit = _validate_repository_batch_limit(
+            limit,
+            field_name="video index job listing limit",
+        )
+        predicate = "WHERE video_id = ?" if video_id is not None else ""
+        parameters: tuple[object, ...]
+        if video_id is not None:
+            validate_artifact_identifier(video_id, field_name="video index video id")
+            parameters = (video_id, resolved_limit)
+        else:
+            parameters = (resolved_limit,)
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                {_VIDEO_INDEX_JOB_SELECT}
+                {predicate}
+                ORDER BY sequence
+                LIMIT ?
+                """,
+                parameters,
+            ).fetchall()
+            return tuple(
+                self._video_index_job_from_row(connection, row)[0]
+                for row in rows
+            )
+
+    def get_latest_video_index_jobs(
+        self,
+        video_ids: Sequence[str],
+    ) -> dict[str, VideoIndexJob]:
+        if isinstance(video_ids, (str, bytes)) or not isinstance(
+            video_ids,
+            Sequence,
+        ):
+            raise ValueError("video ids must be a bounded sequence")
+        selected_ids = tuple(video_ids)
+        if len(selected_ids) > REPOSITORY_BATCH_LIMIT_MAX:
+            raise ValueError(
+                "latest video index jobs are limited to "
+                f"{REPOSITORY_BATCH_LIMIT_MAX} video ids"
+            )
+        for video_id in selected_ids:
+            validate_artifact_identifier(
+                video_id,
+                field_name="latest video index job video id",
+            )
+        if len(set(selected_ids)) != len(selected_ids):
+            raise ValueError("latest video index job video ids must be unique")
+        if not selected_ids:
+            return {}
+        requested_values = ", ".join("(?)" for _video_id in selected_ids)
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                WITH requested(video_id) AS (VALUES {requested_values})
+                SELECT selected.*,
+                       quarantines.error_code AS quarantine_error_code
+                FROM (
+                    {_VIDEO_INDEX_JOB_SELECT}
+                ) AS selected
+                JOIN requested
+                  ON requested.video_id = selected.video_id
+                LEFT JOIN video_index_job_quarantines AS quarantines
+                  ON quarantines.job_sequence = selected.sequence
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM video_index_jobs AS newer
+                    WHERE newer.video_id = selected.video_id
+                      AND newer.sequence > selected.sequence
+                )
+                ORDER BY selected.sequence
+                """,
+                selected_ids,
+            ).fetchall()
+            latest: dict[str, VideoIndexJob] = {}
+            for row in rows:
+                if row["quarantine_error_code"] is not None:
+                    raise ValueError("latest video index job is quarantined")
+                job, _plan = self._video_index_job_from_row(connection, row)
+                if job.video_id in latest:
+                    raise ValueError("latest video index job selection is corrupt")
+                latest[job.video_id] = job
+            return latest
+
+    @classmethod
+    def _persist_video_index_transition(
+        cls,
+        connection: sqlite3.Connection,
+        *,
+        current: VideoIndexJob,
+        candidate: VideoIndexJob,
+    ) -> VideoIndexJob:
+        cursor = connection.execute(
+            """
+            UPDATE video_index_jobs
+            SET state = ?, progress = ?, stage = ?, execution_token = ?,
+                cancel_requested_at = ?, error_code = ?, started_at = ?,
+                finished_at = ?, updated_at = ?
+            WHERE job_id = ? AND state = ?
+              AND execution_token IS ? AND updated_at = ?
+            """,
+            (
+                candidate.state.value,
+                candidate.progress,
+                candidate.stage,
+                candidate.execution_token,
+                candidate.cancel_requested_at,
+                candidate.error_code,
+                candidate.started_at,
+                candidate.finished_at,
+                candidate.updated_at,
+                current.job_id,
+                current.state.value,
+                current.execution_token,
+                current.updated_at,
+            ),
+        )
+        if cursor.rowcount != 1:
+            raise JobFenceError("job execution token no longer owns this attempt")
+        row = connection.execute(
+            f"{_VIDEO_INDEX_JOB_SELECT} WHERE job_id = ?",
+            (current.job_id,),
+        ).fetchone()
+        assert row is not None
+        return cls._video_index_job_from_row(connection, row)[0]
+
+    @staticmethod
+    def _sync_video_for_index_job(
+        connection: sqlite3.Connection,
+        job: VideoIndexJob,
+    ) -> None:
+        if job.state is JobState.QUEUED:
+            values = ("queued", 0.0, "queued", None)
+        elif job.state is JobState.RUNNING:
+            values = ("processing", job.progress, job.stage, None)
+        elif job.state is JobState.COMPLETE:
+            values = ("ready", 1.0, "ready", None)
+        elif job.state is JobState.FAILED:
+            values = ("failed", job.progress, "failed", job.error_code)
+        elif job.state is JobState.CANCELLED:
+            if (
+                job.intent is VideoIndexIntent.REINDEX
+                and job.prior_video_state is not None
+            ):
+                prior = job.prior_video_state
+                values = (
+                    prior.status,
+                    prior.progress,
+                    prior.stage,
+                    prior.error_code,
+                )
+            else:
+                values = ("failed", job.progress, "cancelled", "job_cancelled")
+        else:  # pragma: no cover - exhaustive domain enum
+            raise ValueError("unsupported video index job state")
+        cursor = connection.execute(
+            """
+            UPDATE videos
+            SET status = ?, progress = ?, stage = ?, error = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (*values, job.updated_at, job.video_id),
+        )
+        if cursor.rowcount != 1:
+            raise RuntimeError("video index job lost its video")
+
+    def claim_next_video_index_job(
+        self,
+        *,
+        execution_token: str,
+        stage: str = "starting",
+        scan_limit: int = 16,
+    ) -> VideoIndexJob | None:
+        if (
+            isinstance(scan_limit, bool)
+            or not isinstance(scan_limit, int)
+            or not 1 <= scan_limit <= VIDEO_INDEX_JOB_SCAN_LIMIT_MAX
+        ):
+            raise ValueError(
+                "video index scan limit must be between "
+                f"1 and {VIDEO_INDEX_JOB_SCAN_LIMIT_MAX}"
+            )
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            rows = connection.execute(
+                f"""
+                {_VIDEO_INDEX_JOB_SELECT}
+                WHERE state = 'queued'
+                  AND NOT EXISTS (
+                      SELECT 1 FROM video_index_job_quarantines AS quarantines
+                      WHERE quarantines.job_sequence = video_index_jobs.sequence
+                  )
+                ORDER BY sequence
+                LIMIT ?
+                """,
+                (scan_limit,),
+            ).fetchall()
+            if not rows:
+                return None
+            for row in rows:
+                try:
+                    current, _plan = self._video_index_job_from_row(connection, row)
+                except ValueError:
+                    self._quarantine_video_index_job_row(
+                        connection,
+                        row=row,
+                        timestamp=_now(),
+                    )
+                    continue
+                candidate = start_job(
+                    current,
+                    execution_token=execution_token,
+                    stage=stage,
+                    now=_now(),
+                )
+                persisted = self._persist_video_index_transition(
+                    connection,
+                    current=current,
+                    candidate=candidate,
+                )
+                self._sync_video_for_index_job(connection, persisted)
+                return persisted
+            return None
+
+    def checkpoint_video_index_job(
+        self,
+        job_id: str,
+        *,
+        execution_token: str,
+        progress: float,
+        stage: str,
+    ) -> VideoIndexJob:
+        validate_artifact_identifier(job_id, field_name="video index job id")
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            resolved = self._get_video_index_job(connection, job_id)
+            if resolved is None:
+                raise KeyError(job_id)
+            current, _plan = resolved
+            candidate = advance_job(
+                current,
+                execution_token=execution_token,
+                progress=progress,
+                stage=stage,
+                now=_now(),
+            )
+            persisted = self._persist_video_index_transition(
+                connection,
+                current=current,
+                candidate=candidate,
+            )
+            self._sync_video_for_index_job(connection, persisted)
+            return persisted
+
+    def request_video_index_job_cancellation(self, job_id: str) -> VideoIndexJob:
+        validate_artifact_identifier(job_id, field_name="video index job id")
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            resolved = self._get_video_index_job(connection, job_id)
+            if resolved is None:
+                raise KeyError(job_id)
+            current, _plan = resolved
+            candidate = request_job_cancellation(current, now=_now())
+            if candidate is current:
+                return current
+            persisted = self._persist_video_index_transition(
+                connection,
+                current=current,
+                candidate=candidate,
+            )
+            if persisted.state is JobState.CANCELLED:
+                self._terminalize_linked_stage_runs(
+                    connection,
+                    job_id=current.job_id,
+                    timestamp=persisted.updated_at,
+                    failure_error_code=None,
+                )
+                self._sync_video_for_index_job(connection, persisted)
+            return persisted
+
+    @staticmethod
+    def _require_exact_video_index_job_stage_receipts(
+        connection: sqlite3.Connection,
+        *,
+        job: VideoIndexJob,
+        plan: VideoIndexPlanSnapshot,
+    ) -> None:
+        expected = {
+            kind: plan.for_kind(kind).specification_hash
+            for kind in _VIDEO_INDEX_STAGE_KINDS
+        }
+        rows = connection.execute(
+            """
+            SELECT
+                runs.video_id,
+                runs.source_sha256,
+                runs.specification_hash,
+                runs.state,
+                specifications.stage_kind
+            FROM stage_runs AS runs
+            JOIN stage_specifications AS specifications
+              ON specifications.specification_hash = runs.specification_hash
+            WHERE runs.job_id = ?
+            ORDER BY runs.sequence
+            """,
+            (job.job_id,),
+        ).fetchall()
+        if len(rows) != len(expected):
+            raise JobTransitionError(
+                "video index job requires exact planned stage receipts"
+            )
+        seen: set[StageKind] = set()
+        try:
+            for row in rows:
+                stage_kind = StageKind(row["stage_kind"])
+                state = StageState(row["state"])
+                if (
+                    stage_kind in seen
+                    or stage_kind not in expected
+                    or row["video_id"] != job.video_id
+                    or row["source_sha256"] != job.source_sha256
+                    or row["specification_hash"] != expected[stage_kind]
+                    or state not in _VIDEO_INDEX_COMPLETION_STAGE_STATES
+                ):
+                    raise JobTransitionError(
+                        "video index job requires exact planned stage receipts"
+                    )
+                seen.add(stage_kind)
+        except (TypeError, ValueError) as error:
+            raise JobTransitionError(
+                "video index job requires exact planned stage receipts"
+            ) from error
+        if seen != set(expected):
+            raise JobTransitionError(
+                "video index job requires exact planned stage receipts"
+            )
+
+    @classmethod
+    def _activate_video_index_job_outputs(
+        cls,
+        connection: sqlite3.Connection,
+        *,
+        job: VideoIndexJob,
+        plan: VideoIndexPlanSnapshot,
+    ) -> None:
+        if job.state is not JobState.COMPLETE:
+            raise JobTransitionError(
+                "video index outputs require a complete owning job"
+            )
+        rows = connection.execute(
+            """
+            SELECT
+                runs.run_id,
+                runs.output_generation,
+                runs.specification_hash,
+                runs.source_sha256,
+                specifications.stage_kind
+            FROM stage_runs AS runs
+            JOIN stage_specifications AS specifications
+              ON specifications.specification_hash = runs.specification_hash
+            WHERE runs.job_id = ? AND runs.state = 'complete'
+            ORDER BY runs.sequence
+            """,
+            (job.job_id,),
+        ).fetchall()
+        segment_outputs: dict[StageKind, SegmentGeneration] = {}
+        external_outputs: dict[StageKind, ExternalIndexGeneration] = {}
+        text_output: TextVectorGeneration | None = None
+        text_inputs: tuple[TextVectorGenerationInput, ...] | None = None
+        for row in rows:
+            try:
+                stage_kind = StageKind(row["stage_kind"])
+                planned = plan.for_kind(stage_kind)
+            except (TypeError, ValueError) as error:
+                raise ValueError(
+                    "video index job output stage is corrupt"
+                ) from error
+            if (
+                row["specification_hash"] != planned.specification_hash
+                or row["source_sha256"] != job.source_sha256
+            ):
+                raise ValueError("video index job output identity is corrupt")
+            if stage_kind in SEGMENT_STAGE_KINDS:
+                if stage_kind in segment_outputs:
+                    raise ValueError(
+                        "video index job has multiple completed segment outputs"
+                    )
+                generation_id = row["output_generation"]
+                if type(generation_id) is not str or not generation_id:
+                    raise ValueError("video index job segment output is missing")
+                resolved = cls._get_segment_generation_with_run(
+                    connection,
+                    generation_id,
+                )
+                if resolved is None:
+                    raise ValueError("video index job segment output is missing")
+                generation, run = resolved
+                if (
+                    run.run_id != row["run_id"]
+                    or run.state is not StageState.COMPLETE
+                    or generation.video_id != job.video_id
+                ):
+                    raise ValueError("video index job segment output is corrupt")
+                segment_outputs[stage_kind] = generation
+            elif stage_kind is StageKind.TEXT_VECTORS:
+                if text_output is not None:
+                    raise ValueError(
+                        "video index job has multiple completed text vector outputs"
+                    )
+                generation_id = row["output_generation"]
+                if type(generation_id) is not str or not generation_id:
+                    raise ValueError("video index job text vector output is missing")
+                resolved_text = cls._get_text_vector_generation_with_run(
+                    connection,
+                    generation_id,
+                )
+                if resolved_text is None:
+                    raise ValueError("video index job text vector output is missing")
+                generation, run, _index, inputs, _points = resolved_text
+                if (
+                    run.run_id != row["run_id"]
+                    or run.state is not StageState.COMPLETE
+                    or generation.video_id != job.video_id
+                ):
+                    raise ValueError("video index job text vector output is corrupt")
+                text_output = generation
+                text_inputs = inputs
+            elif stage_kind in EXTERNAL_INDEX_STAGE_KINDS:
+                if stage_kind in external_outputs:
+                    raise ValueError(
+                        "video index job has multiple completed external outputs"
+                    )
+                generation_id = row["output_generation"]
+                if type(generation_id) is not str or not generation_id:
+                    raise ValueError("video index job external output is missing")
+                resolved_external = cls._get_external_index_generation_with_run(
+                    connection,
+                    video_id=job.video_id,
+                    stage_kind=stage_kind,
+                    generation_id=generation_id,
+                )
+                if resolved_external is None:
+                    raise ValueError("video index job external output is missing")
+                external_generation, run = resolved_external
+                if (
+                    run.run_id != row["run_id"]
+                    or run.state is not StageState.COMPLETE
+                    or external_generation.video_id != job.video_id
+                ):
+                    raise ValueError("video index job external output is corrupt")
+                external_outputs[stage_kind] = external_generation
+
+        for planned in plan.specifications.segment_specifications:
+            stage_kind = planned.kind
+            staged = segment_outputs.get(stage_kind)
+            current = cls._get_active_segment_generation(
+                connection,
+                job.video_id,
+                stage_kind,
+                require_released_owner=False,
+            )
+            retained = (
+                current
+                if current is not None
+                and current.specification_hash == planned.specification_hash
+                and current.source_sha256 == job.source_sha256
+                and cls._stage_run_owner_is_released(
+                    connection,
+                    current.run_id,
+                )
+                else None
+            )
+            selected = staged if staged is not None else retained
+            if selected is None:
+                connection.execute(
+                    """
+                    DELETE FROM active_segment_generations
+                    WHERE video_id = ? AND stage_kind = ?
+                    """,
+                    (job.video_id, stage_kind.value),
+                )
+                if stage_kind is StageKind.SCENES:
+                    cursor = connection.execute(
+                        "UPDATE videos SET thumbnail_path = NULL WHERE id = ?",
+                        (job.video_id,),
+                    )
+                    if cursor.rowcount != 1:
+                        raise RuntimeError("video index job lost its video")
+                continue
+            connection.execute(
+                """
+                INSERT INTO active_segment_generations (
+                    video_id, stage_kind, generation_id, activated_at
+                ) VALUES (?, ?, ?, ?)
+                ON CONFLICT(video_id, stage_kind) DO UPDATE SET
+                    generation_id = excluded.generation_id,
+                    activated_at = excluded.activated_at
+                """,
+                (
+                    selected.video_id,
+                    stage_kind.value,
+                    selected.generation_id,
+                    selected.completed_at,
+                ),
+            )
+            if stage_kind is StageKind.SCENES and staged is not None:
+                thumbnail = connection.execute(
+                    """
+                    SELECT video_thumbnail_path, updates_video_thumbnail
+                    FROM segment_generations
+                    WHERE generation_id = ?
+                    """,
+                    (selected.generation_id,),
+                ).fetchone()
+                if thumbnail is None or thumbnail["updates_video_thumbnail"] not in {
+                    0,
+                    1,
+                }:
+                    raise ValueError("staged scene thumbnail intent is corrupt")
+                if thumbnail["updates_video_thumbnail"] == 1:
+                    cls._validate_generated_thumbnail_path(
+                        thumbnail["video_thumbnail_path"]
+                    )
+                    cursor = connection.execute(
+                        "UPDATE videos SET thumbnail_path = ? WHERE id = ?",
+                        (thumbnail["video_thumbnail_path"], selected.video_id),
+                    )
+                    if cursor.rowcount != 1:
+                        raise RuntimeError(
+                            "staged scene generation lost its video"
+                        )
+
+        expected_inputs, _expected_points = cls._snapshot_text_vector_inputs(
+            connection,
+            video_id=job.video_id,
+            source_sha256=job.source_sha256,
+            semantic_specifications=(
+                plan.specifications.semantic_segment_specifications
+            ),
+            job_id=job.job_id,
+        )
+        current_text = cls._get_active_text_vector_generation(
+            connection,
+            job.video_id,
+            require_released_owner=False,
+        )
+        retained_text: TextVectorGeneration | None = None
+        if (
+            current_text is not None
+            and current_text.specification_hash
+            == plan.specifications.text_vectors.specification_hash
+            and current_text.source_sha256 == job.source_sha256
+            and cls._stage_run_owner_is_released(
+                connection,
+                current_text.run_id,
+            )
+        ):
+            resolved_current_text = cls._get_text_vector_generation_with_run(
+                connection,
+                current_text.generation_id,
+            )
+            assert resolved_current_text is not None
+            if resolved_current_text[3] == expected_inputs:
+                retained_text = current_text
+        if text_output is not None:
+            assert text_inputs is not None
+            if text_inputs != expected_inputs:
+                raise ValueError(
+                    "video index job text vector inputs do not match staged segments"
+                )
+            selected_text = text_output
+        else:
+            selected_text = retained_text
+        if selected_text is None:
+            connection.execute(
+                "DELETE FROM active_text_vector_generations WHERE video_id = ?",
+                (job.video_id,),
+            )
+        else:
+            connection.execute(
+                """
+                INSERT INTO active_text_vector_generations (
+                    video_id, generation_id, activated_at
+                ) VALUES (?, ?, ?)
+                ON CONFLICT(video_id) DO UPDATE SET
+                    generation_id = excluded.generation_id,
+                    activated_at = excluded.activated_at
+                """,
+                (
+                    selected_text.video_id,
+                    selected_text.generation_id,
+                    selected_text.completed_at,
+                ),
+            )
+
+        for planned in (
+            plan.visual_dense_specification,
+            plan.lighthouse_specification,
+        ):
+            stage_kind = planned.kind
+            staged_external = external_outputs.get(stage_kind)
+            current_external = cls._get_active_external_index_generation(
+                connection,
+                job.video_id,
+                stage_kind,
+                require_released_owner=False,
+            )
+            retained_external = (
+                current_external
+                if current_external is not None
+                and current_external.specification_hash
+                == planned.specification_hash
+                and current_external.source_sha256 == job.source_sha256
+                and cls._stage_run_owner_is_released(
+                    connection,
+                    current_external.run_id,
+                )
+                else None
+            )
+            selected_external = staged_external or retained_external
+            if selected_external is None:
+                connection.execute(
+                    """
+                    DELETE FROM active_external_index_generations
+                    WHERE video_id = ? AND stage_kind = ?
+                    """,
+                    (job.video_id, stage_kind.value),
+                )
+                continue
+            connection.execute(
+                """
+                INSERT INTO active_external_index_generations (
+                    video_id, stage_kind, generation_id, activated_at
+                ) VALUES (?, ?, ?, ?)
+                ON CONFLICT(video_id, stage_kind) DO UPDATE SET
+                    generation_id = excluded.generation_id,
+                    activated_at = excluded.activated_at
+                """,
+                (
+                    selected_external.video_id,
+                    selected_external.stage_kind.value,
+                    selected_external.generation_id,
+                    selected_external.completed_at,
+                ),
+            )
+
+    def complete_video_index_job(
+        self,
+        job_id: str,
+        *,
+        execution_token: str,
+    ) -> VideoIndexJob:
+        validate_artifact_identifier(job_id, field_name="video index job id")
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            resolved = self._get_video_index_job(connection, job_id)
+            if resolved is None:
+                raise KeyError(job_id)
+            current, plan = resolved
+            if connection.execute(
+                """
+                SELECT 1 FROM stage_runs
+                WHERE job_id = ? AND state IN ('queued', 'running')
+                LIMIT 1
+                """,
+                (current.job_id,),
+            ).fetchone() is not None:
+                raise JobTransitionError(
+                    "video index job still has active stage runs"
+                )
+            self._require_exact_video_index_job_stage_receipts(
+                connection,
+                job=current,
+                plan=plan,
+            )
+            candidate = complete_job(
+                current,
+                execution_token=execution_token,
+                now=_now(),
+            )
+            persisted = self._persist_video_index_transition(
+                connection,
+                current=current,
+                candidate=candidate,
+            )
+            self._activate_video_index_job_outputs(
+                connection,
+                job=persisted,
+                plan=plan,
+            )
+            self._sync_video_for_index_job(connection, persisted)
+            return persisted
+
+    def fail_video_index_job(
+        self,
+        job_id: str,
+        *,
+        execution_token: str,
+        error_code: str,
+    ) -> VideoIndexJob:
+        validate_artifact_identifier(job_id, field_name="video index job id")
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            resolved = self._get_video_index_job(connection, job_id)
+            if resolved is None:
+                raise KeyError(job_id)
+            current, _plan = resolved
+            candidate = fail_job(
+                current,
+                execution_token=execution_token,
+                error_code=error_code,
+                now=_now(),
+            )
+            persisted = self._persist_video_index_transition(
+                connection,
+                current=current,
+                candidate=candidate,
+            )
+            self._terminalize_linked_stage_runs(
+                connection,
+                job_id=current.job_id,
+                timestamp=persisted.updated_at,
+                failure_error_code=error_code,
+            )
+            self._sync_video_for_index_job(connection, persisted)
+            return persisted
+
+    def cancel_video_index_job(
+        self,
+        job_id: str,
+        *,
+        execution_token: str,
+    ) -> VideoIndexJob:
+        validate_artifact_identifier(job_id, field_name="video index job id")
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            resolved = self._get_video_index_job(connection, job_id)
+            if resolved is None:
+                raise KeyError(job_id)
+            current, _plan = resolved
+            candidate = cancel_job(
+                current,
+                execution_token=execution_token,
+                now=_now(),
+            )
+            persisted = self._persist_video_index_transition(
+                connection,
+                current=current,
+                candidate=candidate,
+            )
+            self._terminalize_linked_stage_runs(
+                connection,
+                job_id=current.job_id,
+                timestamp=persisted.updated_at,
+                failure_error_code=None,
+            )
+            self._sync_video_for_index_job(connection, persisted)
+            return persisted
+
+    def retry_video_index_job(
+        self,
+        job_id: str,
+        *,
+        retry_job_id: str | None = None,
+    ) -> VideoIndexJob:
+        validate_artifact_identifier(job_id, field_name="video index job id")
+        resolved_retry_id = uuid4().hex if retry_job_id is None else retry_job_id
+        validate_artifact_identifier(
+            resolved_retry_id,
+            field_name="video index retry job id",
+        )
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            resolved = self._get_video_index_job(connection, job_id)
+            if resolved is None:
+                raise KeyError(job_id)
+            current, plan = resolved
+            child_row = connection.execute(
+                f"{_VIDEO_INDEX_JOB_SELECT} WHERE retry_of_job_id = ?",
+                (job_id,),
+            ).fetchone()
+            if child_row is not None:
+                return self._video_index_job_from_row(connection, child_row)[0]
+            candidate = retry_job(
+                current,
+                job_id=resolved_retry_id,
+                now=_now(),
+            )
+            self._insert_video_index_job(
+                connection,
+                job=candidate,
+                plan=plan,
+            )
+            self._sync_video_for_index_job(connection, candidate)
+            row = connection.execute(
+                f"{_VIDEO_INDEX_JOB_SELECT} WHERE job_id = ?",
+                (candidate.job_id,),
+            ).fetchone()
+            assert row is not None
+            return self._video_index_job_from_row(connection, row)[0]
+
+    @staticmethod
+    def _quarantine_video_index_job_row(
+        connection: sqlite3.Connection,
+        *,
+        row: sqlite3.Row,
+        timestamp: str,
+    ) -> None:
+        sequence = row["sequence"]
+        if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence < 1:
+            raise ValueError("persisted video index job sequence is corrupt")
+        connection.execute(
+            """
+            INSERT OR IGNORE INTO video_index_job_quarantines (
+                job_sequence, error_code, quarantined_at
+            ) VALUES (?, 'job_record_corrupt', ?)
+            """,
+            (sequence, timestamp),
+        )
+        persisted = connection.execute(
+            """
+            SELECT error_code FROM video_index_job_quarantines
+            WHERE job_sequence = ?
+            """,
+            (sequence,),
+        ).fetchone()
+        if persisted is None or persisted["error_code"] != "job_record_corrupt":
+            raise ValueError("video index job quarantine could not be persisted")
+
+    @classmethod
+    def _terminalize_linked_stage_runs(
+        cls,
+        connection: sqlite3.Connection,
+        *,
+        job_id: str,
+        timestamp: str,
+        failure_error_code: str | None,
+    ) -> None:
+        builds = connection.execute(
+            """
+            SELECT builds.*
+            FROM text_vector_builds AS builds
+            JOIN stage_runs AS runs ON runs.run_id = builds.run_id
+            WHERE runs.job_id = ? AND builds.recovery_state = 'active'
+            ORDER BY builds.reserved_at, builds.generation_id
+            """,
+            (job_id,),
+        ).fetchall()
+        cleanup_error_code = failure_error_code or "job_cancelled"
+        for build in builds:
+            run = cls._get_stage_run(connection, build["run_id"])
+            if run is None:
+                raise ValueError("linked text vector build run is corrupt")
+            cls._validate_text_vector_build_row(connection, build, run)
+            cls._enqueue_artifact_gc(
+                connection,
+                generation_id=build["generation_id"],
+                index_specification_hash=build["index_specification_hash"],
+                collection_name=build["collection_name"],
+                reason=cleanup_error_code,
+                timestamp=timestamp,
+            )
+            connection.execute(
+                "DELETE FROM text_vector_builds WHERE generation_id = ?",
+                (build["generation_id"],),
+            )
+        if failure_error_code is not None:
+            connection.execute(
+                """
+                UPDATE stage_runs
+                SET state = 'failed', output_generation = NULL,
+                    error_code = ?,
+                    finished_at = ?, updated_at = ?
+                WHERE job_id = ? AND state = 'running'
+                """,
+                (failure_error_code, timestamp, timestamp, job_id),
+            )
+        else:
+            connection.execute(
+                """
+                UPDATE stage_runs
+                SET state = 'cancelled', output_generation = NULL,
+                    error_code = NULL, finished_at = ?, updated_at = ?
+                WHERE job_id = ? AND state = 'running'
+                """,
+                (timestamp, timestamp, job_id),
+            )
+        connection.execute(
+            """
+            UPDATE stage_runs
+            SET state = 'cancelled', output_generation = NULL,
+                error_code = NULL, finished_at = ?, updated_at = ?
+            WHERE job_id = ? AND state = 'queued'
+            """,
+            (timestamp, timestamp, job_id),
+        )
+
+    def recover_abandoned_video_index_jobs(
+        self,
+        *,
+        limit: int = 100,
+    ) -> VideoIndexRecoveryReport:
+        resolved_limit = _validate_repository_batch_limit(
+            limit,
+            field_name="video index recovery limit",
+        )
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            rows = connection.execute(
+                f"""
+                {_VIDEO_INDEX_JOB_SELECT}
+                WHERE state = 'running'
+                  AND NOT EXISTS (
+                      SELECT 1 FROM video_index_job_quarantines AS quarantines
+                      WHERE quarantines.job_sequence = video_index_jobs.sequence
+                  )
+                ORDER BY sequence
+                LIMIT ?
+                """,
+                (resolved_limit + 1,),
+            ).fetchall()
+            has_more = len(rows) > resolved_limit
+            retry_job_ids: list[str] = []
+            cancelled_job_ids: list[str] = []
+            quarantined_count = 0
+            for row in rows[:resolved_limit]:
+                try:
+                    current, plan = self._video_index_job_from_row(connection, row)
+                except ValueError:
+                    self._quarantine_video_index_job_row(
+                        connection,
+                        row=row,
+                        timestamp=_now(),
+                    )
+                    quarantined_count += 1
+                    continue
+                assert current.execution_token is not None
+                timestamp = _now()
+                if current.cancel_requested_at is not None:
+                    candidate = cancel_job(
+                        current,
+                        execution_token=current.execution_token,
+                        now=timestamp,
+                    )
+                    persisted = self._persist_video_index_transition(
+                        connection,
+                        current=current,
+                        candidate=candidate,
+                    )
+                    self._terminalize_linked_stage_runs(
+                        connection,
+                        job_id=current.job_id,
+                        timestamp=timestamp,
+                        failure_error_code=None,
+                    )
+                    self._sync_video_for_index_job(connection, persisted)
+                    cancelled_job_ids.append(current.job_id)
+                    continue
+
+                failed_candidate = fail_job(
+                    current,
+                    execution_token=current.execution_token,
+                    error_code="job_runtime_abandoned",
+                    now=timestamp,
+                )
+                failed = self._persist_video_index_transition(
+                    connection,
+                    current=current,
+                    candidate=failed_candidate,
+                )
+                self._terminalize_linked_stage_runs(
+                    connection,
+                    job_id=current.job_id,
+                    timestamp=timestamp,
+                    failure_error_code="job_runtime_abandoned",
+                )
+                child = retry_job(
+                    failed,
+                    job_id=uuid4().hex,
+                    now=timestamp,
+                )
+                self._insert_video_index_job(
+                    connection,
+                    job=child,
+                    plan=plan,
+                )
+                self._sync_video_for_index_job(connection, child)
+                retry_job_ids.append(child.job_id)
+            return VideoIndexRecoveryReport(
+                examined_count=min(len(rows), resolved_limit),
+                retry_job_ids=tuple(retry_job_ids),
+                cancelled_job_ids=tuple(cancelled_job_ids),
+                quarantined_count=quarantined_count,
+                has_more=has_more,
+            )
+
+    def list_legacy_video_index_candidates(
+        self,
+        *,
+        limit: int = 100,
+    ) -> tuple[VideoRecord, ...]:
+        resolved_limit = _validate_repository_batch_limit(
+            limit,
+            field_name="legacy video index candidate limit",
+        )
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT videos.*
+                FROM videos
+                WHERE videos.status IN ('queued', 'processing')
+                  AND NOT EXISTS (
+                      SELECT 1 FROM video_index_jobs AS jobs
+                      WHERE jobs.video_id = videos.id
+                  )
+                ORDER BY videos.created_at, videos.id
+                LIMIT ?
+                """,
+                (resolved_limit,),
+            ).fetchall()
+        return tuple(VideoRecord(**dict(row)) for row in rows)
+
+    def adopt_legacy_video_index_job(
+        self,
+        video_id: str,
+        *,
+        plan: VideoIndexPlanSnapshot,
+        job_id: str | None = None,
+    ) -> VideoIndexJob:
+        if not isinstance(plan, VideoIndexPlanSnapshot):
+            raise ValueError("video index plan must be validated")
+        validate_artifact_identifier(video_id, field_name="legacy video index video id")
+        resolved_job_id = uuid4().hex if job_id is None else job_id
+        validate_artifact_identifier(
+            resolved_job_id,
+            field_name="legacy video index job id",
+        )
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            video_row = connection.execute(
+                "SELECT * FROM videos WHERE id = ?",
+                (video_id,),
+            ).fetchone()
+            if video_row is None:
+                raise KeyError(video_id)
+            video = VideoRecord(**dict(video_row))
+            asset = self._get_video_asset(connection, video_id)
+            if asset is None:
+                raise AssetIdentityError("legacy video asset identity is unavailable")
+            requested_hash = video_index_idempotency_hash(
+                kind=JobKind.VIDEO_INDEX,
+                intent=VideoIndexIntent.INGEST,
+                video_id=video_id,
+                source_sha256=asset.sha256,
+                plan_hash=plan.plan_hash,
+            )
+            existing_row = connection.execute(
+                f"""
+                {_VIDEO_INDEX_JOB_SELECT}
+                WHERE video_id = ?
+                ORDER BY sequence DESC LIMIT 1
+                """,
+                (video_id,),
+            ).fetchone()
+            if existing_row is not None:
+                existing, existing_plan = self._video_index_job_from_row(
+                    connection,
+                    existing_row,
+                )
+                if (
+                    existing.state in {JobState.QUEUED, JobState.RUNNING}
+                    and existing.idempotency_hash == requested_hash
+                    and existing_plan.canonical_json == plan.canonical_json
+                ):
+                    return existing
+                raise JobTransitionError("video already has durable indexing history")
+            if video.status not in {"queued", "processing"}:
+                raise JobTransitionError("video is not a legacy active indexing candidate")
+            timestamp = _now()
+            candidate = self._new_queued_video_index_job(
+                job_id=resolved_job_id,
+                intent=VideoIndexIntent.INGEST,
+                video_id=video_id,
+                source_sha256=asset.sha256,
+                plan=plan,
+                prior_video_state=None,
+                timestamp=timestamp,
+            )
+            self._insert_video_index_job(
+                connection,
+                job=candidate,
+                plan=plan,
+            )
+            self._sync_video_for_index_job(connection, candidate)
+            row = connection.execute(
+                f"{_VIDEO_INDEX_JOB_SELECT} WHERE job_id = ?",
+                (candidate.job_id,),
+            ).fetchone()
+            assert row is not None
+            return self._video_index_job_from_row(connection, row)[0]
+
     def get_video_asset(self, video_id: str) -> AssetRecord | None:
         with self._connect() as connection:
             try:
@@ -2134,6 +5328,58 @@ class Repository:
                 """,
                 (digest,),
             ).fetchall()
+        return self._repository_assets_from_rows(rows)
+
+    def find_assets_by_sha256_bounded(
+        self,
+        digest: str,
+        *,
+        limit: int,
+        video_id: str | None = None,
+    ) -> tuple[RepositoryAssetRecord, ...]:
+        """Return at most ``limit + 1`` rows for bounded benchmark resolution."""
+        asset_id_for_sha256(digest)
+        if type(limit) is not int or not 1 <= limit <= 1_000:
+            raise ValueError("asset lookup limit is invalid")
+        if video_id is not None and (
+            type(video_id) is not str
+            or not video_id
+            or len(video_id) > 200
+            or "\x00" in video_id
+        ):
+            raise ValueError("asset lookup video id is invalid")
+        predicate = "AND videos.id = ?" if video_id is not None else ""
+        parameters: tuple[object, ...] = (
+            (digest, video_id, limit + 1)
+            if video_id is not None
+            else (digest, limit + 1)
+        )
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT
+                    assets.asset_id,
+                    assets.sha256,
+                    assets.size_bytes AS asset_size_bytes,
+                    assets.created_at AS asset_created_at,
+                    videos.id AS video_id,
+                    videos.size_bytes AS video_size_bytes,
+                    videos.duration AS duration_seconds
+                FROM assets
+                JOIN videos ON videos.asset_id = assets.asset_id
+                WHERE assets.sha256 = ? AND videos.duration IS NOT NULL
+                {predicate}
+                ORDER BY videos.created_at, videos.id
+                LIMIT ?
+                """,
+                parameters,
+            ).fetchall()
+        return self._repository_assets_from_rows(rows)
+
+    @staticmethod
+    def _repository_assets_from_rows(
+        rows: Iterable[sqlite3.Row],
+    ) -> tuple[RepositoryAssetRecord, ...]:
         matches: list[RepositoryAssetRecord] = []
         for row in rows:
             try:
@@ -2236,19 +5482,71 @@ class Repository:
         video: VideoRecord,
         *,
         media_root: Path,
+        media_access_root: Path | None = None,
     ) -> str:
         try:
-            resolved_root = Path(media_root).resolve(strict=True)
+            canonical_root = Path(os.path.abspath(media_root))
+            if media_access_root is None:
+                _reject_symbolic_link_components(canonical_root)
+                resolved_root = canonical_root.resolve(strict=True)
+            else:
+                access_root = Path(os.path.abspath(media_access_root))
+                _reject_symbolic_link_components(access_root)
+                access_stat = _stat_retained_volume_path(access_root)
+                if access_stat is None or not stat.S_ISDIR(access_stat.st_mode):
+                    raise AssetIdentityError(
+                        "asset media must use a retained managed directory"
+                    )
+                resolved_root = access_root
+            if Path(video.stored_name).name != video.stored_name:
+                raise AssetIdentityError(
+                    "asset media must be a managed regular file"
+                )
             media_path = Path(video.media_path)
-            resolved_media = media_path.resolve(strict=True)
-            expected_media = (resolved_root / video.stored_name).resolve(strict=True)
-        except (OSError, RuntimeError) as error:
+            if (
+                type(video.media_path) is not str
+                or not video.media_path
+                or "\x00" in video.media_path
+                or media_path.as_posix() != video.media_path
+            ):
+                raise AssetIdentityError(
+                    "asset media must be a managed regular file"
+                )
+            expected_path = resolved_root / video.stored_name
+            _reject_symbolic_link_components(expected_path)
+            expected_media = (
+                expected_path.resolve(strict=True)
+                if media_access_root is None
+                else expected_path
+            )
+            if media_path.is_absolute():
+                if media_access_root is None:
+                    _reject_symbolic_link_components(media_path)
+                    persisted_matches = media_path.resolve(strict=True) == expected_media
+                else:
+                    persisted_matches = Path(os.path.abspath(media_path)) == (
+                        canonical_root / video.stored_name
+                    )
+            else:
+                parts = media_path.parts
+                parent_parts = parts[:-1]
+                root_parts = canonical_root.parts
+                persisted_matches = (
+                    bool(parts)
+                    and parts[-1] == video.stored_name
+                    and all(part not in {"", ".", ".."} for part in parts)
+                    and len(parent_parts) <= len(root_parts)
+                    and (
+                        not parent_parts
+                        or tuple(root_parts[-len(parent_parts) :]) == parent_parts
+                    )
+                )
+            resolved_media = expected_media
+        except (OSError, RuntimeError, ValueError) as error:
             raise AssetIdentityError("asset media must be a managed regular file") from error
         if (
-            not resolved_root.is_dir()
-            or Path(video.stored_name).name != video.stored_name
-            or media_path.is_symlink()
-            or resolved_media != expected_media
+            not stat.S_ISDIR(os.stat(resolved_root, follow_symlinks=False).st_mode)
+            or not persisted_matches
             or resolved_media.parent != resolved_root
         ):
             raise AssetIdentityError("asset media must be a managed regular file")
@@ -2275,6 +5573,35 @@ class Repository:
                     expected_video=video,
                     source_sha256=source_sha256,
                 )
+            if (
+                existing.sha256 != source_sha256
+                or existing.size_bytes != video.size_bytes
+            ):
+                raise AssetIdentityError(
+                    "managed media content does not match its immutable asset identity"
+                )
+            return existing
+
+    def verify_existing_asset_identity(
+        self,
+        video_id: str,
+        *,
+        media_root: Path,
+        media_access_root: Path | None = None,
+    ) -> AssetRecord:
+        """Re-hash managed media and require its already-persisted Asset identity."""
+        with _asset_identity_lock(self.database_path, video_id):
+            video = self.get_video(video_id)
+            if video is None:
+                raise KeyError(video_id)
+            existing = self.get_video_asset(video_id)
+            if existing is None:
+                raise AssetIdentityError("video asset identity is unavailable")
+            source_sha256 = self._hash_video_source(
+                video,
+                media_root=media_root,
+                media_access_root=media_access_root,
+            )
             if (
                 existing.sha256 != source_sha256
                 or existing.size_bytes != video.size_bytes
@@ -2462,6 +5789,8 @@ class Repository:
         specification: StageSpecification,
         run_id: str | None = None,
         retry_of_run_id: str | None = None,
+        job_id: str | None = None,
+        execution_token: str | None = None,
     ) -> StageRun:
         if not isinstance(specification, StageSpecification):
             raise ValueError("stage specification must be validated")
@@ -2469,10 +5798,66 @@ class Repository:
         timestamp = _now()
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            stage_run_columns = {
+                str(row[1])
+                for row in connection.execute(
+                    "PRAGMA table_info(stage_runs)"
+                ).fetchall()
+            }
+            supports_job_link = "job_id" in stage_run_columns
+            if job_id is not None and not supports_job_link:
+                raise RuntimeError(
+                    "stage run job ownership requires the durable job schema"
+                )
             asset = self._get_video_asset(connection, video_id)
             if asset is None:
                 raise AssetIdentityError("video asset identity is unavailable")
             source_sha256 = asset.sha256
+            if job_id is None:
+                if execution_token is not None:
+                    raise ValueError("unowned stage run cannot contain an execution token")
+                if supports_job_link and connection.execute(
+                    "SELECT 1 FROM video_index_jobs WHERE video_id = ? LIMIT 1",
+                    (video_id,),
+                ).fetchone() is not None:
+                    raise JobFenceError(
+                        "durable video index job must own this stage run"
+                    )
+            else:
+                validate_artifact_identifier(
+                    job_id,
+                    field_name="stage run video index job id",
+                )
+                resolved_job = self._get_video_index_job(connection, job_id)
+                if resolved_job is None:
+                    raise KeyError(job_id)
+                owning_job, job_plan = resolved_job
+                if (
+                    owning_job.state is not JobState.RUNNING
+                    or owning_job.execution_token != execution_token
+                    or owning_job.cancel_requested_at is not None
+                ):
+                    raise JobFenceError(
+                        "job execution token no longer owns this stage run"
+                    )
+                if (
+                    owning_job.video_id != video_id
+                    or owning_job.source_sha256 != source_sha256
+                ):
+                    raise ValueError("stage run video index job identity mismatch")
+                try:
+                    planned_specification = job_plan.for_kind(specification.kind)
+                except ValueError as error:
+                    raise ValueError(
+                        "stage run is not part of the video index plan"
+                    ) from error
+                if (
+                    planned_specification.specification_hash
+                    != specification.specification_hash
+                ):
+                    raise ValueError(
+                        "stage run specification is not part of the video index plan"
+                    )
             connection.execute(
                 """
                 INSERT OR IGNORE INTO stage_specifications (
@@ -2543,31 +5928,59 @@ class Repository:
                 updated_at=timestamp,
             )
             try:
-                connection.execute(
-                    """
-                    INSERT INTO stage_runs (
-                        run_id, video_id, specification_hash, source_sha256,
-                        attempt, state, output_generation, error_code,
-                        retry_of_run_id, created_at, started_at, finished_at,
-                        updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        candidate.run_id,
-                        candidate.video_id,
-                        candidate.specification_hash,
-                        candidate.source_sha256,
-                        candidate.attempt,
-                        candidate.state.value,
-                        candidate.output_generation,
-                        candidate.error_code,
-                        candidate.retry_of_run_id,
-                        candidate.created_at,
-                        candidate.started_at,
-                        candidate.finished_at,
-                        candidate.updated_at,
-                    ),
-                )
+                if supports_job_link:
+                    connection.execute(
+                        """
+                        INSERT INTO stage_runs (
+                            run_id, video_id, specification_hash, source_sha256,
+                            attempt, state, output_generation, error_code,
+                            retry_of_run_id, created_at, started_at, finished_at,
+                            updated_at, job_id
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            candidate.run_id,
+                            candidate.video_id,
+                            candidate.specification_hash,
+                            candidate.source_sha256,
+                            candidate.attempt,
+                            candidate.state.value,
+                            candidate.output_generation,
+                            candidate.error_code,
+                            candidate.retry_of_run_id,
+                            candidate.created_at,
+                            candidate.started_at,
+                            candidate.finished_at,
+                            candidate.updated_at,
+                            job_id,
+                        ),
+                    )
+                else:
+                    connection.execute(
+                        """
+                        INSERT INTO stage_runs (
+                            run_id, video_id, specification_hash, source_sha256,
+                            attempt, state, output_generation, error_code,
+                            retry_of_run_id, created_at, started_at, finished_at,
+                            updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            candidate.run_id,
+                            candidate.video_id,
+                            candidate.specification_hash,
+                            candidate.source_sha256,
+                            candidate.attempt,
+                            candidate.state.value,
+                            candidate.output_generation,
+                            candidate.error_code,
+                            candidate.retry_of_run_id,
+                            candidate.created_at,
+                            candidate.started_at,
+                            candidate.finished_at,
+                            candidate.updated_at,
+                        ),
+                    )
             except sqlite3.IntegrityError as error:
                 raise ValueError("stage run identity already exists or is invalid") from error
         return candidate
@@ -2628,6 +6041,95 @@ class Repository:
                 self._validate_stage_source_identity(connection, stage_run)
         return stage_run
 
+    @staticmethod
+    def _require_stage_run_job_fence(
+        connection: sqlite3.Connection,
+        *,
+        run_id: str,
+        execution_token: str | None,
+    ) -> None:
+        jobs_table = connection.execute(
+            """
+            SELECT 1 FROM sqlite_master
+            WHERE type = 'table' AND name = 'video_index_jobs'
+            """
+        ).fetchone()
+        stage_columns = {
+            str(row[1])
+            for row in connection.execute("PRAGMA table_info(stage_runs)").fetchall()
+        }
+        if jobs_table is None or "job_id" not in stage_columns:
+            if execution_token is not None:
+                raise JobFenceError(
+                    "legacy stage run cannot use a job execution token"
+                )
+            return
+        owner = connection.execute(
+            """
+            SELECT
+                runs.job_id,
+                jobs.state AS job_state,
+                jobs.execution_token AS job_execution_token,
+                jobs.cancel_requested_at
+            FROM stage_runs AS runs
+            LEFT JOIN video_index_jobs AS jobs ON jobs.job_id = runs.job_id
+            WHERE runs.run_id = ?
+            """,
+            (run_id,),
+        ).fetchone()
+        if owner is None:
+            raise KeyError(run_id)
+        if owner["job_id"] is None:
+            if execution_token is not None:
+                raise JobFenceError("unowned stage run cannot use a job execution token")
+            return
+        if (
+            type(execution_token) is not str
+            or owner["job_state"] != JobState.RUNNING.value
+            or owner["job_execution_token"] != execution_token
+            or owner["cancel_requested_at"] is not None
+        ):
+            raise JobFenceError(
+                "job execution token no longer owns this stage run"
+            )
+
+    @staticmethod
+    def _stage_run_job_id(
+        connection: sqlite3.Connection,
+        run_id: str,
+    ) -> str | None:
+        columns = {
+            str(row[1])
+            for row in connection.execute("PRAGMA table_info(stage_runs)").fetchall()
+        }
+        if "job_id" not in columns:
+            return None
+        row = connection.execute(
+            "SELECT job_id FROM stage_runs WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()
+        if row is None:
+            raise KeyError(run_id)
+        value = row["job_id"]
+        if value is not None and (type(value) is not str or not value):
+            raise ValueError("persisted stage run job link is corrupt")
+        return value
+
+    @classmethod
+    def _stage_run_owner_is_released(
+        cls,
+        connection: sqlite3.Connection,
+        run_id: str,
+    ) -> bool:
+        owner_job_id = cls._stage_run_job_id(connection, run_id)
+        if owner_job_id is None:
+            return True
+        row = connection.execute(
+            "SELECT state FROM video_index_jobs WHERE job_id = ?",
+            (owner_job_id,),
+        ).fetchone()
+        return row is not None and row["state"] == JobState.COMPLETE.value
+
     def transition_stage_run(
         self,
         run_id: str,
@@ -2635,6 +6137,7 @@ class Repository:
         *,
         output_generation: str | None = None,
         error_code: str | None = None,
+        execution_token: str | None = None,
     ) -> StageRun:
         try:
             target_state = StageState(state)
@@ -2646,6 +6149,11 @@ class Repository:
             current = self._get_stage_run(connection, run_id)
             if current is None:
                 raise KeyError(run_id)
+            self._require_stage_run_job_fence(
+                connection,
+                run_id=current.run_id,
+                execution_token=execution_token,
+            )
             validate_stage_transition(current.state, target_state)
             if (
                 target_state is StageState.COMPLETE
@@ -2845,6 +6353,8 @@ class Repository:
         connection: sqlite3.Connection,
         video_id: str,
         stage_kind: StageKind,
+        *,
+        require_released_owner: bool = True,
     ) -> SegmentGeneration | None:
         pointer = connection.execute(
             """
@@ -2870,6 +6380,13 @@ class Repository:
             or pointer["activated_at"] != generation.completed_at
         ):
             raise ValueError("active segment generation pointer is corrupt")
+        if require_released_owner and not cls._stage_run_owner_is_released(
+            connection,
+            stage_run.run_id,
+        ):
+            raise ValueError(
+                "active segment generation owner job is not complete"
+            )
         return generation
 
     def commit_segment_generation(
@@ -2879,6 +6396,7 @@ class Repository:
         segments: Iterable[SegmentRecord],
         generation_id: str | None = None,
         video_thumbnail_path: str | None | object = _VIDEO_THUMBNAIL_UNCHANGED,
+        execution_token: str | None = None,
     ) -> SegmentGeneration:
         try:
             candidates = tuple(segments)
@@ -2890,6 +6408,15 @@ class Repository:
             stage_run = self._get_stage_run(connection, run_id)
             if stage_run is None:
                 raise KeyError(run_id)
+            self._require_stage_run_job_fence(
+                connection,
+                run_id=stage_run.run_id,
+                execution_token=execution_token,
+            )
+            owner_job_id = self._stage_run_job_id(
+                connection,
+                stage_run.run_id,
+            )
             if stage_run.state is not StageState.RUNNING:
                 raise ValueError("only a running stage run can publish a segment generation")
             stage_kind = self._resolve_segment_stage_kind(stage_run.stage_kind)
@@ -2932,24 +6459,56 @@ class Repository:
                 segment_count=len(validated_segments),
                 completed_at=completed_at,
             )
-            connection.execute(
-                """
-                INSERT INTO segment_generations (
-                    generation_id, video_id, stage_kind, specification_hash,
-                    source_sha256, run_id, segment_count, completed_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    generation.generation_id,
-                    generation.video_id,
-                    generation.stage_kind.value,
-                    generation.specification_hash,
-                    generation.source_sha256,
-                    generation.run_id,
-                    generation.segment_count,
-                    generation.completed_at,
-                ),
-            )
+            generation_columns = {
+                str(row[1])
+                for row in connection.execute(
+                    "PRAGMA table_info(segment_generations)"
+                ).fetchall()
+            }
+            if {
+                "updates_video_thumbnail",
+                "video_thumbnail_path",
+            } <= generation_columns:
+                connection.execute(
+                    """
+                    INSERT INTO segment_generations (
+                        generation_id, video_id, stage_kind, specification_hash,
+                        source_sha256, run_id, segment_count, completed_at,
+                        video_thumbnail_path, updates_video_thumbnail
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        generation.generation_id,
+                        generation.video_id,
+                        generation.stage_kind.value,
+                        generation.specification_hash,
+                        generation.source_sha256,
+                        generation.run_id,
+                        generation.segment_count,
+                        generation.completed_at,
+                        video_thumbnail_path if updates_video_thumbnail else None,
+                        int(updates_video_thumbnail),
+                    ),
+                )
+            else:
+                connection.execute(
+                    """
+                    INSERT INTO segment_generations (
+                        generation_id, video_id, stage_kind, specification_hash,
+                        source_sha256, run_id, segment_count, completed_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        generation.generation_id,
+                        generation.video_id,
+                        generation.stage_kind.value,
+                        generation.specification_hash,
+                        generation.source_sha256,
+                        generation.run_id,
+                        generation.segment_count,
+                        generation.completed_at,
+                    ),
+                )
             for record, metadata_json in validated_segments:
                 connection.execute(
                     """
@@ -2971,22 +6530,23 @@ class Repository:
                         generation.generation_id,
                     ),
                 )
-            connection.execute(
-                """
-                INSERT INTO active_segment_generations (
-                    video_id, stage_kind, generation_id, activated_at
-                ) VALUES (?, ?, ?, ?)
-                ON CONFLICT(video_id, stage_kind) DO UPDATE SET
-                    generation_id = excluded.generation_id,
-                    activated_at = excluded.activated_at
-                """,
-                (
-                    generation.video_id,
-                    generation.stage_kind.value,
-                    generation.generation_id,
-                    generation.completed_at,
-                ),
-            )
+            if owner_job_id is None:
+                connection.execute(
+                    """
+                    INSERT INTO active_segment_generations (
+                        video_id, stage_kind, generation_id, activated_at
+                    ) VALUES (?, ?, ?, ?)
+                    ON CONFLICT(video_id, stage_kind) DO UPDATE SET
+                        generation_id = excluded.generation_id,
+                        activated_at = excluded.activated_at
+                    """,
+                    (
+                        generation.video_id,
+                        generation.stage_kind.value,
+                        generation.generation_id,
+                        generation.completed_at,
+                    ),
+                )
             completed_run = StageRun(
                 run_id=stage_run.run_id,
                 video_id=stage_run.video_id,
@@ -3021,7 +6581,7 @@ class Repository:
             )
             if cursor.rowcount != 1:
                 raise RuntimeError("stage run changed during generation activation")
-            if updates_video_thumbnail:
+            if owner_job_id is None and updates_video_thumbnail:
                 cursor = connection.execute(
                     """
                     UPDATE videos
@@ -3040,10 +6600,484 @@ class Repository:
                     )
         return generation
 
+    @classmethod
+    def _get_external_index_generation_with_run(
+        cls,
+        connection: sqlite3.Connection,
+        *,
+        video_id: str,
+        stage_kind: StageKind,
+        generation_id: str,
+    ) -> tuple[ExternalIndexGeneration, StageRun] | None:
+        if stage_kind not in EXTERNAL_INDEX_STAGE_KINDS:
+            raise ValueError("external index generation requires an external stage")
+        row = connection.execute(
+            """
+            SELECT video_id, stage_kind, generation_id, specification_hash,
+                   artifact_specification_hash, source_sha256, run_id,
+                   descriptor_json, descriptor_sha256, completed_at
+            FROM external_index_generations
+            WHERE video_id = ? AND stage_kind = ? AND generation_id = ?
+            """,
+            (video_id, stage_kind.value, generation_id),
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            persisted_kind = StageKind(row["stage_kind"])
+            raw_descriptor = json.loads(
+                row["descriptor_json"],
+                parse_constant=_reject_non_finite_json,
+            )
+            asset = cls._get_video_asset(connection, row["video_id"])
+            if asset is None:
+                raise ValueError("external generation asset is missing")
+            descriptor, canonical, descriptor_sha256 = (
+                _validate_external_index_descriptor(
+                    raw_descriptor,
+                    stage_kind=persisted_kind,
+                    video_id=row["video_id"],
+                    generation_id=row["generation_id"],
+                    artifact_specification_hash=row[
+                        "artifact_specification_hash"
+                    ],
+                    source_sha256=row["source_sha256"],
+                    source_size_bytes=asset.size_bytes,
+                    duration_seconds=_external_video_duration(
+                        connection,
+                        row["video_id"],
+                    ),
+                )
+            )
+        except (KeyError, RecursionError, TypeError, ValueError) as error:
+            raise ValueError("persisted external index generation is corrupt") from error
+        if (
+            persisted_kind is not stage_kind
+            or row["descriptor_json"] != canonical
+            or row["descriptor_sha256"] != descriptor_sha256
+        ):
+            raise ValueError("persisted external index generation is corrupt")
+        try:
+            stage_run = cls._get_stage_run(connection, row["run_id"])
+        except (TypeError, ValueError) as error:
+            raise ValueError("persisted external index generation run is corrupt") from error
+        if stage_run is None:
+            raise ValueError("persisted external index generation run is missing")
+        if (
+            stage_run.video_id != row["video_id"]
+            or stage_run.stage_kind is not persisted_kind
+            or stage_run.specification_hash != row["specification_hash"]
+            or stage_run.source_sha256 != row["source_sha256"]
+            or stage_run.output_generation != row["generation_id"]
+            or stage_run.state not in {StageState.COMPLETE, StageState.STALE}
+            or stage_run.finished_at != row["completed_at"]
+        ):
+            raise ValueError("persisted external index generation identity is corrupt")
+        stage_specification = cls._get_stage_specification_from_connection(
+            connection,
+            stage_run.specification_hash,
+        )
+        if (
+            _external_artifact_specification_hash(stage_specification)
+            != row["artifact_specification_hash"]
+        ):
+            raise ValueError("persisted external index generation identity is corrupt")
+        return (
+            ExternalIndexGeneration(
+                video_id=row["video_id"],
+                stage_kind=persisted_kind,
+                generation_id=row["generation_id"],
+                specification_hash=row["specification_hash"],
+                artifact_specification_hash=row[
+                    "artifact_specification_hash"
+                ],
+                source_sha256=row["source_sha256"],
+                run_id=row["run_id"],
+                descriptor=descriptor,
+                descriptor_sha256=descriptor_sha256,
+                completed_at=row["completed_at"],
+            ),
+            stage_run,
+        )
+
+    @classmethod
+    def _get_active_external_index_generation(
+        cls,
+        connection: sqlite3.Connection,
+        video_id: str,
+        stage_kind: StageKind,
+        *,
+        require_released_owner: bool = True,
+    ) -> ExternalIndexGeneration | None:
+        if stage_kind not in EXTERNAL_INDEX_STAGE_KINDS:
+            raise ValueError("active external index requires an external stage")
+        pointer = connection.execute(
+            """
+            SELECT generation_id, activated_at
+            FROM active_external_index_generations
+            WHERE video_id = ? AND stage_kind = ?
+            """,
+            (video_id, stage_kind.value),
+        ).fetchone()
+        if pointer is None:
+            return None
+        resolved = cls._get_external_index_generation_with_run(
+            connection,
+            video_id=video_id,
+            stage_kind=stage_kind,
+            generation_id=pointer["generation_id"],
+        )
+        if resolved is None:
+            raise ValueError("active external index generation pointer is dangling")
+        generation, run = resolved
+        if pointer["activated_at"] != generation.completed_at:
+            raise ValueError("active external index generation pointer is corrupt")
+        if require_released_owner and not cls._stage_run_owner_is_released(
+            connection,
+            run.run_id,
+        ):
+            raise ValueError("active external generation owner job is not complete")
+        return generation
+
+    def commit_external_index_generation(
+        self,
+        run_id: str,
+        *,
+        descriptor: object,
+        execution_token: str | None = None,
+    ) -> ExternalIndexGeneration:
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            stage_run = self._get_stage_run(connection, run_id)
+            if stage_run is None:
+                raise KeyError(run_id)
+            self._require_stage_run_job_fence(
+                connection,
+                run_id=stage_run.run_id,
+                execution_token=execution_token,
+            )
+            if (
+                stage_run.state is not StageState.RUNNING
+                or stage_run.stage_kind not in EXTERNAL_INDEX_STAGE_KINDS
+            ):
+                raise ValueError(
+                    "only a running external stage can publish a generation"
+                )
+            owner_job_id = self._stage_run_job_id(connection, stage_run.run_id)
+            asset = self._get_video_asset(connection, stage_run.video_id)
+            if asset is None:
+                raise AssetIdentityError("external generation asset is unavailable")
+            generation_id = (
+                descriptor.get("generation_id")
+                if isinstance(descriptor, dict)
+                else None
+            )
+            if (
+                type(generation_id) is not str
+                or _EXTERNAL_GENERATION_ID_RE.fullmatch(generation_id) is None
+            ):
+                raise ValueError("external index canonical descriptor is invalid")
+            stage_specification = self._get_stage_specification_from_connection(
+                connection,
+                stage_run.specification_hash,
+            )
+            artifact_specification_hash = _external_artifact_specification_hash(
+                stage_specification
+            )
+            normalized, canonical, descriptor_sha256 = (
+                _validate_external_index_descriptor(
+                    descriptor,
+                    stage_kind=stage_run.stage_kind,
+                    video_id=stage_run.video_id,
+                    generation_id=generation_id,
+                    artifact_specification_hash=artifact_specification_hash,
+                    source_sha256=stage_run.source_sha256,
+                    source_size_bytes=asset.size_bytes,
+                    duration_seconds=_external_video_duration(
+                        connection,
+                        stage_run.video_id,
+                    ),
+                )
+            )
+            completed_at = _now()
+            generation = ExternalIndexGeneration(
+                video_id=stage_run.video_id,
+                stage_kind=stage_run.stage_kind,
+                generation_id=generation_id,
+                specification_hash=stage_run.specification_hash,
+                artifact_specification_hash=artifact_specification_hash,
+                source_sha256=stage_run.source_sha256,
+                run_id=stage_run.run_id,
+                descriptor=normalized,
+                descriptor_sha256=descriptor_sha256,
+                completed_at=completed_at,
+            )
+            connection.execute(
+                """
+                INSERT INTO external_index_generations (
+                    video_id, stage_kind, generation_id, specification_hash,
+                    artifact_specification_hash, source_sha256, run_id,
+                    descriptor_json, descriptor_sha256, completed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    generation.video_id,
+                    generation.stage_kind.value,
+                    generation.generation_id,
+                    generation.specification_hash,
+                    generation.artifact_specification_hash,
+                    generation.source_sha256,
+                    generation.run_id,
+                    canonical,
+                    generation.descriptor_sha256,
+                    generation.completed_at,
+                ),
+            )
+            if owner_job_id is None:
+                connection.execute(
+                    """
+                    INSERT INTO active_external_index_generations (
+                        video_id, stage_kind, generation_id, activated_at
+                    ) VALUES (?, ?, ?, ?)
+                    ON CONFLICT(video_id, stage_kind) DO UPDATE SET
+                        generation_id = excluded.generation_id,
+                        activated_at = excluded.activated_at
+                    """,
+                    (
+                        generation.video_id,
+                        generation.stage_kind.value,
+                        generation.generation_id,
+                        generation.completed_at,
+                    ),
+                )
+            cursor = connection.execute(
+                """
+                UPDATE stage_runs
+                SET state = 'complete', output_generation = ?, error_code = NULL,
+                    finished_at = ?, updated_at = ?
+                WHERE run_id = ? AND state = 'running'
+                """,
+                (
+                    generation.generation_id,
+                    generation.completed_at,
+                    generation.completed_at,
+                    generation.run_id,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise RuntimeError("external stage run changed during generation commit")
+        return generation
+
+    def get_active_external_index_generation(
+        self,
+        video_id: str,
+        stage_kind: StageKind,
+    ) -> ExternalIndexGeneration | None:
+        try:
+            resolved_kind = StageKind(stage_kind)
+        except (TypeError, ValueError) as error:
+            raise ValueError("unsupported external index stage") from error
+        with self._connect() as connection:
+            return self._get_active_external_index_generation(
+                connection,
+                video_id,
+                resolved_kind,
+            )
+
+    def get_external_index_release_snapshot(
+        self,
+        video_ids: Iterable[str],
+    ) -> ExternalIndexReleaseSnapshot:
+        try:
+            selected = tuple(dict.fromkeys(video_ids))
+        except TypeError as error:
+            raise ValueError("video ids must be a finite collection") from error
+        if (
+            len(selected) > REPOSITORY_BATCH_LIMIT_MAX
+            or any(type(video_id) is not str or not video_id for video_id in selected)
+        ):
+            raise ValueError("external release video ids are invalid")
+        if not selected:
+            return ExternalIndexReleaseSnapshot(frozenset(), {}, {})
+        placeholders = ",".join("?" for _ in selected)
+        visual: dict[str, dict[str, object]] = {}
+        lighthouse: dict[str, dict[str, object]] = {}
+        with self._connect() as connection:
+            connection.execute("BEGIN")
+            job_rows = connection.execute(
+                f"""
+                SELECT DISTINCT video_id FROM video_index_jobs
+                WHERE video_id IN ({placeholders})
+                """,
+                selected,
+            ).fetchall()
+            job_backed = frozenset(row["video_id"] for row in job_rows)
+            for video_id in selected:
+                if video_id not in job_backed:
+                    continue
+                for kind, target in (
+                    (StageKind.VISUAL_DENSE, visual),
+                    (StageKind.LIGHTHOUSE, lighthouse),
+                ):
+                    generation = self._get_active_external_index_generation(
+                        connection,
+                        video_id,
+                        kind,
+                    )
+                    if generation is not None:
+                        target[video_id] = dict(generation.descriptor)
+        return ExternalIndexReleaseSnapshot(job_backed, visual, lighthouse)
+
     def get_segment_generation(self, generation_id: str) -> SegmentGeneration | None:
         with self._connect() as connection:
             resolved = self._get_segment_generation_with_run(connection, generation_id)
         return resolved[0] if resolved is not None else None
+
+    def get_segment_generation_snapshot(
+        self,
+        generation_id: str,
+    ) -> tuple[SegmentGeneration, tuple[SegmentRecord, ...]] | None:
+        """Load one immutable generation without consulting its active pointer."""
+        with self._connect() as connection:
+            resolved = self._get_segment_generation_with_run(connection, generation_id)
+            if resolved is None:
+                return None
+            generation, _run = resolved
+            segments = tuple(self._list_generation_segments(connection, generation))
+        return generation, segments
+
+    @staticmethod
+    def _validate_benchmark_read_limits(
+        *,
+        max_segments: int,
+        max_text_bytes: int,
+        max_metadata_bytes: int,
+    ) -> None:
+        for name, value, maximum in (
+            ("max_segments", max_segments, 1_000_000),
+            ("max_text_bytes", max_text_bytes, 1_073_741_824),
+            ("max_metadata_bytes", max_metadata_bytes, 1_073_741_824),
+        ):
+            if type(value) is not int or not 1 <= value <= maximum:
+                raise ValueError(f"benchmark {name} is invalid")
+
+    @classmethod
+    def _assert_benchmark_segment_generation_bounded(
+        cls,
+        connection: sqlite3.Connection,
+        generation_id: str,
+        *,
+        max_segments: int,
+        max_text_bytes: int,
+        max_metadata_bytes: int,
+    ) -> tuple[int, int, int] | None:
+        row = connection.execute(
+            """
+            SELECT generation.segment_count,
+                   length(CAST(specification.canonical_json AS BLOB)) AS specification_bytes
+            FROM segment_generations AS generation
+            JOIN stage_specifications AS specification
+              ON specification.specification_hash = generation.specification_hash
+            WHERE generation.generation_id = ?
+            """,
+            (generation_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        declared_count = row["segment_count"]
+        specification_bytes = row["specification_bytes"]
+        if (
+            isinstance(declared_count, bool)
+            or not isinstance(declared_count, int)
+            or declared_count < 0
+            or declared_count > max_segments
+        ):
+            raise ValueError("persisted segment generation exceeds benchmark segment limit")
+        if (
+            isinstance(specification_bytes, bool)
+            or not isinstance(specification_bytes, int)
+            or specification_bytes < 0
+            or specification_bytes > max_metadata_bytes
+        ):
+            raise ValueError("persisted stage specification exceeds benchmark metadata limit")
+        cursor = connection.execute(
+            """
+            SELECT length(CAST(text AS BLOB)) AS text_bytes,
+                   length(CAST(metadata_json AS BLOB))
+                       + length(CAST(id AS BLOB))
+                       + length(CAST(video_id AS BLOB))
+                       + length(CAST(modality AS BLOB))
+                       + COALESCE(length(CAST(thumbnail_path AS BLOB)), 0)
+                       AS metadata_bytes
+            FROM segments
+            WHERE generation_id = ?
+            LIMIT ?
+            """,
+            (generation_id, max_segments + 1),
+        )
+        actual_count = 0
+        text_bytes = 0
+        metadata_bytes = 0
+        for segment_row in cursor:
+            actual_count += 1
+            if actual_count > max_segments:
+                raise ValueError(
+                    "persisted segment generation exceeds benchmark segment limit"
+                )
+            row_text_bytes = segment_row["text_bytes"]
+            row_metadata_bytes = segment_row["metadata_bytes"]
+            if (
+                isinstance(row_text_bytes, bool)
+                or not isinstance(row_text_bytes, int)
+                or row_text_bytes < 0
+                or isinstance(row_metadata_bytes, bool)
+                or not isinstance(row_metadata_bytes, int)
+                or row_metadata_bytes < 0
+            ):
+                raise ValueError("persisted segment generation size is corrupt")
+            text_bytes += row_text_bytes
+            metadata_bytes += row_metadata_bytes
+            if text_bytes > max_text_bytes or metadata_bytes > max_metadata_bytes:
+                raise ValueError(
+                    "persisted segment generation exceeds benchmark read limits"
+                )
+        if actual_count != declared_count:
+            raise ValueError("persisted segment generation exceeds benchmark read limits")
+        return declared_count, text_bytes, metadata_bytes
+
+    def get_segment_generation_snapshot_bounded(
+        self,
+        generation_id: str,
+        *,
+        max_segments: int,
+        max_text_bytes: int,
+        max_metadata_bytes: int,
+    ) -> tuple[SegmentGeneration, tuple[SegmentRecord, ...]] | None:
+        """Load one generation only after scalar SQL proves bounded materialization."""
+        self._validate_benchmark_read_limits(
+            max_segments=max_segments,
+            max_text_bytes=max_text_bytes,
+            max_metadata_bytes=max_metadata_bytes,
+        )
+        with self._connect() as connection:
+            bounded = self._assert_benchmark_segment_generation_bounded(
+                connection,
+                generation_id,
+                max_segments=max_segments,
+                max_text_bytes=max_text_bytes,
+                max_metadata_bytes=max_metadata_bytes,
+            )
+            if bounded is None:
+                return None
+            count, _text_bytes, _metadata_bytes = bounded
+            resolved = self._get_segment_generation_with_run(connection, generation_id)
+            if resolved is None:
+                return None
+            generation, _run = resolved
+            segments = tuple(self._list_generation_segments(connection, generation))
+        if len(segments) != count:
+            raise ValueError("persisted segment generation changed during benchmark read")
+        return generation, segments
 
     def get_active_segment_generation(
         self,
@@ -3371,6 +7405,56 @@ class Repository:
         )
 
     @classmethod
+    def _get_job_segment_generation(
+        cls,
+        connection: sqlite3.Connection,
+        *,
+        job_id: str,
+        video_id: str,
+        source_sha256: str,
+        specification: StageSpecification,
+    ) -> SegmentGeneration | None:
+        rows = connection.execute(
+            """
+            SELECT generations.generation_id
+            FROM segment_generations AS generations
+            JOIN stage_runs AS runs ON runs.run_id = generations.run_id
+            WHERE runs.job_id = ?
+              AND runs.state = 'complete'
+              AND runs.output_generation = generations.generation_id
+              AND generations.video_id = ?
+              AND generations.stage_kind = ?
+              AND generations.specification_hash = ?
+              AND generations.source_sha256 = ?
+            ORDER BY runs.sequence
+            LIMIT 2
+            """,
+            (
+                job_id,
+                video_id,
+                specification.kind.value,
+                specification.specification_hash,
+                source_sha256,
+            ),
+        ).fetchall()
+        if len(rows) > 1:
+            raise ValueError(
+                "video index job has multiple staged segment generations"
+            )
+        if not rows:
+            return None
+        resolved = cls._get_segment_generation_with_run(
+            connection,
+            rows[0]["generation_id"],
+        )
+        if resolved is None:
+            raise ValueError("staged segment generation is missing")
+        generation, run = resolved
+        if run.state is not StageState.COMPLETE:
+            raise ValueError("staged segment generation is not complete")
+        return generation
+
+    @classmethod
     def _snapshot_text_vector_inputs(
         cls,
         connection: sqlite3.Connection,
@@ -3378,15 +7462,28 @@ class Repository:
         video_id: str,
         source_sha256: str,
         semantic_specifications: tuple[StageSpecification, ...],
+        job_id: str | None = None,
     ) -> tuple[tuple[TextVectorGenerationInput, ...], tuple[TextVectorPointSource, ...]]:
         inputs: list[TextVectorGenerationInput] = []
         points: list[TextVectorPointSource] = []
         for specification in semantic_specifications:
-            active = cls._get_active_segment_generation(
-                connection,
-                video_id,
-                specification.kind,
+            active = (
+                cls._get_job_segment_generation(
+                    connection,
+                    job_id=job_id,
+                    video_id=video_id,
+                    source_sha256=source_sha256,
+                    specification=specification,
+                )
+                if job_id is not None
+                else None
             )
+            if active is None:
+                active = cls._get_active_segment_generation(
+                    connection,
+                    video_id,
+                    specification.kind,
+                )
             if (
                 active is None
                 or active.specification_hash != specification.specification_hash
@@ -3462,6 +7559,7 @@ class Repository:
         semantic_specifications: Iterable[StageSpecification],
         generation_id: str | None = None,
         lease_seconds: int = 900,
+        execution_token: str | None = None,
     ) -> TextVectorBuildPlan:
         if not isinstance(index_specification, TextVectorIndexSpecification):
             raise ValueError("text vector index specification must be validated")
@@ -3486,6 +7584,12 @@ class Repository:
             run = self._get_stage_run(connection, run_id)
             if run is None:
                 raise KeyError(run_id)
+            self._require_stage_run_job_fence(
+                connection,
+                run_id=run.run_id,
+                execution_token=execution_token,
+            )
+            owner_job_id = self._stage_run_job_id(connection, run.run_id)
             if run.state is not StageState.RUNNING or run.stage_kind is not StageKind.TEXT_VECTORS:
                 raise ValueError("only a running text vector stage can reserve a build")
             if connection.execute(
@@ -3517,6 +7621,7 @@ class Repository:
                 video_id=run.video_id,
                 source_sha256=run.source_sha256,
                 semantic_specifications=resolved_semantic,
+                job_id=owner_job_id,
             )
             previous = self._get_active_text_vector_generation(connection, run.video_id)
             plan = TextVectorBuildPlan(
@@ -3771,6 +7876,8 @@ class Repository:
         cls,
         connection: sqlite3.Connection,
         video_id: str,
+        *,
+        require_released_owner: bool = True,
     ) -> TextVectorGeneration | None:
         pointer = connection.execute(
             """
@@ -3795,6 +7902,13 @@ class Repository:
             or pointer["activated_at"] != generation.completed_at
         ):
             raise ValueError("active text vector generation pointer is corrupt")
+        if require_released_owner and not cls._stage_run_owner_is_released(
+            connection,
+            run.run_id,
+        ):
+            raise ValueError(
+                "active text vector generation owner job is not complete"
+            )
         return generation
 
     def get_text_vector_generation(
@@ -3808,12 +7922,206 @@ class Repository:
             )
         return resolved[0] if resolved is not None else None
 
+    def get_text_vector_search_binding(
+        self,
+        generation_id: str,
+    ) -> TextVectorSearchBinding | None:
+        """Load one immutable vector generation without following active state."""
+        with self._connect() as connection:
+            resolved = self._get_text_vector_generation_with_run(
+                connection,
+                generation_id,
+            )
+        if resolved is None:
+            return None
+        generation, _run, index_specification, inputs, points = resolved
+        return TextVectorSearchBinding(
+            generation=generation,
+            index_specification=index_specification,
+            inputs=inputs,
+            points=points,
+        )
+
+    def get_text_vector_search_binding_bounded(
+        self,
+        generation_id: str,
+        *,
+        max_points: int,
+        max_segments: int,
+        max_text_bytes: int,
+        max_metadata_bytes: int,
+    ) -> TextVectorSearchBinding | None:
+        """Load a benchmark binding only after bounded scalar preflight checks."""
+        if type(max_points) is not int or not 1 <= max_points <= 1_000_000:
+            raise ValueError("benchmark max_points is invalid")
+        self._validate_benchmark_read_limits(
+            max_segments=max_segments,
+            max_text_bytes=max_text_bytes,
+            max_metadata_bytes=max_metadata_bytes,
+        )
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT generation.point_count,
+                       length(CAST(stage.canonical_json AS BLOB))
+                           AS stage_specification_bytes,
+                       length(CAST(index_specification.canonical_json AS BLOB))
+                           AS index_specification_bytes
+                FROM text_vector_generations AS generation
+                JOIN stage_specifications AS stage
+                  ON stage.specification_hash = generation.specification_hash
+                JOIN text_vector_index_specifications AS index_specification
+                  ON index_specification.specification_hash =
+                     generation.index_specification_hash
+                WHERE generation.generation_id = ?
+                """,
+                (generation_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            point_count = row["point_count"]
+            if (
+                isinstance(point_count, bool)
+                or not isinstance(point_count, int)
+                or point_count < 0
+                or point_count > max_points
+            ):
+                raise ValueError(
+                    "persisted text vector generation exceeds benchmark point limit"
+                )
+            specification_bytes = (
+                row["stage_specification_bytes"]
+                + row["index_specification_bytes"]
+            )
+            if (
+                isinstance(specification_bytes, bool)
+                or not isinstance(specification_bytes, int)
+                or specification_bytes < 0
+                or specification_bytes > max_metadata_bytes
+            ):
+                raise ValueError(
+                    "persisted text vector specifications exceed benchmark metadata limit"
+                )
+            input_rows = connection.execute(
+                """
+                SELECT input.segment_generation_id,
+                       length(CAST(specification.canonical_json AS BLOB))
+                           AS specification_bytes
+                FROM text_vector_generation_inputs AS input
+                JOIN stage_specifications AS specification
+                  ON specification.specification_hash = input.specification_hash
+                WHERE input.generation_id = ?
+                ORDER BY input.stage_kind
+                LIMIT 4
+                """,
+                (generation_id,),
+            ).fetchall()
+            if len(input_rows) > len(TEXT_VECTOR_INPUT_STAGE_KINDS):
+                raise ValueError("persisted text vector inputs exceed benchmark limits")
+            remaining_segments = max_segments
+            remaining_text_bytes = max_text_bytes
+            remaining_metadata_bytes = max_metadata_bytes - specification_bytes
+            for input_row in input_rows:
+                input_specification_bytes = input_row["specification_bytes"]
+                if (
+                    isinstance(input_specification_bytes, bool)
+                    or not isinstance(input_specification_bytes, int)
+                    or input_specification_bytes < 0
+                    or input_specification_bytes > remaining_metadata_bytes
+                ):
+                    raise ValueError(
+                        "persisted text vector specifications exceed benchmark metadata limit"
+                    )
+                remaining_metadata_bytes -= input_specification_bytes
+                segment_generation_id = input_row["segment_generation_id"]
+                if segment_generation_id is None:
+                    continue
+                bounded = self._assert_benchmark_segment_generation_bounded(
+                    connection,
+                    segment_generation_id,
+                    max_segments=remaining_segments,
+                    max_text_bytes=remaining_text_bytes,
+                    max_metadata_bytes=remaining_metadata_bytes,
+                )
+                if bounded is None:
+                    raise ValueError(
+                        "persisted text vector input generation is missing"
+                    )
+                count, text_bytes, metadata_bytes = bounded
+                remaining_segments -= count
+                remaining_text_bytes -= text_bytes
+                remaining_metadata_bytes -= metadata_bytes
+            resolved = self._get_text_vector_generation_with_run(
+                connection,
+                generation_id,
+            )
+        if resolved is None:
+            return None
+        generation, _run, index_specification, inputs, points = resolved
+        return TextVectorSearchBinding(
+            generation=generation,
+            index_specification=index_specification,
+            inputs=inputs,
+            points=points,
+        )
+
     def get_active_text_vector_generation(
         self,
         video_id: str,
     ) -> TextVectorGeneration | None:
         with self._connect() as connection:
             return self._get_active_text_vector_generation(connection, video_id)
+
+    def get_active_text_vector_generation_id(self, video_id: str) -> str | None:
+        """Read and validate the active pointer without materializing its corpus."""
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT pointer.generation_id,
+                       pointer.activated_at,
+                       generation.video_id,
+                       generation.run_id,
+                       generation.completed_at,
+                       run.state,
+                       run.output_generation,
+                       run.job_id,
+                       jobs.state AS job_state
+                FROM active_text_vector_generations AS pointer
+                LEFT JOIN text_vector_generations AS generation
+                  ON generation.generation_id = pointer.generation_id
+                LEFT JOIN stage_runs AS run
+                  ON run.run_id = generation.run_id
+                LEFT JOIN video_index_jobs AS jobs
+                  ON jobs.job_id = run.job_id
+                WHERE pointer.video_id = ?
+                """,
+                (video_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            validate_artifact_identifier(
+                row["generation_id"],
+                field_name="active text vector generation id",
+            )
+        except ValueError as error:
+            raise ValueError("active text vector generation pointer is corrupt") from error
+        if (
+            row["video_id"] != video_id
+            or row["run_id"] is None
+            or row["state"] != StageState.COMPLETE.value
+            or row["output_generation"] != row["generation_id"]
+            or row["activated_at"] != row["completed_at"]
+        ):
+            raise ValueError("active text vector generation pointer is corrupt")
+        if (
+            row["job_id"] is not None
+            and row["job_state"] != JobState.COMPLETE.value
+        ):
+            raise ValueError(
+                "active text vector generation owner job is not complete"
+            )
+        return str(row["generation_id"])
 
     @classmethod
     def _validate_text_vector_build_row(
@@ -3938,6 +8246,7 @@ class Repository:
         generation_id: str,
         *,
         lease_seconds: int = 900,
+        execution_token: str | None = None,
     ) -> str:
         validate_artifact_identifier(generation_id, field_name="text vector generation id")
         if (
@@ -3961,6 +8270,11 @@ class Repository:
             run = self._get_stage_run(connection, row["run_id"])
             if run is None or run.state is not StageState.RUNNING:
                 raise ValueError("text vector build run is unavailable")
+            self._require_stage_run_job_fence(
+                connection,
+                run_id=run.run_id,
+                execution_token=execution_token,
+            )
             self._validate_text_vector_build_row(connection, row, run)
             if datetime.fromisoformat(row["lease_expires_at"]) <= datetime.fromisoformat(
                 heartbeat_at
@@ -3981,11 +8295,21 @@ class Repository:
         run_id: str,
         *,
         receipt: TextVectorBuildReceipt,
+        execution_token: str | None = None,
     ) -> TextVectorGeneration:
         if not isinstance(receipt, TextVectorBuildReceipt):
             raise ValueError("text vector build receipt must be validated")
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            run = self._get_stage_run(connection, run_id)
+            if run is None:
+                raise KeyError(run_id)
+            self._require_stage_run_job_fence(
+                connection,
+                run_id=run.run_id,
+                execution_token=execution_token,
+            )
+            owner_job_id = self._stage_run_job_id(connection, run.run_id)
             build = connection.execute(
                 "SELECT * FROM text_vector_builds WHERE run_id = ?",
                 (run_id,),
@@ -4015,9 +8339,6 @@ class Repository:
                 ):
                     raise ValueError("text vector receipt does not match completed generation")
                 return generation
-            run = self._get_stage_run(connection, run_id)
-            if run is None:
-                raise KeyError(run_id)
             if run.state is not StageState.RUNNING or run.stage_kind is not StageKind.TEXT_VECTORS:
                 raise ValueError("only a running text vector stage can publish a generation")
             _index_specification, validated_build_inputs, _build_points = (
@@ -4045,6 +8366,7 @@ class Repository:
                 video_id=run.video_id,
                 source_sha256=run.source_sha256,
                 semantic_specifications=semantic_specifications,
+                job_id=owner_job_id,
             )
             if (
                 current_inputs != stored_inputs
@@ -4116,38 +8438,39 @@ class Repository:
                         item.content_manifest_sha256,
                     ),
                 )
-            if active_id is None:
-                try:
-                    connection.execute(
+            if owner_job_id is None:
+                if active_id is None:
+                    try:
+                        connection.execute(
+                            """
+                            INSERT INTO active_text_vector_generations (
+                                video_id, generation_id, activated_at
+                            ) VALUES (?, ?, ?)
+                            """,
+                            (generation.video_id, generation.generation_id, completed_at),
+                        )
+                    except sqlite3.IntegrityError as error:
+                        raise RuntimeError(
+                            "active text vector generation changed during activation"
+                        ) from error
+                else:
+                    cursor = connection.execute(
                         """
-                        INSERT INTO active_text_vector_generations (
-                            video_id, generation_id, activated_at
-                        ) VALUES (?, ?, ?)
+                        UPDATE active_text_vector_generations
+                        SET generation_id = ?, activated_at = ?
+                        WHERE video_id = ? AND generation_id = ?
                         """,
-                        (generation.video_id, generation.generation_id, completed_at),
+                        (
+                            generation.generation_id,
+                            completed_at,
+                            generation.video_id,
+                            active_id,
+                        ),
                     )
-                except sqlite3.IntegrityError as error:
-                    raise RuntimeError(
-                        "active text vector generation changed during activation"
-                    ) from error
-            else:
-                cursor = connection.execute(
-                    """
-                    UPDATE active_text_vector_generations
-                    SET generation_id = ?, activated_at = ?
-                    WHERE video_id = ? AND generation_id = ?
-                    """,
-                    (
-                        generation.generation_id,
-                        completed_at,
-                        generation.video_id,
-                        active_id,
-                    ),
-                )
-                if cursor.rowcount != 1:
-                    raise RuntimeError(
-                        "active text vector generation changed during activation"
-                    )
+                    if cursor.rowcount != 1:
+                        raise RuntimeError(
+                            "active text vector generation changed during activation"
+                        )
             cursor = connection.execute(
                 """
                 UPDATE stage_runs
@@ -4249,7 +8572,13 @@ class Repository:
             ),
         )
 
-    def fail_text_vector_build(self, run_id: str, *, error_code: str) -> StageRun:
+    def fail_text_vector_build(
+        self,
+        run_id: str,
+        *,
+        error_code: str,
+        execution_token: str | None = None,
+    ) -> StageRun:
         validate_error_code(error_code)
         timestamp = _now()
         with self._connect() as connection:
@@ -4263,6 +8592,11 @@ class Repository:
             run = self._get_stage_run(connection, run_id)
             if run is None or run.state is not StageState.RUNNING:
                 raise ValueError("only a running text vector build can fail")
+            self._require_stage_run_job_fence(
+                connection,
+                run_id=run.run_id,
+                execution_token=execution_token,
+            )
             self._validate_text_vector_build_row(connection, build, run)
             self._enqueue_artifact_gc(
                 connection,

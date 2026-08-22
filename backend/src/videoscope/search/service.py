@@ -1,32 +1,270 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
+from hashlib import sha256
+import json
 import logging
 import math
 from numbers import Real
+import os
 from pathlib import Path
 import re
-from typing import Protocol
+import stat
+from types import MappingProxyType
+from typing import Literal, Protocol
 from urllib.parse import quote
 
 from videoscope.artifacts import (
     IndexingSpecifications,
+    SegmentGeneration,
     StageKind,
     StageSpecification,
     TextVectorSearchBinding,
     TextVectorSearchHit,
 )
-from videoscope.repository import Repository, SegmentRecord
+from videoscope.repository import (
+    ExternalIndexReleaseSnapshot,
+    Repository,
+    SegmentRecord,
+)
 from videoscope.search.fusion import EvidenceHit, calibrate_hits, fuse_hits
-from videoscope.search.query_router import QueryRouter
-from videoscope.search.text_matching import SearchLexicon, lexical_match
+from videoscope.search.query_router import QueryPlan, QueryRouter
+from videoscope.search.text_matching import SearchLexicon, lexical_match, normalize_text
 from videoscope.search.text_matching import tokens as text_tokens
 
 
 logger = logging.getLogger(__name__)
 
 _TRUSTED_ENTITY_MATCHES = {"exact", "stem", "transliteration"}
+_EVALUATION_MODALITIES = frozenset(
+    {"objects", "ocr", "speech", "visual", "lighthouse"}
+)
+_EVALUATION_TEXT_MODALITIES = frozenset({"objects", "ocr", "speech"})
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_BENCHMARK_MAX_TEXT_POINTS = 200_000
+_BENCHMARK_MAX_SEGMENTS = 200_000
+_BENCHMARK_MAX_TEXT_BYTES = 64 * 1024 * 1024
+_BENCHMARK_MAX_METADATA_BYTES = 64 * 1024 * 1024
+_BENCHMARK_MAX_ASSETS = 128
+_BENCHMARK_MAX_ASSET_BYTES = 16 * 1024**3
+_BENCHMARK_MAX_MEDIA_BYTES = 128 * 1024**3
+
+
+def _canonical_digest(value: object) -> str:
+    try:
+        payload = json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+    except (TypeError, ValueError) as error:
+        raise ValueError("search identity is not canonical JSON") from error
+    return sha256(payload.encode("utf-8")).hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
+class EvaluationSearchConfiguration:
+    """Router-free execution contract translated from a frozen benchmark plan."""
+
+    modalities: tuple[str, ...]
+    modality_weights: tuple[tuple[str, float], ...]
+    text_search: Literal["disabled", "lexical_and_semantic"]
+    visual_search: Literal["disabled", "dense_siglip"]
+    temporal_refinement: bool
+    lighthouse: bool
+    reranker: Literal["none", "qwen", "internvideo"]
+    reranker_trigger: Literal["disabled", "all_candidates"]
+    reranker_candidate_limit: int
+    result_limit: int
+    schema_version: int = 1
+
+    def __post_init__(self) -> None:
+        if type(self.schema_version) is not int or self.schema_version != 1:
+            raise ValueError("unsupported evaluation search configuration schema")
+        if (
+            type(self.modalities) is not tuple
+            or not self.modalities
+            or any(
+                type(item) is not str or item not in _EVALUATION_MODALITIES
+                for item in self.modalities
+            )
+            or len(set(self.modalities)) != len(self.modalities)
+            or self.modalities != tuple(sorted(self.modalities))
+        ):
+            raise ValueError("evaluation modalities must be a canonical tuple")
+        if type(self.modality_weights) is not tuple or any(
+            type(item) is not tuple or len(item) != 2
+            for item in self.modality_weights
+        ):
+            raise ValueError("evaluation modality weights must be canonical pairs")
+        weight_modalities: list[str] = []
+        normalized_weights: list[tuple[str, float]] = []
+        for modality, raw_weight in self.modality_weights:
+            if (
+                type(modality) is not str
+                or modality not in _EVALUATION_MODALITIES
+                or isinstance(raw_weight, bool)
+                or not isinstance(raw_weight, (int, float))
+                or not math.isfinite(float(raw_weight))
+                or not 0 < float(raw_weight) <= 100
+            ):
+                raise ValueError("evaluation modality weight is invalid")
+            weight_modalities.append(modality)
+            normalized_weights.append((modality, float(raw_weight)))
+        if (
+            tuple(weight_modalities) != self.modalities
+            or len(set(weight_modalities)) != len(weight_modalities)
+        ):
+            raise ValueError("evaluation modalities and weights disagree")
+        object.__setattr__(self, "modality_weights", tuple(normalized_weights))
+        if self.text_search not in {"disabled", "lexical_and_semantic"}:
+            raise ValueError("unsupported evaluation text search policy")
+        if self.visual_search not in {"disabled", "dense_siglip"}:
+            raise ValueError("unsupported evaluation visual search policy")
+        if type(self.temporal_refinement) is not bool or type(self.lighthouse) is not bool:
+            raise ValueError("evaluation search flags must be boolean")
+        if self.reranker not in {"none", "qwen", "internvideo"}:
+            raise ValueError("unsupported evaluation reranker")
+        if self.reranker_trigger not in {"disabled", "all_candidates"}:
+            raise ValueError("unsupported evaluation reranker trigger")
+        if (
+            type(self.reranker_candidate_limit) is not int
+            or self.reranker_candidate_limit < 0
+            or type(self.result_limit) is not int
+            or self.result_limit <= 0
+        ):
+            raise ValueError("evaluation search limits are invalid")
+
+        selected = set(self.modalities)
+        has_text = bool(selected & _EVALUATION_TEXT_MODALITIES)
+        has_visual = "visual" in selected
+        if (self.text_search == "disabled") == has_text:
+            raise ValueError("evaluation text policy and modalities disagree")
+        if (self.visual_search == "disabled") == has_visual:
+            raise ValueError("evaluation visual policy and modalities disagree")
+        if self.temporal_refinement and not has_visual:
+            raise ValueError("temporal refinement requires visual search")
+        if self.lighthouse != ("lighthouse" in selected):
+            raise ValueError("Lighthouse flag and modality disagree")
+        if self.lighthouse and not self.temporal_refinement:
+            raise ValueError("Lighthouse requires temporal refinement")
+        expected_limit = {"none": 0, "qwen": 12, "internvideo": 4}[self.reranker]
+        if self.reranker_candidate_limit != expected_limit:
+            raise ValueError("evaluation reranker candidate limit is not canonical")
+        if self.reranker == "none":
+            if self.reranker_trigger != "disabled":
+                raise ValueError("disabled reranker requires disabled trigger")
+        elif (
+            self.reranker_trigger != "all_candidates"
+            or not self.lighthouse
+            or not self.temporal_refinement
+        ):
+            raise ValueError("evaluation reranker requires the full temporal base")
+        if self.reranker_candidate_limit > self.result_limit:
+            raise ValueError("evaluation reranker limit exceeds result limit")
+
+    @property
+    def canonical_json(self) -> str:
+        return json.dumps(
+            {
+                "lighthouse": self.lighthouse,
+                "modalities": list(self.modalities),
+                "modality_weights": [
+                    {"modality": modality, "weight": weight}
+                    for modality, weight in self.modality_weights
+                ],
+                "reranker": self.reranker,
+                "reranker_candidate_limit": self.reranker_candidate_limit,
+                "reranker_trigger": self.reranker_trigger,
+                "result_limit": self.result_limit,
+                "schema_version": self.schema_version,
+                "temporal_refinement": self.temporal_refinement,
+                "text_search": self.text_search,
+                "visual_search": self.visual_search,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+
+    @property
+    def identity(self) -> str:
+        return f"evaluation-search-configuration@{self.schema_version}:{sha256(self.canonical_json.encode('utf-8')).hexdigest()}"
+
+
+@dataclass(frozen=True, slots=True)
+class SearchAssetBinding:
+    external_id: str
+    video_id: str
+    source_sha256: str
+    byte_size: int
+    duration_seconds: float
+
+    def __post_init__(self) -> None:
+        for value, field_name in (
+            (self.external_id, "external search asset ID"),
+            (self.video_id, "search video ID"),
+        ):
+            if (
+                type(value) is not str
+                or not value
+                or len(value) > 128
+                or "\x00" in value
+            ):
+                raise ValueError(f"{field_name} is invalid")
+        if type(self.source_sha256) is not str or _SHA256_RE.fullmatch(
+            self.source_sha256
+        ) is None:
+            raise ValueError("search asset SHA-256 is invalid")
+        if type(self.byte_size) is not int or self.byte_size <= 0:
+            raise ValueError("search asset byte size is invalid")
+        if (
+            isinstance(self.duration_seconds, bool)
+            or not isinstance(self.duration_seconds, (int, float))
+            or not math.isfinite(float(self.duration_seconds))
+            or float(self.duration_seconds) <= 0
+        ):
+            raise ValueError("search asset duration is invalid")
+        object.__setattr__(self, "duration_seconds", float(self.duration_seconds))
+
+
+@dataclass(frozen=True, slots=True)
+class ProductSearchComponentIdentity:
+    component_id: str
+    identity: str
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.component_id) is not str
+            or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", self.component_id)
+            is None
+            or type(self.identity) is not str
+            or not self.identity
+            or len(self.identity) > 2_048
+        ):
+            raise ValueError("product search component identity is invalid")
+
+
+@dataclass(frozen=True, slots=True)
+class ProductSearchIdentities:
+    model: tuple[ProductSearchComponentIdentity, ...]
+    index: tuple[ProductSearchComponentIdentity, ...]
+    config: tuple[ProductSearchComponentIdentity, ...]
+
+    def __post_init__(self) -> None:
+        for field_name in ("model", "index", "config"):
+            values = getattr(self, field_name)
+            if (
+                type(values) is not tuple
+                or not values
+                or any(not isinstance(item, ProductSearchComponentIdentity) for item in values)
+                or len({item.component_id for item in values}) != len(values)
+            ):
+                raise ValueError(f"product search {field_name} identities are invalid")
 
 
 class SearchDependencyError(RuntimeError):
@@ -359,11 +597,14 @@ class SearchService:
         lexicon: SearchLexicon | None = None,
         temporal_refiner: TemporalRefinement | None = None,
         candidate_reranker: CandidateReranker | None = None,
+        evaluation_rerankers: Mapping[str, CandidateReranker] | None = None,
         semantic_text_min_score: float = 0.42,
         visual_min_score: float = 0.18,
         specification_resolver: Callable[[], IndexingSpecifications] | None = None,
         segment_specifications: Iterable[StageSpecification] | None = None,
         thumbnails_dir: Path | None = None,
+        media_root: Path | None = None,
+        media_access_root: Path | None = None,
     ) -> None:
         if specification_resolver is not None and segment_specifications is not None:
             raise ValueError("use one indexing specification source")
@@ -375,6 +616,22 @@ class SearchService:
         self.lexicon = lexicon
         self.temporal_refiner = temporal_refiner
         self.candidate_reranker = candidate_reranker
+        resolved_rerankers = dict(evaluation_rerankers or {})
+        unknown_rerankers = set(resolved_rerankers) - {"qwen", "internvideo"}
+        if unknown_rerankers:
+            raise ValueError("unsupported evaluation reranker mapping")
+        if candidate_reranker is not None:
+            provider_id = getattr(candidate_reranker, "id", None)
+            inferred = {
+                "qwen": "qwen",
+                "qwen-video": "qwen",
+                "internvideo": "internvideo",
+            }.get(provider_id)
+            if inferred is not None:
+                resolved_rerankers.setdefault(inferred, candidate_reranker)
+        self.evaluation_rerankers: Mapping[str, CandidateReranker] = MappingProxyType(
+            resolved_rerankers
+        )
         self.semantic_text_min_score = semantic_text_min_score
         self.visual_min_score = visual_min_score
         self.specification_resolver = specification_resolver
@@ -389,6 +646,29 @@ class SearchService:
         ):
             raise ValueError("segment specifications must be validated")
         self.thumbnails_dir = Path(thumbnails_dir) if thumbnails_dir is not None else None
+        self.media_root = Path(media_root) if media_root is not None else None
+        if media_access_root is not None and media_root is None:
+            raise ValueError("retained media access requires a canonical media root")
+        self.media_access_root = (
+            Path(media_access_root) if media_access_root is not None else None
+        )
+
+    def open_pinned_evaluation(
+        self,
+        configuration: EvaluationSearchConfiguration,
+        assets: tuple[SearchAssetBinding, ...],
+        *,
+        execution_mode: Literal["cold", "warm"] = "warm",
+        lifecycle_identity: str | None = None,
+    ) -> PinnedProductSearchSession:
+        """Pin all addressable product artifacts for one evaluation run."""
+        return PinnedProductSearchSession(
+            self,
+            configuration,
+            assets,
+            execution_mode=execution_mode,
+            lifecycle_identity=lifecycle_identity,
+        )
 
     def _current_segment_specifications(self) -> tuple[StageSpecification, ...]:
         if self.specification_resolver is not None:
@@ -454,18 +734,36 @@ class SearchService:
         use_lighthouse: bool = True,
         mode: str = "all",
         raise_on_provider_error: bool = False,
+        _evaluation_configuration: EvaluationSearchConfiguration | None = None,
+        _pinned_session: PinnedProductSearchSession | None = None,
     ) -> list[SearchResultView]:
         normalized_query = query.strip()
         if not normalized_query:
             raise ValueError("search query is empty")
-        if mode not in SEARCH_MODALITIES:
-            raise ValueError("unsupported search mode")
-
-        plan = self.query_router.route(
-            normalized_query,
-            mode=mode,
-            requested_lighthouse=use_lighthouse,
-        )
+        if _evaluation_configuration is None:
+            if mode not in SEARCH_MODALITIES:
+                raise ValueError("unsupported search mode")
+            plan = self.query_router.route(
+                normalized_query,
+                mode=mode,
+                requested_lighthouse=use_lighthouse,
+            )
+        else:
+            if (
+                not isinstance(_evaluation_configuration, EvaluationSearchConfiguration)
+                or _pinned_session is None
+                or not raise_on_provider_error
+            ):
+                raise ValueError("pinned evaluation search contract is invalid")
+            plan = QueryPlan(
+                query=normalized_query,
+                intent="evaluation",
+                modalities=frozenset(_evaluation_configuration.modalities),
+                modality_weights=dict(_evaluation_configuration.modality_weights),
+                use_lighthouse=_evaluation_configuration.lighthouse,
+                refine_temporally=_evaluation_configuration.temporal_refinement,
+                explanation="frozen evaluation search plan",
+            )
         ready_videos = {
             video.id: video
             for video in self.repository.list_videos()
@@ -479,19 +777,64 @@ class SearchService:
         allowed_modalities = set(plan.modalities)
         named_entity_query = plan.intent == "entity"
         semantic_modalities = allowed_modalities & {"speech", "ocr", "objects"}
-        query_variants = self.lexicon.expand(normalized_query) if self.lexicon else [normalized_query]
+        external_release = ExternalIndexReleaseSnapshot(frozenset(), {}, {})
+        if _pinned_session is None and ready_video_ids:
+            try:
+                external_release = self.repository.get_external_index_release_snapshot(
+                    ready_video_ids
+                )
+            except Exception as error:
+                raise SearchDependencyError(
+                    "External index release snapshot is unavailable"
+                ) from error
+            if not isinstance(external_release, ExternalIndexReleaseSnapshot):
+                raise SearchDependencyError(
+                    "External index release snapshot is invalid"
+                )
+        durable_video_ids = [
+            video_id
+            for video_id in ready_video_ids
+            if video_id in external_release.job_backed_video_ids
+        ]
+        legacy_video_ids = [
+            video_id
+            for video_id in ready_video_ids
+            if video_id not in external_release.job_backed_video_ids
+        ]
+        if durable_video_ids:
+            if "visual" in allowed_modalities and self.visual_search is None:
+                raise SearchDependencyError("Visual release binding provider is unavailable")
+            if (
+                "lighthouse" in allowed_modalities
+                and plan.use_lighthouse
+                and self.moment_search is None
+            ):
+                raise SearchDependencyError(
+                    "Lighthouse release binding provider is unavailable"
+                )
+        query_variants = (
+            _pinned_session.expand_query(normalized_query)
+            if _pinned_session is not None
+            else self.lexicon.expand(normalized_query)
+            if self.lexicon
+            else [normalized_query]
+        )
 
         current_specifications: tuple[StageSpecification, ...] = ()
         selected_specifications: tuple[StageSpecification, ...] = ()
         indexing_specifications: IndexingSpecifications | None = None
         try:
-            indexing_specifications = self._current_indexing_specifications()
+            indexing_specifications = (
+                _pinned_session.indexing_specifications
+                if _pinned_session is not None
+                else self._current_indexing_specifications()
+            )
             current_specifications = (
                 indexing_specifications.segment_specifications
                 if indexing_specifications is not None
                 else self._static_segment_specifications or ()
             )
-            if raise_on_provider_error:
+            if raise_on_provider_error and _pinned_session is None:
                 self._require_current_sqlite_artifacts(
                     modalities=allowed_modalities,
                     video_ids=ready_video_ids,
@@ -516,24 +859,32 @@ class SearchService:
                     "Current text evidence is unavailable"
                 ) from error
         current_segments: list[SegmentRecord] = []
-        for specification in selected_specifications:
-            try:
-                current_segments.extend(
-                    self.repository.list_current_active_segments(
-                        [specification],
-                        video_ids=ready_video_ids,
+        if _pinned_session is not None:
+            current_segments.extend(
+                _pinned_session.segments_for(
+                    ready_video_ids,
+                    {specification.kind for specification in selected_specifications},
+                )
+            )
+        else:
+            for specification in selected_specifications:
+                try:
+                    current_segments.extend(
+                        self.repository.list_current_active_segments(
+                            [specification],
+                            video_ids=ready_video_ids,
+                        )
                     )
-                )
-            except Exception as error:
-                logger.warning(
-                    "Current %s segment generation is unavailable",
-                    specification.kind.value,
-                    exc_info=error,
-                )
-                if raise_on_provider_error:
-                    raise SearchDependencyError(
-                        f"Required {specification.kind.value} evidence is unavailable"
-                    ) from error
+                except Exception as error:
+                    logger.warning(
+                        "Current %s segment generation is unavailable",
+                        specification.kind.value,
+                        exc_info=error,
+                    )
+                    if raise_on_provider_error:
+                        raise SearchDependencyError(
+                            f"Required {specification.kind.value} evidence is unavailable"
+                        ) from error
         current_scenes: list[SegmentRecord] = []
         scene_specification = next(
             (
@@ -543,7 +894,7 @@ class SearchService:
             ),
             None,
         )
-        if scene_specification is not None:
+        if scene_specification is not None and _pinned_session is None:
             try:
                 current_scenes = list(
                     self.repository.list_current_active_segments(
@@ -560,7 +911,7 @@ class SearchService:
             (segment.video_id, segment.id): segment for segment in current_segments
         }
         generation_aware = (
-            indexing_specifications is not None
+            (_pinned_session is not None or indexing_specifications is not None)
             and bool(
                 getattr(
                     self.vector_index,
@@ -574,16 +925,21 @@ class SearchService:
         if generation_aware and semantic_modalities and ready_video_ids:
             assert indexing_specifications is not None
             try:
-                text_vector_bindings = self.repository.list_current_text_vector_bindings(
-                    video_ids=ready_video_ids,
-                    text_specification=indexing_specifications.text_vectors,
-                    semantic_specifications=(
-                        indexing_specifications.semantic_segment_specifications
-                    ),
-                    required_modalities=(
-                        semantic_modalities if raise_on_provider_error else None
-                    ),
-                )
+                if _pinned_session is not None:
+                    text_vector_bindings = _pinned_session.text_bindings_for(
+                        ready_video_ids
+                    )
+                else:
+                    text_vector_bindings = self.repository.list_current_text_vector_bindings(
+                        video_ids=ready_video_ids,
+                        text_specification=indexing_specifications.text_vectors,
+                        semantic_specifications=(
+                            indexing_specifications.semantic_segment_specifications
+                        ),
+                        required_modalities=(
+                            semantic_modalities if raise_on_provider_error else None
+                        ),
+                    )
             except Exception as error:
                 logger.warning(
                     "Current text vector generation is unavailable",
@@ -613,11 +969,15 @@ class SearchService:
                         bindings=text_vector_bindings,
                         modalities=semantic_modalities,
                         limit=max(limit * 3, 30),
-                        exhaustive_validation=raise_on_provider_error,
+                        exhaustive_validation=(
+                            raise_on_provider_error and _pinned_session is None
+                        ),
                     )
                     assert indexing_specifications is not None
                     post_search_bindings = (
-                        self.repository.list_current_text_vector_bindings(
+                        _pinned_session.text_bindings_for(ready_video_ids)
+                        if _pinned_session is not None
+                        else self.repository.list_current_text_vector_bindings(
                             video_ids=ready_video_ids,
                             text_specification=indexing_specifications.text_vectors,
                             semantic_specifications=(
@@ -761,11 +1121,66 @@ class SearchService:
             and ready_video_ids
         ):
             try:
-                visual_hits = self.visual_search.search(
-                    normalized_query,
-                    video_ids=ready_video_ids,
-                    limit=max(limit * 2, 20),
-                )
+                if _pinned_session is not None:
+                    search_generations = getattr(
+                        self.visual_search,
+                        "search_generations",
+                        None,
+                    )
+                    if not callable(search_generations):
+                        raise RuntimeError("pinned visual search is unavailable")
+                    visual_hits = search_generations(
+                        normalized_query,
+                        generation_bindings=(
+                            _pinned_session.visual_bindings_for(ready_video_ids)
+                        ),
+                        limit=max(limit * 2, 20),
+                    )
+                else:
+                    visual_hits = []
+                    if durable_video_ids:
+                        generation_bindings = external_release.bindings_for(
+                            StageKind.VISUAL_DENSE
+                        )
+                        selected_bindings = {
+                            video_id: generation_bindings[video_id]
+                            for video_id in durable_video_ids
+                            if video_id in generation_bindings
+                        }
+                        if set(selected_bindings) != set(durable_video_ids):
+                            raise SearchDependencyError(
+                                "Visual release binding is missing or corrupt"
+                            )
+                        search_generations = getattr(
+                            self.visual_search,
+                            "search_generations",
+                            None,
+                        )
+                        if not callable(search_generations):
+                            raise SearchDependencyError(
+                                "Visual release binding search is unavailable"
+                            )
+                        exact_hits = search_generations(
+                            normalized_query,
+                            generation_bindings=selected_bindings,
+                            limit=max(limit * 2, 20),
+                        )
+                        if any(
+                            hit.video_id not in selected_bindings
+                            for hit in exact_hits
+                        ):
+                            raise ValueError(
+                                "visual generation search returned an unbound video"
+                            )
+                        visual_hits.extend(exact_hits)
+                    if legacy_video_ids:
+                        visual_hits.extend(
+                            self.visual_search.search(
+                                normalized_query,
+                                video_ids=legacy_video_ids,
+                                limit=max(limit * 2, 20),
+                            )
+                        )
                 visual_hits = [
                     hit
                     for hit in visual_hits
@@ -773,20 +1188,25 @@ class SearchService:
                     and hit.score >= self.visual_min_score
                 ]
                 if plan.refine_temporally and self.temporal_refiner is not None:
-                    refine = self.temporal_refiner.refine
                     if raise_on_provider_error:
-                        refine_strict = getattr(
+                        refine = getattr(
                             self.temporal_refiner,
                             "refine_strict",
                             None,
                         )
-                        if callable(refine_strict):
-                            refine = refine_strict
+                        if not callable(refine):
+                            raise RuntimeError(
+                                "strict temporal refinement is unavailable"
+                            )
+                    else:
+                        refine = self.temporal_refiner.refine
                     visual_hits = refine(normalized_query, visual_hits)
                 hits.extend(visual_hits)
+            except SearchDependencyError:
+                raise
             except Exception as error:
                 logger.exception("SigLIP visual search failed")
-                if raise_on_provider_error:
+                if raise_on_provider_error or durable_video_ids:
                     raise SearchDependencyError("Visual search failed") from error
 
         if (
@@ -796,11 +1216,64 @@ class SearchService:
             and ready_video_ids
         ):
             try:
-                lighthouse_hits = self.moment_search.search(
-                    normalized_query,
-                    ready_video_ids,
-                    limit=max(limit * 2, 20),
-                )
+                if _pinned_session is not None:
+                    search_generations = getattr(
+                        self.moment_search,
+                        "search_generations",
+                        None,
+                    )
+                    if not callable(search_generations):
+                        raise RuntimeError("pinned Lighthouse search is unavailable")
+                    lighthouse_hits = search_generations(
+                        normalized_query,
+                        _pinned_session.lighthouse_bindings_for(ready_video_ids),
+                        limit=max(limit * 2, 20),
+                    )
+                else:
+                    lighthouse_hits = []
+                    if durable_video_ids:
+                        generation_bindings = external_release.bindings_for(
+                            StageKind.LIGHTHOUSE
+                        )
+                        selected_bindings = {
+                            video_id: generation_bindings[video_id]
+                            for video_id in durable_video_ids
+                            if video_id in generation_bindings
+                        }
+                        if set(selected_bindings) != set(durable_video_ids):
+                            raise SearchDependencyError(
+                                "Lighthouse release binding is missing or corrupt"
+                            )
+                        search_generations = getattr(
+                            self.moment_search,
+                            "search_generations",
+                            None,
+                        )
+                        if not callable(search_generations):
+                            raise SearchDependencyError(
+                                "Lighthouse release binding search is unavailable"
+                            )
+                        exact_hits = search_generations(
+                            normalized_query,
+                            selected_bindings,
+                            limit=max(limit * 2, 20),
+                        )
+                        if any(
+                            hit.video_id not in selected_bindings
+                            for hit in exact_hits
+                        ):
+                            raise ValueError(
+                                "Lighthouse generation search returned an unbound video"
+                            )
+                        lighthouse_hits.extend(exact_hits)
+                    if legacy_video_ids:
+                        lighthouse_hits.extend(
+                            self.moment_search.search(
+                                normalized_query,
+                                legacy_video_ids,
+                                limit=max(limit * 2, 20),
+                            )
+                        )
                 viable = [
                     hit
                     for hit in lighthouse_hits
@@ -809,9 +1282,11 @@ class SearchService:
                 ]
                 support = [hit for hit in hits if hit.modality in {"visual", "objects"}]
                 hits.extend(corroborate_lighthouse_hits(viable, support))
+            except SearchDependencyError:
+                raise
             except Exception as error:
                 logger.exception("Lighthouse search failed")
-                if raise_on_provider_error:
+                if raise_on_provider_error or durable_video_ids:
                     raise SearchDependencyError("Temporal search failed") from error
 
         deduplicated: dict[tuple[str, str], EvidenceHit] = {}
@@ -827,18 +1302,56 @@ class SearchService:
                 scene_segments.setdefault(segment.video_id, []).append(segment)
         calibrated = calibrate_hits(list(deduplicated.values()))
         fused = fuse_hits(calibrated, limit=limit, modality_weights=plan.modality_weights)
-        if self.candidate_reranker is not None and plan.intent in {"action", "mixed"}:
+        selected_reranker = (
+            _pinned_session.reranker
+            if _pinned_session is not None
+            else self.candidate_reranker
+        )
+        if selected_reranker is not None and (
+            _pinned_session is not None or plan.intent in {"action", "mixed"}
+        ):
             try:
-                rerank = self.candidate_reranker.rerank
+                rerank = getattr(selected_reranker, "rerank", None)
                 if raise_on_provider_error:
-                    rerank_strict = getattr(
-                        self.candidate_reranker,
+                    strict_rerank = getattr(
+                        selected_reranker,
                         "rerank_strict",
                         None,
                     )
-                    if callable(rerank_strict):
-                        rerank = rerank_strict
-                fused = rerank(normalized_query, fused)  # type: ignore[assignment, arg-type]
+                    if callable(strict_rerank):
+                        rerank = strict_rerank
+                    elif _pinned_session is not None:
+                        rerank = None
+                if not callable(rerank):
+                    raise RuntimeError("strict candidate reranker is unavailable")
+                candidate_limit = (
+                    _evaluation_configuration.reranker_candidate_limit
+                    if _evaluation_configuration is not None
+                    else len(fused)
+                )
+                selected_candidates = fused[:candidate_limit]
+                untouched_tail = fused[candidate_limit:]
+                reranked = rerank(  # type: ignore[arg-type]
+                    normalized_query,
+                    selected_candidates,
+                )
+                if not isinstance(reranked, list):
+                    raise ValueError("candidate reranker returned an invalid collection")
+                expected_keys = {
+                    (item.video_id, item.start, item.end)
+                    for item in selected_candidates
+                }
+                actual_keys = {
+                    (item.video_id, item.start, item.end)
+                    for item in reranked
+                }
+                if (
+                    len(reranked) != len(selected_candidates)
+                    or len(actual_keys) != len(reranked)
+                    or actual_keys != expected_keys
+                ):
+                    raise ValueError("candidate reranker changed the pinned candidate set")
+                fused = [*reranked, *untouched_tail]
             except Exception as error:
                 logger.exception("Candidate video reranking failed")
                 if raise_on_provider_error:
@@ -998,3 +1511,1520 @@ class SearchService:
                 f"{dependency_name} is missing or stale for selected ready videos: "
                 f"{preview}{suffix}"
             )
+
+
+@dataclass(frozen=True, slots=True)
+class _PinnedAssetState:
+    binding: SearchAssetBinding
+    video_fingerprint: tuple[object, ...]
+    text_state: str
+    active_text_generation_id: str | None
+    text_binding: TextVectorSearchBinding | None
+    segment_snapshots: tuple[
+        tuple[StageKind, SegmentGeneration, tuple[SegmentRecord, ...]], ...
+    ]
+    visual_state: str
+    active_visual_generation_id: str | None
+    visual_descriptor_json: str | None
+    lighthouse_state: str
+    active_lighthouse_generation_id: str | None
+    lighthouse_descriptor_json: str | None
+
+
+@dataclass(slots=True)
+class _BenchmarkSessionBudget:
+    points: int = 0
+    segments: int = 0
+    text_bytes: int = 0
+    metadata_bytes: int = 0
+
+    def consume(
+        self,
+        *,
+        points: int,
+        segments: int,
+        text_bytes: int,
+        metadata_bytes: int,
+    ) -> None:
+        values = {
+            "point": (self.points + points, _BENCHMARK_MAX_TEXT_POINTS),
+            "segment": (self.segments + segments, _BENCHMARK_MAX_SEGMENTS),
+            "text byte": (self.text_bytes + text_bytes, _BENCHMARK_MAX_TEXT_BYTES),
+            "metadata byte": (
+                self.metadata_bytes + metadata_bytes,
+                _BENCHMARK_MAX_METADATA_BYTES,
+            ),
+        }
+        for label, (total, maximum) in values.items():
+            if total > maximum:
+                raise SearchDependencyError(
+                    f"pinned evaluation exceeds the aggregate {label} limit"
+                )
+        self.points += points
+        self.segments += segments
+        self.text_bytes += text_bytes
+        self.metadata_bytes += metadata_bytes
+
+
+class PinnedProductSearchSession:
+    """A fail-closed, generation-addressed product search snapshot."""
+
+    _CAPABILITIES = frozenset(
+        {
+            "text_vectors",
+            "visual_dense",
+            "temporal_refinement",
+            "lighthouse",
+            "qwen_verification",
+            "internvideo",
+        }
+    )
+
+    def __init__(
+        self,
+        service: SearchService,
+        configuration: EvaluationSearchConfiguration,
+        assets: tuple[SearchAssetBinding, ...],
+        *,
+        execution_mode: Literal["cold", "warm"],
+        lifecycle_identity: str | None,
+    ) -> None:
+        if not isinstance(configuration, EvaluationSearchConfiguration):
+            raise ValueError("evaluation search configuration must be validated")
+        if (
+            type(assets) is not tuple
+            or not assets
+            or any(not isinstance(asset, SearchAssetBinding) for asset in assets)
+            or len({asset.external_id for asset in assets}) != len(assets)
+            or len({asset.video_id for asset in assets}) != len(assets)
+        ):
+            raise ValueError("pinned search assets must be unique validated bindings")
+        if execution_mode not in {"cold", "warm"}:
+            raise ValueError("unsupported evaluation execution mode")
+        if lifecycle_identity is None:
+            if execution_mode == "cold":
+                raise SearchDependencyError(
+                    "cold evaluation requires an attested cache lifecycle"
+                )
+            lifecycle_identity = "warm:process-cache-preserved@1"
+        if (
+            type(lifecycle_identity) is not str
+            or not lifecycle_identity.startswith(f"{execution_mode}:")
+            or len(lifecycle_identity) > 1_024
+            or "\x00" in lifecycle_identity
+        ):
+            raise ValueError("evaluation lifecycle identity does not match its mode")
+        self._validate_asset_scope(assets)
+
+        self._service = service
+        self.configuration = configuration
+        self.execution_mode = execution_mode
+        self._lifecycle_identity = lifecycle_identity
+        self._closed = False
+        self._assets = tuple(assets)
+        self._assets_by_video = {asset.video_id: asset for asset in assets}
+        self._lexicon_snapshot = service.lexicon.read() if service.lexicon else {}
+        try:
+            self.indexing_specifications = service._current_indexing_specifications()
+        except Exception:
+            self.indexing_specifications = None
+        self.reranker = (
+            service.evaluation_rerankers.get(configuration.reranker)
+            if configuration.reranker != "none"
+            else None
+        )
+        self._provider_identities = self._snapshot_provider_identities()
+        self._vector_index_state, self._vector_index_attestation = (
+            self._pin_vector_index()
+        )
+        self._temporal_state, self._temporal_attestation = (
+            self._pin_temporal_refiner()
+        )
+        self._reranker_state, self._reranker_attestation = self._pin_reranker()
+        budget = _BenchmarkSessionBudget()
+        pinned_states: list[_PinnedAssetState] = []
+        for asset in self._assets:
+            state = self._pin_asset(asset)
+            self._consume_text_budget(state, budget)
+            pinned_states.append(state)
+        self._states = self._attest_text_states(tuple(pinned_states))
+        try:
+            self._state_by_video = {
+                state.binding.video_id: state for state in self._states
+            }
+            self._identities = self._build_identities()
+        except BaseException as error:
+            try:
+                self._release_text_attestations(self._states)
+            except Exception as cleanup_error:
+                error.add_note(
+                    "benchmark text attestation cleanup failed: "
+                    f"{cleanup_error!r}"
+                )
+            raise
+
+    @staticmethod
+    def _validate_asset_scope(assets: tuple[SearchAssetBinding, ...]) -> None:
+        if len(assets) > _BENCHMARK_MAX_ASSETS:
+            raise SearchDependencyError("pinned evaluation exceeds the asset limit")
+        aggregate_bytes = 0
+        for asset in assets:
+            if asset.byte_size > _BENCHMARK_MAX_ASSET_BYTES:
+                raise SearchDependencyError(
+                    "pinned evaluation exceeds the per-asset media byte limit"
+                )
+            aggregate_bytes += asset.byte_size
+            if aggregate_bytes > _BENCHMARK_MAX_MEDIA_BYTES:
+                raise SearchDependencyError(
+                    "pinned evaluation exceeds the aggregate media byte limit"
+                )
+
+    def _consume_text_budget(
+        self,
+        state: _PinnedAssetState,
+        budget: _BenchmarkSessionBudget,
+    ) -> None:
+        vector_binding = state.text_binding
+        if vector_binding is None:
+            return
+        specifications = self.indexing_specifications
+        if specifications is None:
+            raise SearchDependencyError(
+                "pinned text artifacts lack indexing specifications"
+            )
+        metadata_bytes = len(specifications.text_vectors.canonical_json.encode("utf-8"))
+        metadata_bytes += len(
+            vector_binding.index_specification.canonical_json.encode("utf-8")
+        )
+        expected_by_kind = {
+            item.kind: item for item in specifications.semantic_segment_specifications
+        }
+        for item in vector_binding.inputs:
+            specification = expected_by_kind.get(item.stage_kind)
+            if specification is None:
+                raise SearchDependencyError(
+                    "pinned text input specification is unavailable"
+                )
+            metadata_bytes += len(specification.canonical_json.encode("utf-8"))
+        text_bytes = sum(len(point.text.encode("utf-8")) for point in vector_binding.points)
+        segment_count = 0
+        for kind, _generation, segments in state.segment_snapshots:
+            specification = expected_by_kind.get(kind)
+            if specification is None:
+                raise SearchDependencyError(
+                    "pinned segment specification is unavailable"
+                )
+            metadata_bytes += len(specification.canonical_json.encode("utf-8"))
+            segment_count += len(segments)
+            for segment in segments:
+                text_bytes += len(segment.text.encode("utf-8"))
+                try:
+                    metadata_json = json.dumps(
+                        segment.metadata,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                        allow_nan=False,
+                    )
+                except (TypeError, ValueError) as error:
+                    raise SearchDependencyError(
+                        "pinned segment metadata is not canonical JSON"
+                    ) from error
+                metadata_bytes += sum(
+                    len(value.encode("utf-8"))
+                    for value in (
+                        segment.id,
+                        segment.video_id,
+                        segment.modality,
+                        segment.thumbnail_path or "",
+                        metadata_json,
+                    )
+                )
+        budget.consume(
+            points=len(vector_binding.points),
+            segments=segment_count,
+            text_bytes=text_bytes,
+            metadata_bytes=metadata_bytes,
+        )
+
+    def _attest_text_states(
+        self,
+        states: tuple[_PinnedAssetState, ...],
+    ) -> tuple[_PinnedAssetState, ...]:
+        if self.configuration.text_search == "disabled":
+            return states
+        validate_generation = getattr(
+            self._service.vector_index,
+            "validate_generation_for_benchmark_snapshot",
+            None,
+        )
+        release_bindings = getattr(
+            self._service.vector_index,
+            "release_benchmark_snapshot_bindings",
+            None,
+        )
+        if not callable(validate_generation) or not callable(release_bindings):
+            return tuple(
+                replace(state, text_state="not_configured")
+                if state.text_state == "complete"
+                else state
+                for state in states
+            )
+        attested: list[_PinnedAssetState] = []
+        for state in states:
+            if state.text_state != "complete" or state.text_binding is None:
+                attested.append(state)
+                continue
+            try:
+                valid = bool(validate_generation(state.text_binding))
+            except Exception:
+                valid = False
+            attested.append(state if valid else replace(state, text_state="failed"))
+        return tuple(attested)
+
+    def _release_text_attestations(
+        self,
+        states: tuple[_PinnedAssetState, ...],
+    ) -> None:
+        bindings = tuple(
+            state.text_binding
+            for state in states
+            if state.text_state == "complete" and state.text_binding is not None
+        )
+        if not bindings:
+            return
+        release_bindings = getattr(
+            self._service.vector_index,
+            "release_benchmark_snapshot_bindings",
+            None,
+        )
+        if not callable(release_bindings):
+            raise SearchDependencyError(
+                "pinned text vector attestation release is unavailable"
+            )
+        release_bindings(bindings)
+
+    def lifecycle_identity(self) -> str:
+        return self._lifecycle_identity
+
+    def identities(self) -> ProductSearchIdentities:
+        self._ensure_open()
+        return self._identities
+
+    def _ensure_open(self) -> None:
+        if self._closed:
+            raise RuntimeError("pinned product search session is closed")
+
+    @staticmethod
+    def _stable_provider_identity(provider: object | None, *, visual: bool = False) -> str:
+        if provider is None:
+            return "not-configured"
+        if visual:
+            payload: object = {
+                "model_identity": getattr(provider, "model_identity", None),
+                "specification_identity": getattr(
+                    provider,
+                    "specification_identity",
+                    None,
+                ),
+                "type": f"{type(provider).__module__}.{type(provider).__qualname__}",
+            }
+        else:
+            payload = getattr(provider, "identity", None)
+            if callable(payload):
+                payload = payload()
+            if isinstance(payload, dict):
+                payload = {
+                    key: value
+                    for key, value in payload.items()
+                    if key != "active_generations"
+                }
+            payload = {
+                "identity": payload,
+                "type": f"{type(provider).__module__}.{type(provider).__qualname__}",
+            }
+        return f"sha256:{_canonical_digest(payload)}"
+
+    def _snapshot_provider_identities(self) -> Mapping[str, str]:
+        selected: dict[str, str] = {}
+        if self.configuration.text_search != "disabled":
+            vector_payload = {
+                "index_specification": getattr(
+                    getattr(
+                        self._service.vector_index,
+                        "index_specification",
+                        None,
+                    ),
+                    "canonical_json",
+                    None,
+                ),
+                "type": (
+                    f"{type(self._service.vector_index).__module__}."
+                    f"{type(self._service.vector_index).__qualname__}"
+                ),
+            }
+            selected["vector_index"] = f"sha256:{_canonical_digest(vector_payload)}"
+        if self.configuration.visual_search != "disabled":
+            selected["visual"] = self._stable_provider_identity(
+                self._service.visual_search,
+                visual=True,
+            )
+        if self.configuration.temporal_refinement:
+            selected["temporal_refiner"] = self._stable_provider_identity(
+                self._service.temporal_refiner
+            )
+        if self.configuration.lighthouse:
+            selected["lighthouse"] = self._stable_provider_identity(
+                self._service.moment_search
+            )
+        return MappingProxyType(selected)
+
+    def _provider_identities_are_current(self) -> bool:
+        return dict(self._provider_identities) == dict(
+            self._snapshot_provider_identities()
+        )
+
+    @staticmethod
+    def _provider_is_ready(provider: object | None, *, check_index: bool) -> bool:
+        status_method = getattr(provider, "status", None)
+        if not callable(status_method):
+            return False
+        try:
+            if check_index:
+                status_value = status_method()
+            else:
+                try:
+                    status_value = status_method(check_index=False)
+                except TypeError:
+                    status_value = status_method()
+        except Exception:
+            return False
+        state = getattr(status_value, "state", None)
+        return getattr(state, "value", state) == "ready"
+
+    def _asset_fingerprint(
+        self,
+        binding: SearchAssetBinding,
+        *,
+        verify_content: bool,
+    ) -> tuple[object, ...]:
+        video = self._service.repository.get_video(binding.video_id)
+        asset = self._service.repository.get_video_asset(binding.video_id)
+        if video is None or asset is None:
+            raise SearchDependencyError("pinned asset binding is unavailable")
+        duration = video.duration
+        if (
+            video.status != "ready"
+            or video.size_bytes != binding.byte_size
+            or asset.sha256 != binding.source_sha256
+            or asset.size_bytes != binding.byte_size
+            or isinstance(duration, bool)
+            or not isinstance(duration, (int, float))
+            or not math.isclose(
+                float(duration),
+                binding.duration_seconds,
+                rel_tol=1e-6,
+                abs_tol=0.05,
+            )
+        ):
+            raise SearchDependencyError("pinned asset binding does not match repository")
+        if self._service.media_root is None:
+            raise SearchDependencyError(
+                "pinned evaluation requires a canonical media root"
+            )
+        source_before = self._managed_source_stat_fingerprint(video.stored_name)
+        if verify_content:
+            verify_existing = getattr(
+                self._service.repository,
+                "verify_existing_asset_identity",
+                None,
+            )
+            if not callable(verify_existing):
+                raise SearchDependencyError(
+                    "read-only media identity verification is unavailable"
+                )
+            try:
+                verification_kwargs: dict[str, Path] = {
+                    "media_root": self._service.media_root,
+                }
+                if self._service.media_access_root is not None:
+                    verification_kwargs["media_access_root"] = (
+                        self._service.media_access_root
+                    )
+                verified = verify_existing(binding.video_id, **verification_kwargs)
+            except Exception as error:
+                raise SearchDependencyError(
+                    "pinned media source identity could not be verified"
+                ) from error
+            if (
+                verified.sha256 != binding.source_sha256
+                or verified.size_bytes != binding.byte_size
+            ):
+                raise SearchDependencyError("pinned media source identity changed")
+            source_after = self._managed_source_stat_fingerprint(video.stored_name)
+            if source_after != source_before:
+                raise SearchDependencyError(
+                    "pinned media source changed during identity verification"
+                )
+        else:
+            source_after = source_before
+        return (
+            video.id,
+            video.status,
+            video.stored_name,
+            video.media_path,
+            video.size_bytes,
+            float(duration),
+            asset.asset_id,
+            asset.sha256,
+            asset.size_bytes,
+            source_after,
+        )
+
+    def _managed_source_stat_fingerprint(
+        self,
+        stored_name: str,
+    ) -> tuple[tuple[int, ...], tuple[int, ...]]:
+        media_root = self._service.media_access_root or self._service.media_root
+        if (
+            media_root is None
+            or type(stored_name) is not str
+            or Path(stored_name).name != stored_name
+        ):
+            raise SearchDependencyError("pinned media path is invalid")
+        root_flags = (
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        file_flags = (
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        try:
+            root_descriptor = os.open(media_root, root_flags)
+        except OSError as error:
+            raise SearchDependencyError("canonical media root is unavailable") from error
+        try:
+            root_before = os.fstat(root_descriptor)
+            file_descriptor = os.open(
+                stored_name,
+                file_flags,
+                dir_fd=root_descriptor,
+            )
+            try:
+                source = os.fstat(file_descriptor)
+                path_source = os.stat(
+                    stored_name,
+                    dir_fd=root_descriptor,
+                    follow_symlinks=False,
+                )
+            finally:
+                os.close(file_descriptor)
+            root_after = os.fstat(root_descriptor)
+        except OSError as error:
+            raise SearchDependencyError("pinned media source is unavailable") from error
+        finally:
+            os.close(root_descriptor)
+
+        def identity(value: os.stat_result) -> tuple[int, ...]:
+            return (
+                value.st_dev,
+                value.st_ino,
+                value.st_mode,
+                value.st_size,
+                value.st_mtime_ns,
+                value.st_ctime_ns,
+            )
+
+        def directory_identity(value: os.stat_result) -> tuple[int, ...]:
+            return value.st_dev, value.st_ino, value.st_mode
+
+        if (
+            not stat.S_ISDIR(root_before.st_mode)
+            or directory_identity(root_before) != directory_identity(root_after)
+            or not stat.S_ISREG(source.st_mode)
+            or identity(source) != identity(path_source)
+        ):
+            raise SearchDependencyError("pinned media source identity changed")
+        return directory_identity(root_after), identity(source)
+
+    def _pin_text(
+        self,
+        binding: SearchAssetBinding,
+    ) -> tuple[
+        str,
+        str | None,
+        TextVectorSearchBinding | None,
+        tuple[tuple[StageKind, SegmentGeneration, tuple[SegmentRecord, ...]], ...],
+    ]:
+        if self.configuration.text_search == "disabled":
+            return "not_configured", None, None, ()
+        if self._vector_index_state != "complete":
+            return self._vector_index_state, None, None, ()
+        if (
+            self.indexing_specifications is None
+            or not getattr(
+                self._service.vector_index,
+                "supports_generation_provenance",
+                False,
+            )
+            or not callable(getattr(self._service.vector_index, "search_generations", None))
+            or not callable(
+                getattr(
+                    self._service.vector_index,
+                    "validate_generation_for_benchmark_snapshot",
+                    None,
+                )
+            )
+            or not callable(
+                getattr(
+                    self._service.vector_index,
+                    "release_benchmark_snapshot_bindings",
+                    None,
+                )
+            )
+            or not callable(
+                getattr(
+                    self._service.repository,
+                    "get_text_vector_search_binding_bounded",
+                    None,
+                )
+            )
+            or not callable(
+                getattr(
+                    self._service.repository,
+                    "get_segment_generation_snapshot_bounded",
+                    None,
+                )
+            )
+        ):
+            return "not_configured", None, None, ()
+        try:
+            active_id = self._service.repository.get_active_text_vector_generation_id(
+                binding.video_id
+            )
+        except Exception:
+            return "failed", None, None, ()
+        if active_id is None:
+            return "missing", None, None, ()
+        try:
+            vector_binding = (
+                self._service.repository.get_text_vector_search_binding_bounded(
+                    active_id,
+                    max_points=_BENCHMARK_MAX_TEXT_POINTS,
+                    max_segments=_BENCHMARK_MAX_SEGMENTS,
+                    max_text_bytes=_BENCHMARK_MAX_TEXT_BYTES,
+                    max_metadata_bytes=_BENCHMARK_MAX_METADATA_BYTES,
+                )
+            )
+            if vector_binding is None:
+                return "stale", active_id, None, ()
+            specifications = self.indexing_specifications
+            assert specifications is not None
+            if (
+                vector_binding.generation.specification_hash
+                != specifications.text_vectors.specification_hash
+                or vector_binding.generation.source_sha256 != binding.source_sha256
+                or vector_binding.index_specification
+                != getattr(self._service.vector_index, "index_specification", None)
+            ):
+                return "stale", active_id, vector_binding, ()
+            required_modalities = set(self.configuration.modalities) & set(
+                _EVALUATION_TEXT_MODALITIES
+            )
+            if any(
+                not vector_binding.supports_modality(modality)
+                for modality in required_modalities
+            ):
+                return "missing", active_id, vector_binding, ()
+            expected_by_kind = {
+                item.kind: item
+                for item in specifications.semantic_segment_specifications
+            }
+            snapshots: list[
+                tuple[StageKind, SegmentGeneration, tuple[SegmentRecord, ...]]
+            ] = []
+            for input_binding in vector_binding.inputs:
+                if input_binding.modality not in required_modalities:
+                    continue
+                generation_id = input_binding.segment_generation_id
+                if generation_id is None:
+                    return "missing", active_id, vector_binding, ()
+                snapshot = (
+                    self._service.repository.get_segment_generation_snapshot_bounded(
+                        generation_id,
+                        max_segments=_BENCHMARK_MAX_SEGMENTS,
+                        max_text_bytes=_BENCHMARK_MAX_TEXT_BYTES,
+                        max_metadata_bytes=_BENCHMARK_MAX_METADATA_BYTES,
+                    )
+                )
+                if snapshot is None:
+                    return "stale", active_id, vector_binding, ()
+                generation, segments = snapshot
+                expected = expected_by_kind[input_binding.stage_kind]
+                if (
+                    generation.video_id != binding.video_id
+                    or generation.source_sha256 != binding.source_sha256
+                    or generation.specification_hash != expected.specification_hash
+                    or generation.segment_count != len(segments)
+                ):
+                    return "stale", active_id, vector_binding, ()
+                snapshots.append((input_binding.stage_kind, generation, segments))
+            return "complete", active_id, vector_binding, tuple(snapshots)
+        except Exception:
+            return "failed", active_id, None, ()
+
+    @staticmethod
+    def _validated_descriptor(
+        raw: object,
+        binding: SearchAssetBinding,
+        *,
+        generation_id: str,
+        content_field: str,
+    ) -> str | None:
+        if not isinstance(raw, dict):
+            return None
+        required = {
+            "duration_seconds",
+            "generation_id",
+            "source_sha256",
+            "source_size_bytes",
+            "specification_hash",
+            "video_id",
+            content_field,
+        }
+        if not required <= set(raw):
+            return None
+        duration = raw.get("duration_seconds")
+        if (
+            raw.get("video_id") != binding.video_id
+            or raw.get("generation_id") != generation_id
+            or raw.get("source_sha256") != binding.source_sha256
+            or raw.get("source_size_bytes") != binding.byte_size
+            or type(raw.get("generation_id")) is not str
+            or type(raw.get("specification_hash")) is not str
+            or _SHA256_RE.fullmatch(str(raw["specification_hash"])) is None
+            or type(raw.get(content_field)) is not str
+            or _SHA256_RE.fullmatch(str(raw[content_field])) is None
+            or isinstance(duration, bool)
+            or not isinstance(duration, (int, float))
+            or not math.isclose(
+                float(duration),
+                binding.duration_seconds,
+                rel_tol=1e-6,
+                abs_tol=0.05,
+            )
+        ):
+            return None
+        try:
+            return json.dumps(
+                raw,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+        except (TypeError, ValueError):
+            return None
+
+    def _pin_generation_provider(
+        self,
+        provider: object | None,
+        binding: SearchAssetBinding,
+        *,
+        content_field: str,
+        check_readiness: bool = True,
+    ) -> tuple[str, str | None, str | None]:
+        if provider is None:
+            return "not_configured", None, None
+        if check_readiness and not self._provider_is_ready(
+            provider,
+            check_index=False,
+        ):
+            return "not_configured", None, None
+        active_generation_id = getattr(provider, "active_generation_id", None)
+        descriptor = getattr(provider, "generation_descriptor", None)
+        search_generations = getattr(provider, "search_generations", None)
+        if not all(callable(item) for item in (active_generation_id, descriptor, search_generations)):
+            return "not_configured", None, None
+        try:
+            generation_id = active_generation_id(binding.video_id)
+        except Exception:
+            return "failed", None, None
+        if generation_id is None:
+            return "missing", None, None
+        try:
+            descriptor_json = self._validated_descriptor(
+                descriptor(binding.video_id, generation_id),
+                binding,
+                generation_id=generation_id,
+                content_field=content_field,
+            )
+        except Exception:
+            return "failed", generation_id, None
+        if descriptor_json is None:
+            return "stale", generation_id, None
+        return "complete", generation_id, descriptor_json
+
+    def _force_generation_descriptor_is_current(
+        self,
+        provider: object | None,
+        state: _PinnedAssetState,
+        *,
+        generation_id: str | None,
+        expected_descriptor_json: str | None,
+        content_field: str,
+    ) -> bool:
+        descriptor = getattr(provider, "generation_descriptor", None)
+        if (
+            not callable(descriptor)
+            or generation_id is None
+            or expected_descriptor_json is None
+        ):
+            return False
+        try:
+            current_json = self._validated_descriptor(
+                descriptor(
+                    state.binding.video_id,
+                    generation_id,
+                    force_content_validation=True,
+                ),
+                state.binding,
+                generation_id=generation_id,
+                content_field=content_field,
+            )
+        except Exception:
+            return False
+        return current_json == expected_descriptor_json
+
+    def _pin_reranker(self) -> tuple[str, Mapping[str, object] | None]:
+        if self.configuration.reranker == "none":
+            return "not_configured", None
+        provider = self.reranker
+        if provider is None:
+            return "not_configured", None
+        if not self._provider_is_ready(provider, check_index=True):
+            return "not_configured", None
+        try:
+            attestation_source = getattr(provider, "benchmark_attestation", None)
+            strict = getattr(provider, "rerank_strict", None)
+        except Exception:
+            return "failed", None
+        if attestation_source is None or not callable(strict):
+            return "not_configured", None
+        try:
+            raw = (
+                attestation_source()
+                if callable(attestation_source)
+                else attestation_source
+            )
+        except Exception:
+            return "failed", None
+        if not isinstance(raw, dict):
+            return "failed", None
+        expected_provider = {
+            "qwen": "qwen-video",
+            "internvideo": "internvideo",
+        }[self.configuration.reranker]
+        required_strings = ("model_identity", "protocol_identity", "runtime_identity")
+        if (
+            raw.get("provider") != expected_provider
+            or raw.get("source_bound") is not True
+            or raw.get("strict_complete") is not True
+            or raw.get("candidate_limit")
+            != self.configuration.reranker_candidate_limit
+            or any(type(raw.get(name)) is not str or not str(raw[name]) for name in required_strings)
+        ):
+            return "not_configured", None
+        try:
+            canonical = json.loads(
+                json.dumps(raw, sort_keys=True, separators=(",", ":"), allow_nan=False)
+            )
+        except (TypeError, ValueError):
+            return "failed", None
+        return "complete", MappingProxyType(canonical)
+
+    @staticmethod
+    def _canonical_attestation(raw: object) -> Mapping[str, object] | None:
+        if not isinstance(raw, dict):
+            return None
+        try:
+            canonical = json.loads(
+                json.dumps(raw, sort_keys=True, separators=(",", ":"), allow_nan=False)
+            )
+        except (TypeError, ValueError):
+            return None
+        return MappingProxyType(canonical) if isinstance(canonical, dict) else None
+
+    def _pin_vector_index(self) -> tuple[str, Mapping[str, object] | None]:
+        if self.configuration.text_search == "disabled":
+            return "not_configured", None
+        provider = self._service.vector_index
+        try:
+            attestation_source = getattr(provider, "benchmark_attestation", None)
+            index_specification = getattr(provider, "index_specification", None)
+        except Exception:
+            return "failed", None
+        if attestation_source is None or index_specification is None:
+            return "not_configured", None
+        try:
+            raw_attestation = (
+                attestation_source()
+                if callable(attestation_source)
+                else attestation_source
+            )
+            attestation = self._canonical_attestation(raw_attestation)
+        except Exception:
+            return "failed", None
+        if attestation is None:
+            return "failed", None
+        embedding = attestation.get("embedding")
+        index = attestation.get("index")
+        embedding_strings = (
+            "algorithm_version",
+            "embedding_identity",
+            "model_name",
+            "model_repository",
+            "model_revision",
+            "runtime_version",
+        )
+        if (
+            attestation.get("schema_version") != 1
+            or attestation.get("provider") != getattr(provider, "id", None)
+            or attestation.get("strict_no_fallback") is not True
+            or not isinstance(embedding, dict)
+            or not isinstance(index, dict)
+            or index.get("index_specification_hash")
+            != getattr(index_specification, "specification_hash", None)
+            or index.get("collection_name")
+            != getattr(index_specification, "collection_name", None)
+            or embedding.get("embedding_identity")
+            != getattr(index_specification, "embedding_identity", None)
+            or embedding.get("dimensions")
+            != getattr(index_specification, "dimensions", None)
+            or _SHA256_RE.fullmatch(
+                str(embedding.get("model_content_sha256", ""))
+            )
+            is None
+            or _SHA256_RE.fullmatch(str(index.get("snapshot_sha256", ""))) is None
+            or any(
+                type(embedding.get(name)) is not str
+                or not str(embedding[name])
+                for name in embedding_strings
+            )
+        ):
+            return "not_configured", None
+        return "complete", attestation
+
+    def _pin_temporal_refiner(self) -> tuple[str, Mapping[str, object] | None]:
+        if not self.configuration.temporal_refinement:
+            return "not_configured", None
+        provider = self._service.temporal_refiner
+        try:
+            attestation_source = getattr(provider, "benchmark_attestation", None)
+            strict = getattr(provider, "refine_strict", None)
+        except Exception:
+            return "failed", None
+        if attestation_source is None or not callable(strict):
+            return "not_configured", None
+        try:
+            raw_attestation = (
+                attestation_source()
+                if callable(attestation_source)
+                else attestation_source
+            )
+            attestation = self._canonical_attestation(raw_attestation)
+        except Exception:
+            return "failed", None
+        if attestation is None:
+            return "failed", None
+        required_strings = (
+            "ffmpeg_identity",
+            "implementation_identity",
+            "runtime_identity",
+            "scorer_identity",
+            "scratch_policy_identity",
+        )
+        if (
+            attestation.get("source_bound") is not True
+            or attestation.get("strict_complete") is not True
+            or any(
+                type(attestation.get(name)) is not str
+                or not str(attestation[name])
+                for name in required_strings
+            )
+        ):
+            return "not_configured", None
+        return "complete", attestation
+
+    def _pin_asset(self, binding: SearchAssetBinding) -> _PinnedAssetState:
+        fingerprint = self._asset_fingerprint(
+            binding,
+            verify_content=True,
+        )
+        text_state, text_id, text_binding, segments = self._pin_text(binding)
+        if self.configuration.visual_search == "disabled":
+            visual_state, visual_id, visual_descriptor = (
+                "not_configured",
+                None,
+                None,
+            )
+        else:
+            visual_state, visual_id, visual_descriptor = self._pin_generation_provider(
+                self._service.visual_search,
+                binding,
+                content_field="content_sha256",
+            )
+        if not self.configuration.lighthouse:
+            lighthouse_state, lighthouse_id, lighthouse_descriptor = (
+                "not_configured",
+                None,
+                None,
+            )
+        else:
+            lighthouse_state, lighthouse_id, lighthouse_descriptor = (
+                self._pin_generation_provider(
+                    self._service.moment_search,
+                    binding,
+                    content_field="manifest_sha256",
+                )
+            )
+        return _PinnedAssetState(
+            binding=binding,
+            video_fingerprint=fingerprint,
+            text_state=text_state,
+            active_text_generation_id=text_id,
+            text_binding=text_binding,
+            segment_snapshots=segments,
+            visual_state=visual_state,
+            active_visual_generation_id=visual_id,
+            visual_descriptor_json=visual_descriptor,
+            lighthouse_state=lighthouse_state,
+            active_lighthouse_generation_id=lighthouse_id,
+            lighthouse_descriptor_json=lighthouse_descriptor,
+        )
+
+    def _capability_state_without_drift(
+        self,
+        state: _PinnedAssetState,
+        capability: str,
+    ) -> str:
+        if capability == "text_vectors":
+            return state.text_state
+        if capability == "visual_dense":
+            return state.visual_state
+        if capability == "temporal_refinement":
+            if state.visual_state != "complete":
+                return state.visual_state
+            return self._temporal_state
+        if capability == "lighthouse":
+            return state.lighthouse_state
+        if capability == "qwen_verification":
+            return (
+                self._reranker_state
+                if self.configuration.reranker == "qwen"
+                else "not_configured"
+            )
+        if capability == "internvideo":
+            return (
+                self._reranker_state
+                if self.configuration.reranker == "internvideo"
+                else "not_configured"
+            )
+        raise ValueError("unsupported product search capability")
+
+    def _required_capabilities(self) -> tuple[str, ...]:
+        required: list[str] = []
+        if self.configuration.text_search != "disabled":
+            required.append("text_vectors")
+        if self.configuration.visual_search != "disabled":
+            required.append("visual_dense")
+        if self.configuration.temporal_refinement:
+            required.append("temporal_refinement")
+        if self.configuration.lighthouse:
+            required.append("lighthouse")
+        if self.configuration.reranker == "qwen":
+            required.append("qwen_verification")
+        elif self.configuration.reranker == "internvideo":
+            required.append("internvideo")
+        return tuple(required)
+
+    def _state_is_current(
+        self,
+        state: _PinnedAssetState,
+        *,
+        verify_persisted_content: bool = True,
+    ) -> bool:
+        try:
+            if self._asset_fingerprint(
+                state.binding,
+                verify_content=False,
+            ) != state.video_fingerprint:
+                return False
+            if self.configuration.text_search != "disabled":
+                if state.text_state != "not_configured":
+                    active_id = (
+                        self._service.repository.get_active_text_vector_generation_id(
+                            state.binding.video_id
+                        )
+                    )
+                    if active_id != state.active_text_generation_id:
+                        return False
+                if state.text_state == "complete" and verify_persisted_content:
+                    assert state.text_binding is not None
+                    current_binding = (
+                        self._service.repository.get_text_vector_search_binding_bounded(
+                            state.text_binding.generation_id,
+                            max_points=_BENCHMARK_MAX_TEXT_POINTS,
+                            max_segments=_BENCHMARK_MAX_SEGMENTS,
+                            max_text_bytes=_BENCHMARK_MAX_TEXT_BYTES,
+                            max_metadata_bytes=_BENCHMARK_MAX_METADATA_BYTES,
+                        )
+                    )
+                    if current_binding != state.text_binding:
+                        return False
+                    for kind, generation, segments in state.segment_snapshots:
+                        active_segment = (
+                            self._service.repository.get_active_segment_generation(
+                                state.binding.video_id,
+                                kind,
+                            )
+                        )
+                        if (
+                            active_segment is None
+                            or active_segment.generation_id != generation.generation_id
+                            or self._service.repository.get_segment_generation_snapshot_bounded(
+                                generation.generation_id,
+                                max_segments=_BENCHMARK_MAX_SEGMENTS,
+                                max_text_bytes=_BENCHMARK_MAX_TEXT_BYTES,
+                                max_metadata_bytes=_BENCHMARK_MAX_METADATA_BYTES,
+                            )
+                            != (generation, segments)
+                        ):
+                            return False
+            if self.configuration.visual_search != "disabled":
+                current_visual = self._pin_generation_provider(
+                    self._service.visual_search,
+                    state.binding,
+                    content_field="content_sha256",
+                    check_readiness=False,
+                )
+                if current_visual != (
+                    state.visual_state,
+                    state.active_visual_generation_id,
+                    state.visual_descriptor_json,
+                ):
+                    return False
+            if self.configuration.lighthouse:
+                current_lighthouse = self._pin_generation_provider(
+                    self._service.moment_search,
+                    state.binding,
+                    content_field="manifest_sha256",
+                    check_readiness=False,
+                )
+                if current_lighthouse != (
+                    state.lighthouse_state,
+                    state.active_lighthouse_generation_id,
+                    state.lighthouse_descriptor_json,
+                ):
+                    return False
+            if (
+                verify_persisted_content
+                and self.configuration.text_search != "disabled"
+            ):
+                if (
+                    self.indexing_specifications
+                    != self._service._current_indexing_specifications()
+                ):
+                    return False
+                if self._service.lexicon is not None and (
+                    self._service.lexicon.read() != self._lexicon_snapshot
+                ):
+                    return False
+            if not self._provider_identities_are_current():
+                return False
+            if (
+                verify_persisted_content
+                and self.configuration.text_search != "disabled"
+            ):
+                current_state, current_attestation = self._pin_vector_index()
+                if (
+                    current_state != self._vector_index_state
+                    or dict(current_attestation or {})
+                    != dict(self._vector_index_attestation or {})
+                ):
+                    return False
+            if verify_persisted_content and self.configuration.temporal_refinement:
+                current_state, current_attestation = self._pin_temporal_refiner()
+                if (
+                    current_state != self._temporal_state
+                    or dict(current_attestation or {})
+                    != dict(self._temporal_attestation or {})
+                ):
+                    return False
+            if verify_persisted_content and self.configuration.reranker != "none":
+                current_state, current_attestation = self._pin_reranker()
+                if (
+                    current_state != self._reranker_state
+                    or dict(current_attestation or {})
+                    != dict(self._reranker_attestation or {})
+                ):
+                    return False
+        except Exception:
+            return False
+        return True
+
+    def capability_state(self, video_id: str, capability: str) -> str:
+        self._ensure_open()
+        if type(video_id) is not str or video_id not in self._state_by_video:
+            raise ValueError("capability check uses an unpinned video")
+        if capability not in self._CAPABILITIES:
+            raise ValueError("unsupported product search capability")
+        state = self._state_by_video[video_id]
+        if not self._state_is_current(state):
+            return "stale"
+        return self._capability_state_without_drift(state, capability)
+
+    def _assert_current(
+        self,
+        video_ids: tuple[str, ...],
+        *,
+        verify_persisted_content: bool = True,
+    ) -> None:
+        if not self._provider_identities_are_current() or any(
+            not self._state_is_current(
+                self._state_by_video[video_id],
+                verify_persisted_content=verify_persisted_content,
+            )
+            for video_id in video_ids
+        ):
+            raise SearchDependencyError("pinned product search snapshot changed")
+
+    def expand_query(self, query: str) -> list[str]:
+        output = [query.strip()]
+        normalized_query = normalize_text(query)
+        for canonical, aliases in self._lexicon_snapshot.items():
+            variants = [canonical, *aliases]
+            if any(
+                normalized and normalized in normalized_query
+                for normalized in (normalize_text(value) for value in variants)
+            ):
+                output.extend(variants)
+        return list(dict.fromkeys(value for value in output if value))
+
+    def segments_for(
+        self,
+        video_ids: list[str],
+        kinds: set[StageKind],
+    ) -> tuple[SegmentRecord, ...]:
+        return tuple(
+            segment
+            for video_id in video_ids
+            for kind, _generation, segments in self._state_by_video[
+                video_id
+            ].segment_snapshots
+            if kind in kinds
+            for segment in segments
+        )
+
+    def text_bindings_for(
+        self,
+        video_ids: list[str],
+    ) -> tuple[TextVectorSearchBinding, ...]:
+        return tuple(
+            state.text_binding
+            for video_id in video_ids
+            for state in [self._state_by_video[video_id]]
+            if state.text_binding is not None and state.text_state == "complete"
+        )
+
+    @staticmethod
+    def _descriptor_value(value: str | None) -> dict[str, object]:
+        if value is None:
+            raise SearchDependencyError("pinned generation descriptor is unavailable")
+        raw = json.loads(value)
+        if not isinstance(raw, dict):
+            raise SearchDependencyError("pinned generation descriptor is invalid")
+        return raw
+
+    def visual_bindings_for(
+        self,
+        video_ids: list[str],
+    ) -> dict[str, dict[str, object]]:
+        return {
+            video_id: self._descriptor_value(
+                self._state_by_video[video_id].visual_descriptor_json
+            )
+            for video_id in video_ids
+        }
+
+    def lighthouse_bindings_for(
+        self,
+        video_ids: list[str],
+    ) -> dict[str, dict[str, object]]:
+        return {
+            video_id: self._descriptor_value(
+                self._state_by_video[video_id].lighthouse_descriptor_json
+            )
+            for video_id in video_ids
+        }
+
+    def search(
+        self,
+        query: str,
+        video_ids: tuple[str, ...],
+        *,
+        limit: int,
+    ) -> list[SearchResultView]:
+        self._ensure_open()
+        if (
+            type(video_ids) is not tuple
+            or not video_ids
+            or len(set(video_ids)) != len(video_ids)
+            or any(video_id not in self._state_by_video for video_id in video_ids)
+        ):
+            raise ValueError("search must use a non-empty subset of pinned videos")
+        if limit != self.configuration.result_limit:
+            raise ValueError("search limit differs from frozen evaluation plan")
+        for video_id in video_ids:
+            state = self._state_by_video[video_id]
+            for capability in self._required_capabilities():
+                if self._capability_state_without_drift(state, capability) != "complete":
+                    raise SearchDependencyError(
+                        f"required pinned capability {capability} is unavailable"
+                    )
+        self._assert_current(video_ids, verify_persisted_content=False)
+        results = self._service.search(
+            query,
+            video_ids=list(video_ids),
+            limit=limit,
+            use_lighthouse=self.configuration.lighthouse,
+            mode="all",
+            raise_on_provider_error=True,
+            _evaluation_configuration=self.configuration,
+            _pinned_session=self,
+        )
+        self._assert_current(video_ids, verify_persisted_content=False)
+        if any(result.video_id not in video_ids for result in results):
+            raise SearchDependencyError("product search returned an unpinned video")
+        return results
+
+    def _build_identities(self) -> ProductSearchIdentities:
+        vector_specification = getattr(
+            self._service.vector_index,
+            "index_specification",
+            None,
+        )
+        model_identities: list[ProductSearchComponentIdentity] = []
+        if self.configuration.text_search != "disabled":
+            model_identities.append(
+                ProductSearchComponentIdentity(
+                    "text_embedding",
+                    str(
+                        getattr(
+                            vector_specification,
+                            "embedding_identity",
+                            "not-configured",
+                        )
+                    ),
+                )
+            )
+        if self.configuration.visual_search != "disabled":
+            model_identities.append(
+                ProductSearchComponentIdentity(
+                    "visual_embedding",
+                    str(getattr(self._service.visual_search, "model_identity", "not-configured")),
+                )
+            )
+        if self.configuration.lighthouse:
+            model_identities.append(
+                ProductSearchComponentIdentity(
+                    "lighthouse_model",
+                    self._provider_identities["lighthouse"],
+                )
+            )
+        if self.configuration.reranker != "none":
+            model_identities.append(
+                ProductSearchComponentIdentity(
+                    f"{self.configuration.reranker}_reranker",
+                    (
+                        str(self._reranker_attestation.get("model_identity"))
+                        if self._reranker_attestation is not None
+                        else "not-configured"
+                    ),
+                )
+            )
+
+        text_generations = [
+            {
+                "asset_id": state.binding.external_id,
+                "generation_id": state.active_text_generation_id,
+                "state": state.text_state,
+                "vector_manifest_sha256": (
+                    state.text_binding.generation.vector_manifest_sha256
+                    if state.text_binding is not None
+                    else None
+                ),
+            }
+            for state in self._states
+        ]
+        index_identities: list[ProductSearchComponentIdentity] = []
+        if self.configuration.text_search != "disabled":
+            index_identities.extend(
+                [
+                    ProductSearchComponentIdentity(
+                        "text_vector_index",
+                        str(
+                            getattr(
+                                vector_specification,
+                                "specification_hash",
+                                "not-configured",
+                            )
+                        ),
+                    ),
+                    ProductSearchComponentIdentity(
+                        "text_vector_generations",
+                        f"sha256:{_canonical_digest(text_generations)}",
+                    ),
+                ]
+            )
+        if self.configuration.visual_search != "disabled":
+            index_identities.append(
+                ProductSearchComponentIdentity(
+                    "visual_generations",
+                    f"sha256:{_canonical_digest([{'asset_id': state.binding.external_id, 'descriptor': json.loads(state.visual_descriptor_json) if state.visual_descriptor_json else None, 'state': state.visual_state} for state in self._states])}",
+                )
+            )
+        if self.configuration.lighthouse:
+            index_identities.append(
+                ProductSearchComponentIdentity(
+                    "lighthouse_generations",
+                    f"sha256:{_canonical_digest([{'asset_id': state.binding.external_id, 'descriptor': json.loads(state.lighthouse_descriptor_json) if state.lighthouse_descriptor_json else None, 'state': state.lighthouse_state} for state in self._states])}",
+                )
+            )
+        runtime_payload = {
+            "indexing_specifications": (
+                {
+                    specification.kind.value: specification.specification_hash
+                    for specification in self.indexing_specifications.segment_specifications
+                }
+                | {
+                    "text_vectors": self.indexing_specifications.text_vectors.specification_hash
+                }
+                if self.configuration.text_search != "disabled"
+                and self.indexing_specifications is not None
+                else None
+            ),
+            "lexicon": (
+                self._lexicon_snapshot
+                if self.configuration.text_search != "disabled"
+                else None
+            ),
+            "provider_identities": dict(self._provider_identities),
+            "reranker_attestation": dict(self._reranker_attestation or {}),
+            "temporal_attestation": dict(self._temporal_attestation or {}),
+            "vector_index_attestation": dict(self._vector_index_attestation or {}),
+            "semantic_text_min_score": (
+                self._service.semantic_text_min_score
+                if self.configuration.text_search != "disabled"
+                else None
+            ),
+            "visual_min_score": (
+                self._service.visual_min_score
+                if self.configuration.visual_search != "disabled"
+                else None
+            ),
+        }
+        config_identities = (
+            ProductSearchComponentIdentity(
+                "evaluation_search_configuration",
+                self.configuration.identity,
+            ),
+            ProductSearchComponentIdentity(
+                "product_search_runtime",
+                f"sha256:{_canonical_digest(runtime_payload)}",
+            ),
+            ProductSearchComponentIdentity(
+                "product_search_lifecycle",
+                self._lifecycle_identity,
+            ),
+        )
+        return ProductSearchIdentities(
+            model=tuple(model_identities),
+            index=tuple(index_identities),
+            config=config_identities,
+        )
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        failures: list[Exception] = []
+        for state in self._states:
+            try:
+                if not self._state_is_current(
+                    state,
+                    verify_persisted_content=True,
+                ):
+                    raise SearchDependencyError(
+                        "pinned product state changed during evaluation"
+                    )
+                if self._asset_fingerprint(
+                    state.binding,
+                    verify_content=True,
+                ) != state.video_fingerprint:
+                    raise SearchDependencyError(
+                        "pinned media source changed during evaluation"
+                    )
+                if (
+                    state.visual_state == "complete"
+                    and not self._force_generation_descriptor_is_current(
+                        self._service.visual_search,
+                        state,
+                        generation_id=state.active_visual_generation_id,
+                        expected_descriptor_json=state.visual_descriptor_json,
+                        content_field="content_sha256",
+                    )
+                ):
+                    raise SearchDependencyError(
+                        "pinned visual generation failed final validation"
+                    )
+                if (
+                    state.lighthouse_state == "complete"
+                    and not self._force_generation_descriptor_is_current(
+                        self._service.moment_search,
+                        state,
+                        generation_id=state.active_lighthouse_generation_id,
+                        expected_descriptor_json=state.lighthouse_descriptor_json,
+                        content_field="manifest_sha256",
+                    )
+                ):
+                    raise SearchDependencyError(
+                        "pinned Lighthouse generation failed final validation"
+                    )
+            except Exception as error:
+                failures.append(error)
+        if self.configuration.text_search != "disabled":
+            verify_snapshot = getattr(
+                self._service.vector_index,
+                "verify_benchmark_snapshot_current",
+                None,
+            )
+            try:
+                if not callable(verify_snapshot) or not verify_snapshot():
+                    raise SearchDependencyError(
+                        "pinned text vector storage snapshot changed"
+                    )
+            except Exception as error:
+                failures.append(error)
+            finally:
+                try:
+                    self._release_text_attestations(self._states)
+                except Exception as error:
+                    failures.append(error)
+        if failures:
+            raise SearchDependencyError(
+                "pinned product snapshot failed final identity verification"
+            ) from failures[0]

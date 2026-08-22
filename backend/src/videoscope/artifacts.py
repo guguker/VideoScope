@@ -223,7 +223,7 @@ class StageSpecification:
             raise ValueError("canonical stage specification must be a string")
         try:
             payload = json.loads(value, parse_constant=_reject_non_finite_json)
-        except (TypeError, ValueError, json.JSONDecodeError) as error:
+        except (TypeError, ValueError, RecursionError, json.JSONDecodeError) as error:
             raise ValueError("invalid canonical stage specification") from error
         if not isinstance(payload, dict):
             raise ValueError("canonical stage specification must be an object")
@@ -237,14 +237,17 @@ class StageSpecification:
         }
         if set(payload) != expected_keys:
             raise ValueError("canonical stage specification has unsupported fields")
-        specification = cls(
-            kind=payload["kind"],
-            schema_version=payload["schema_version"],
-            implementation_revision=payload["implementation_revision"],
-            parameters=payload["parameters"],
-            model_identity=payload["model_identity"],
-            dependencies=payload["dependencies"],
-        )
+        try:
+            specification = cls(
+                kind=payload["kind"],
+                schema_version=payload["schema_version"],
+                implementation_revision=payload["implementation_revision"],
+                parameters=payload["parameters"],
+                model_identity=payload["model_identity"],
+                dependencies=payload["dependencies"],
+            )
+        except RecursionError as error:
+            raise ValueError("invalid canonical stage specification") from error
         if specification.canonical_json != value:
             raise ValueError("stage specification is not canonical")
         return specification

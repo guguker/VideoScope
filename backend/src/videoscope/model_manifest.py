@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 
 WHISPER_MODEL = "mlx-community/whisper-large-v3-turbo"
 SIGLIP_224_MODEL = "google/siglip2-base-patch16-224"
@@ -44,3 +46,25 @@ def fastembed_snapshot(model_name: str) -> tuple[str | None, str | None]:
     if model_name != TEXT_EMBEDDING_MODEL:
         return None, None
     return FASTEMBED_REPOSITORY, MODEL_REVISIONS[FASTEMBED_REPOSITORY]
+
+
+def fastembed_cache_snapshot_path(
+    cache_dir: Path,
+    model_name: str,
+) -> Path | None:
+    """Resolve the one immutable Hugging Face cache snapshot used by FastEmbed.
+
+    This function is deliberately lexical: callers must still open and attest the
+    returned directory without following unsafe path components. It never invokes
+    a hub client and therefore cannot download or advance a mutable revision.
+    """
+    repository, revision = fastembed_snapshot(model_name)
+    if repository is None or revision is None:
+        return None
+    organization, name = repository.split("/", maxsplit=1)
+    return (
+        Path(cache_dir).absolute()
+        / f"models--{organization}--{name}"
+        / "snapshots"
+        / revision
+    )
