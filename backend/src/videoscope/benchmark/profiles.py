@@ -261,8 +261,24 @@ class BenchmarkProfile:
         return self.search_plan.result_limit
 
     @property
+    def canonical_json(self) -> str:
+        return json.dumps(
+            {
+                "profile_id": self.profile_id,
+                "required_capabilities": sorted(self.required_capabilities),
+                "schema_version": self.schema_version,
+                "search_plan_identity": self.search_plan.identity,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+
+    @property
     def identity(self) -> str:
-        return f"{self.profile_id}@{self.schema_version}"
+        digest = sha256(self.canonical_json.encode("utf-8")).hexdigest()
+        return f"{self.profile_id}@{self.schema_version}:{digest}"
 
 
 _TEXT_PLAN = EvaluationSearchPlan(

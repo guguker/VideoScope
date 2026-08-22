@@ -46,6 +46,27 @@ def test_profile_identity_changes_with_contract_version() -> None:
     assert first.identity != second.identity
 
 
+def test_profile_identity_binds_capabilities_and_search_plan() -> None:
+    plan = get_profile("dense_siglip").search_plan
+    text = BenchmarkProfile("profile", 1, ("text_vectors",), plan)
+    visual = BenchmarkProfile(
+        "profile",
+        1,
+        ("visual_dense", "text_vectors"),
+        plan,
+    )
+    reordered = BenchmarkProfile(
+        "profile",
+        1,
+        ("text_vectors", "visual_dense"),
+        plan,
+    )
+
+    assert text.identity != visual.identity
+    assert visual.identity == reordered.identity
+    assert visual.search_plan.identity in visual.canonical_json
+
+
 @pytest.mark.parametrize(
     "profile",
     [

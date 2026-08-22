@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -28,14 +29,21 @@ from videoscope.benchmark.cli import (
     EXIT_AUDIT,
     EXIT_CONFLICT,
     EXIT_DATA,
+    EXIT_EXECUTION,
     EXIT_INTERNAL,
     EXIT_IO,
+    EXIT_MEASUREMENT,
     EXIT_NOT_FOUND,
     EXIT_SUCCESS,
+    EXIT_TERMINATED,
     EXIT_USAGE,
     main,
 )
-from videoscope.benchmark.policy import MAX_POLICY_BYTES, load_policy
+from videoscope.benchmark.policy import (
+    MAX_POLICY_BYTES,
+    POLICY_SCHEMA_VERSION,
+    load_policy,
+)
 from videoscope.benchmark.runner import (
     BenchmarkRunner,
     BenchmarkSearchHit,
@@ -106,10 +114,18 @@ class _SearchAdapter:
     def __init__(self, hits: tuple[BenchmarkSearchHit, ...]) -> None:
         self.hits = hits
         self.profile = None
+        self.execution_mode = None
 
-    def open_session(self, profile, assets):  # type: ignore[no-untyped-def]
+    def open_session(  # type: ignore[no-untyped-def]
+        self,
+        profile,
+        assets,
+        *,
+        execution_mode,
+    ):
         del assets
         self.profile = profile
+        self.execution_mode = execution_mode
         return self
 
     def identities(self) -> ExecutionIdentities:
@@ -123,6 +139,13 @@ class _SearchAdapter:
                     f"search-for-{self.profile.profile_id}",
                 ),
             ),
+        )
+
+    def lifecycle_identity(self) -> ComponentIdentity:
+        assert self.execution_mode in {"cold", "warm"}
+        return ComponentIdentity(
+            "benchmark_execution_lifecycle",
+            f"{self.execution_mode}:test-cache-policy@1",
         )
 
     def capability_state(self, asset, capability):  # type: ignore[no-untyped-def]
@@ -183,12 +206,26 @@ def _create_registry(root: Path, dataset: BenchmarkDataset) -> BenchmarkRunRegis
     return registry
 
 
+def _allowed_differences(**overrides: object) -> dict[str, object]:
+    value: dict[str, object] = {
+        "allow_code_sha_difference": True,
+        "allow_benchmark_profile_difference": False,
+        "allow_benchmark_search_plan_difference": False,
+        "model_component_ids": [],
+        "index_component_ids": [],
+        "config_component_ids": [],
+    }
+    value.update(overrides)
+    return value
+
+
 def _write_policy(path: Path, **overrides: object) -> None:
     value: dict[str, object] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "policy_id": "cli-promotion",
         "minimum_completed_cases": 1,
         "require_no_errors": True,
+        "allowed_differences": _allowed_differences(),
         "guardrails": [
             {
                 "metric_name": "recall_at_5",
@@ -346,7 +383,7 @@ def test_compare_loads_strict_policy_and_emits_explicit_guardrails(
     cli_workspace,
     capsys,
 ) -> None:  # type: ignore[no-untyped-def]
-    _dataset_value, _dataset_path, registry_root, policy_path = cli_workspace
+    _dataset_value, dataset_path, registry_root, policy_path = cli_workspace
 
     exit_code = main(
         [
@@ -357,6 +394,8 @@ def test_compare_loads_strict_policy_and_emits_explicit_guardrails(
             str(registry_root),
             "--policy",
             str(policy_path),
+            "--dataset",
+            str(dataset_path),
         ]
     )
     captured = capsys.readouterr()
@@ -366,6 +405,10 @@ def test_compare_loads_strict_policy_and_emits_explicit_guardrails(
     assert value["status"] == "eligible"
     assert value["minimum_completed_cases"] == 1
     assert value["statistical_significance"] == "not_assessed"
+    assert value["baseline_code_sha"] == "b" * 40
+    assert value["candidate_code_sha"] == "c" * 40
+    assert value["code_sha_difference_allowed"] is True
+    assert value["allowed_differences"] == _allowed_differences()
     assert [item["metric_name"] for item in value["guardrails"]] == [
         "false_positive_rate",
         "recall_at_5",
@@ -373,14 +416,59 @@ def test_compare_loads_strict_policy_and_emits_explicit_guardrails(
     assert captured.err == ""
 
 
+def test_compare_rejects_forged_aggregates_that_contradict_ranked_evidence(
+    cli_workspace,
+    capsys,
+) -> None:  # type: ignore[no-untyped-def]
+    _dataset_value, dataset_path, registry_root, policy_path = cli_workspace
+    registry = BenchmarkRunRegistry(registry_root)
+    missed = registry.read("run-baseline")
+    forged_metrics = tuple(
+        replace(metric, value=1.0)
+        if metric.name == "recall_at_5"
+        else replace(metric, value=0.0)
+        if metric.name == "false_positive_rate"
+        else metric
+        for metric in missed.quality_metrics
+    )
+    registry.add(
+        replace(
+            missed,
+            run_id="run-forged",
+            code_sha="c" * 40,
+            quality_metrics=forged_metrics,
+        )
+    )
+
+    exit_code = main(
+        [
+            "compare",
+            "run-baseline",
+            "run-forged",
+            "--registry",
+            str(registry_root),
+            "--policy",
+            str(policy_path),
+            "--dataset",
+            str(dataset_path),
+        ]
+    )
+    captured = capsys.readouterr()
+
+    assert exit_code == EXIT_AUDIT
+    assert captured.out == ""
+    assert json.loads(captured.err)["error"]["code"] == "audit_failed"
+
+
 @pytest.mark.parametrize(
     "invalid_policy",
     [
         {
-            "schema_version": 1,
+            "schema_version": 2,
             "policy_id": "policy",
             "minimum_completed_cases": 1,
             "require_no_errors": True,
+            "allowed_differences": _allowed_differences(),
             "guardrails": [],
             "unknown": "rejected",
         },
@@ -399,6 +487,79 @@ def test_policy_loader_rejects_unknown_fields_and_versions(
 ) -> None:
     path = tmp_path / "policy.json"
     path.write_text(json.dumps(invalid_policy), encoding="utf-8")
+
+    with pytest.raises(ValueError):
+        load_policy(path)
+
+
+def test_policy_v2_requires_an_explicit_migration_from_legacy_v1(tmp_path) -> None:
+    path = tmp_path / "legacy-policy.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "policy_id": "legacy",
+                "minimum_completed_cases": 1,
+                "require_no_errors": True,
+                "guardrails": [
+                    {
+                        "metric_name": "recall_at_5",
+                        "direction": "higher_is_better",
+                        "allowed_regression": 0.0,
+                        "absolute_threshold": None,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="schema_version must be 2"):
+        load_policy(path)
+    assert POLICY_SCHEMA_VERSION == 2
+
+
+def test_policy_loader_parses_the_explicit_v2_difference_allowlist(tmp_path) -> None:
+    path = tmp_path / "policy.json"
+    _write_policy(
+        path,
+        allowed_differences=_allowed_differences(
+            allow_benchmark_profile_difference=True,
+            model_component_ids=["reranker", "embedding"],
+            index_component_ids=["visual_index"],
+            config_component_ids=["fusion"],
+        ),
+    )
+
+    policy = load_policy(path)
+
+    assert policy.allowed_differences.allow_code_sha_difference is True
+    assert policy.allowed_differences.allow_benchmark_profile_difference is True
+    assert policy.allowed_differences.model_component_ids == (
+        "embedding",
+        "reranker",
+    )
+    assert policy.allowed_differences.index_component_ids == ("visual_index",)
+    assert policy.allowed_differences.config_component_ids == ("fusion",)
+
+
+@pytest.mark.parametrize(
+    "allowed_differences",
+    (
+        _allowed_differences(unknown=True),
+        _allowed_differences(model_component_ids=["model", "model"]),
+        _allowed_differences(
+            config_component_ids=["benchmark_execution_lifecycle"],
+        ),
+        _allowed_differences(allow_code_sha_difference=1),
+    ),
+)
+def test_policy_loader_rejects_unsafe_v2_difference_declarations(
+    tmp_path,
+    allowed_differences: dict[str, object],
+) -> None:
+    path = tmp_path / "policy.json"
+    _write_policy(path, allowed_differences=allowed_differences)
 
     with pytest.raises(ValueError):
         load_policy(path)
@@ -514,6 +675,28 @@ def test_storage_and_unexpected_failures_have_stable_sanitized_exits(
     assert "Traceback" not in captured.err
 
 
+def test_termination_has_a_stable_shell_exit_and_sanitized_error(
+    capsys,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    def terminate(_arguments) -> object:  # type: ignore[no-untyped-def]
+        raise cli_module._TerminationRequested
+
+    monkeypatch.setattr(cli_module, "_dispatch", terminate)
+
+    exit_code = main(["dataset", "validate", "unused.json"])
+    captured = capsys.readouterr()
+
+    assert exit_code == EXIT_TERMINATED == 143
+    assert captured.out == ""
+    assert json.loads(captured.err) == {
+        "error": {
+            "code": "terminated",
+            "message": "benchmark command was terminated",
+        }
+    }
+
+
 def test_missing_registry_is_read_only_and_does_not_create_state(tmp_path, capsys) -> None:
     missing = tmp_path / "missing-registry"
 
@@ -613,6 +796,8 @@ def test_read_commands_do_not_mutate_registry_files(
             str(registry_root),
             "--policy",
             str(policy_path),
+            "--dataset",
+            str(dataset_path),
         ],
     )
     for command in commands:
@@ -627,7 +812,7 @@ def test_read_commands_do_not_mutate_registry_files(
     assert after == before
 
 
-def test_cli_has_no_unbacked_run_command_and_usage_errors_are_machine_readable(
+def test_run_command_requires_the_complete_read_only_execution_contract(
     capsys,
 ) -> None:  # type: ignore[no-untyped-def]
     exit_code = main(["run"])
@@ -636,6 +821,548 @@ def test_cli_has_no_unbacked_run_command_and_usage_errors_are_machine_readable(
     assert exit_code == EXIT_USAGE
     assert captured.out == ""
     assert json.loads(captured.err)["error"]["code"] == "usage_error"
+
+
+class _CliEnvironment:
+    def __init__(self, dataset: BenchmarkDataset, events: list[str]) -> None:
+        self.asset_resolver = LocalAssetResolver(_Repository(dataset))
+        self.search_adapter = object()
+        self.identity = SimpleNamespace(identity="benchmark-product-environment@1:" + "e" * 64)
+        self.is_closed = False
+        self._events = events
+
+    def close(self) -> None:
+        self._events.append("environment.close")
+        self.is_closed = True
+
+
+def _run_arguments(
+    *,
+    dataset_path: Path,
+    registry_root: Path,
+    data_dir: Path,
+    scratch_parent: Path,
+    preflight: bool = False,
+) -> list[str]:
+    value = [
+        "run",
+        "--dataset",
+        str(dataset_path),
+        "--registry",
+        str(registry_root),
+        "--data-dir",
+        str(data_dir),
+        "--scratch-parent",
+        str(scratch_parent),
+        "--run-id",
+        "run-new",
+    ]
+    if preflight:
+        value.append("--preflight")
+    return value
+
+
+def test_run_prepares_closes_then_publishes_complete_manifest(
+    cli_workspace,
+    tmp_path,
+    capsys,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    dataset, dataset_path, registry_root, _policy = cli_workspace
+    events: list[str] = []
+    environment = _CliEnvironment(dataset, events)
+    prepared = SimpleNamespace(
+        run_id="run-new",
+        run_status="complete",
+        measurement_status="not_measured",
+        dataset_revision=dataset_revision(dataset),
+        case_outcomes=(object(),),
+    )
+
+    class FakeRunner:
+        def __init__(self, **kwargs) -> None:  # type: ignore[no-untyped-def]
+            assert kwargs["asset_resolver"] is environment.asset_resolver
+            assert kwargs["search"] is environment.search_adapter
+            assert kwargs["code_sha"] == "d" * 40
+            events.append("runner.init")
+
+        def run(self, supplied, **kwargs):  # type: ignore[no-untyped-def]
+            assert supplied == dataset
+            assert kwargs == {
+                "profile_id": "lexical_qdrant",
+                "run_id": "run-new",
+                "execution_mode": "warm",
+                "publish": False,
+            }
+            events.append("runner.run")
+            return prepared
+
+        def publish_prepared_run(self, run) -> None:  # type: ignore[no-untyped-def]
+            assert run is prepared
+            assert environment.is_closed
+            events.append("runner.publish")
+
+    monkeypatch.setattr(cli_module, "BenchmarkRunner", FakeRunner)
+    monkeypatch.setattr(
+        cli_module,
+        "audit_run_manifest",
+        lambda supplied, run: (
+            events.append("runner.audit")
+            if supplied == dataset and run is prepared
+            else pytest.fail("unexpected audit input")
+        ),
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "open_product_benchmark_environment",
+        lambda *_args, **_kwargs: environment,
+    )
+    monkeypatch.setattr(cli_module, "_current_code_sha", lambda: "d" * 40)
+    monkeypatch.setattr(
+        cli_module,
+        "_current_hardware_profile",
+        lambda: HardwareProfile("test-os", "arm64", "test-cpu", 1024),
+    )
+    data_dir = tmp_path / "product"
+    data_dir.mkdir()
+    scratch_parent = tmp_path / "scratch"
+    scratch_parent.mkdir(mode=0o700)
+
+    exit_code = main(
+        _run_arguments(
+            dataset_path=dataset_path,
+            registry_root=registry_root,
+            data_dir=data_dir,
+            scratch_parent=scratch_parent,
+        )
+    )
+    captured = capsys.readouterr()
+
+    assert exit_code == EXIT_SUCCESS
+    assert events == [
+        "runner.init",
+        "runner.run",
+        "environment.close",
+        "runner.audit",
+        "runner.publish",
+    ]
+    assert json.loads(captured.out) == {
+        "case_count": 1,
+        "dataset_revision": dataset_revision(dataset),
+        "execution_mode": "warm",
+        "profile_id": "lexical_qdrant",
+        "run_id": "run-new",
+        "run_status": "complete",
+        "status": "published",
+    }
+    assert captured.err == ""
+    assert EXIT_EXECUTION == 8
+    assert EXIT_MEASUREMENT == 9
+
+
+@pytest.mark.parametrize(
+    ("run_status", "measurement_status"),
+    [
+        ("partial", "not_measured"),
+        ("failed", "not_measured"),
+        ("cancelled", "not_measured"),
+        ("complete", "failed"),
+    ],
+)
+def test_run_never_publishes_an_untrustworthy_prepared_manifest(
+    cli_workspace,
+    tmp_path,
+    capsys,
+    monkeypatch,
+    run_status: str,
+    measurement_status: str,
+) -> None:  # type: ignore[no-untyped-def]
+    dataset, dataset_path, registry_root, _policy = cli_workspace
+    events: list[str] = []
+    environment = _CliEnvironment(dataset, events)
+
+    class FakeRunner:
+        def __init__(self, **_kwargs) -> None:  # type: ignore[no-untyped-def]
+            pass
+
+        def run(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
+            return SimpleNamespace(
+                run_id="run-new",
+                run_status=run_status,
+                measurement_status=measurement_status,
+                dataset_revision=dataset_revision(dataset),
+                case_outcomes=(),
+            )
+
+        def publish_prepared_run(self, _run) -> None:  # type: ignore[no-untyped-def]
+            raise AssertionError("an incomplete run must not be published")
+
+    monkeypatch.setattr(cli_module, "BenchmarkRunner", FakeRunner)
+    monkeypatch.setattr(
+        cli_module,
+        "open_product_benchmark_environment",
+        lambda *_args, **_kwargs: environment,
+    )
+    monkeypatch.setattr(cli_module, "_current_code_sha", lambda: "d" * 40)
+    monkeypatch.setattr(
+        cli_module,
+        "_current_hardware_profile",
+        lambda: HardwareProfile("test-os", "arm64", "test-cpu", 1024),
+    )
+    data_dir = tmp_path / "product"
+    data_dir.mkdir()
+    scratch_parent = tmp_path / "scratch"
+    scratch_parent.mkdir(mode=0o700)
+    before = registry_root.joinpath("registry.json").read_bytes()
+
+    exit_code = main(
+        _run_arguments(
+            dataset_path=dataset_path,
+            registry_root=registry_root,
+            data_dir=data_dir,
+            scratch_parent=scratch_parent,
+        )
+    )
+    captured = capsys.readouterr()
+
+    assert exit_code == EXIT_EXECUTION
+    assert events == ["environment.close"]
+    assert registry_root.joinpath("registry.json").read_bytes() == before
+    assert json.loads(captured.err)["error"]["code"] == "execution_failed"
+
+
+def test_cleanup_failure_prevents_publication(
+    cli_workspace,
+    tmp_path,
+    capsys,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    dataset, dataset_path, registry_root, _policy = cli_workspace
+    environment = _CliEnvironment(dataset, [])
+    close_calls = 0
+
+    def fail_close() -> None:
+        nonlocal close_calls
+        close_calls += 1
+        raise RuntimeError("private cleanup path")
+
+    environment.close = fail_close  # type: ignore[method-assign]
+
+    class FakeRunner:
+        def __init__(self, **_kwargs) -> None:  # type: ignore[no-untyped-def]
+            pass
+
+        def run(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
+            return SimpleNamespace(
+                run_id="run-new",
+                run_status="complete",
+                measurement_status="not_measured",
+                dataset_revision=dataset_revision(dataset),
+                case_outcomes=(),
+            )
+
+        def publish_prepared_run(self, _run) -> None:  # type: ignore[no-untyped-def]
+            raise AssertionError("cleanup failure must prevent publication")
+
+    monkeypatch.setattr(cli_module, "BenchmarkRunner", FakeRunner)
+    monkeypatch.setattr(
+        cli_module,
+        "open_product_benchmark_environment",
+        lambda *_args, **_kwargs: environment,
+    )
+    monkeypatch.setattr(cli_module, "_current_code_sha", lambda: "d" * 40)
+    monkeypatch.setattr(
+        cli_module,
+        "_current_hardware_profile",
+        lambda: HardwareProfile("test-os", "arm64", "test-cpu", 1024),
+    )
+    data_dir = tmp_path / "product"
+    data_dir.mkdir()
+    scratch_parent = tmp_path / "scratch"
+    scratch_parent.mkdir(mode=0o700)
+    before = registry_root.joinpath("registry.json").read_bytes()
+
+    exit_code = main(
+        _run_arguments(
+            dataset_path=dataset_path,
+            registry_root=registry_root,
+            data_dir=data_dir,
+            scratch_parent=scratch_parent,
+        )
+    )
+    captured = capsys.readouterr()
+
+    assert exit_code == EXIT_EXECUTION
+    assert close_calls > 1
+    assert registry_root.joinpath("registry.json").read_bytes() == before
+    assert "private cleanup path" not in captured.err
+
+
+def test_code_identity_drift_after_cleanup_prevents_publication(
+    cli_workspace,
+    tmp_path,
+    capsys,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    dataset, dataset_path, registry_root, _policy = cli_workspace
+    environment = _CliEnvironment(dataset, [])
+    published = False
+
+    class FakeRunner:
+        def __init__(self, **_kwargs) -> None:  # type: ignore[no-untyped-def]
+            pass
+
+        def run(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
+            return SimpleNamespace(
+                run_id="run-new",
+                run_status="complete",
+                measurement_status="not_measured",
+                dataset_revision=dataset_revision(dataset),
+                case_outcomes=(),
+            )
+
+        def publish_prepared_run(self, _run) -> None:  # type: ignore[no-untyped-def]
+            nonlocal published
+            published = True
+
+    code_identities = iter(("d" * 40, "e" * 40))
+    monkeypatch.setattr(cli_module, "BenchmarkRunner", FakeRunner)
+    monkeypatch.setattr(cli_module, "audit_run_manifest", lambda *_args: None)
+    monkeypatch.setattr(
+        cli_module,
+        "open_product_benchmark_environment",
+        lambda *_args, **_kwargs: environment,
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "_current_code_sha",
+        lambda: next(code_identities),
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "_current_hardware_profile",
+        lambda: HardwareProfile("test-os", "arm64", "test-cpu", 1024),
+    )
+    data_dir = tmp_path / "product"
+    data_dir.mkdir()
+    scratch_parent = tmp_path / "scratch"
+    scratch_parent.mkdir(mode=0o700)
+    before = registry_root.joinpath("registry.json").read_bytes()
+
+    exit_code = main(
+        _run_arguments(
+            dataset_path=dataset_path,
+            registry_root=registry_root,
+            data_dir=data_dir,
+            scratch_parent=scratch_parent,
+        )
+    )
+    captured = capsys.readouterr()
+
+    assert exit_code == EXIT_EXECUTION
+    assert environment.is_closed
+    assert published is False
+    assert registry_root.joinpath("registry.json").read_bytes() == before
+    assert json.loads(captured.err)["error"]["code"] == "execution_failed"
+
+
+def test_preflight_checks_every_capability_without_search_or_registry_mutation(
+    cli_workspace,
+    tmp_path,
+    capsys,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    dataset, dataset_path, registry_root, _policy = cli_workspace
+    events: list[str] = []
+    environment = _CliEnvironment(dataset, events)
+    resolved = environment.asset_resolver.resolve(dataset.assets[0])
+
+    class Session:
+        def identities(self) -> ExecutionIdentities:
+            events.append("session.identities")
+            return ExecutionIdentities(
+                model_identities=(
+                    ComponentIdentity("text_embedding", "fastembed@revision"),
+                ),
+                index_identities=(
+                    ComponentIdentity("text_vector_index", "1" * 64),
+                    ComponentIdentity(
+                        "text_vector_generations",
+                        "sha256:" + "2" * 64,
+                    ),
+                ),
+                config_identities=(
+                    ComponentIdentity(
+                        "benchmark_product_environment",
+                        environment.identity.identity,
+                    ),
+                    ComponentIdentity(
+                        "evaluation_search_configuration",
+                        cli_module.get_profile("lexical_qdrant")
+                        .search_plan.identity.replace(
+                            "evaluation-search-plan",
+                            "evaluation-search-configuration",
+                            1,
+                        ),
+                    ),
+                    ComponentIdentity(
+                        "product_search_lifecycle",
+                        "warm:process-cache-preserved@1",
+                    ),
+                    ComponentIdentity(
+                        "product_search_runtime",
+                        "sha256:" + "3" * 64,
+                    ),
+                ),
+            )
+
+        def lifecycle_identity(self) -> ComponentIdentity:
+            events.append("session.lifecycle")
+            return ComponentIdentity(
+                "benchmark_execution_lifecycle",
+                "warm:process-cache-preserved@1",
+            )
+
+        def capability_state(self, asset, capability):  # type: ignore[no-untyped-def]
+            assert asset == resolved
+            assert capability == "text_vectors"
+            events.append("session.capability")
+            return "complete"
+
+        def search(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
+            raise AssertionError("preflight must not execute search")
+
+        def close(self) -> None:
+            events.append("session.close")
+
+    session = Session()
+
+    class Adapter:
+        def open_session(self, profile, assets, *, execution_mode):  # type: ignore[no-untyped-def]
+            assert profile.profile_id == "lexical_qdrant"
+            assert assets == (resolved,)
+            assert execution_mode == "warm"
+            events.append("adapter.open_session")
+            return session
+
+    environment.search_adapter = Adapter()
+    monkeypatch.setattr(
+        cli_module,
+        "open_product_benchmark_environment",
+        lambda *_args, **_kwargs: environment,
+    )
+    monkeypatch.setattr(cli_module, "_current_code_sha", lambda: "d" * 40)
+    monkeypatch.setattr(
+        cli_module,
+        "_current_hardware_profile",
+        lambda: HardwareProfile("test-os", "arm64", "test-cpu", 1024),
+    )
+    data_dir = tmp_path / "product"
+    data_dir.mkdir()
+    scratch_parent = tmp_path / "scratch"
+    scratch_parent.mkdir(mode=0o700)
+    before = {
+        path.relative_to(registry_root): path.read_bytes()
+        for path in registry_root.rglob("*")
+        if path.is_file()
+    }
+
+    exit_code = main(
+        _run_arguments(
+            dataset_path=dataset_path,
+            registry_root=registry_root,
+            data_dir=data_dir,
+            scratch_parent=scratch_parent,
+            preflight=True,
+        )
+    )
+    captured = capsys.readouterr()
+    after = {
+        path.relative_to(registry_root): path.read_bytes()
+        for path in registry_root.rglob("*")
+        if path.is_file()
+    }
+
+    assert exit_code == EXIT_SUCCESS
+    assert before == after
+    assert events == [
+        "adapter.open_session",
+        "session.identities",
+        "session.lifecycle",
+        "session.capability",
+        "session.close",
+        "environment.close",
+    ]
+    assert json.loads(captured.out) == {
+        "asset_count": 1,
+        "capability_count": 1,
+        "code_sha": "d" * 40,
+        "dataset_revision": dataset_revision(dataset),
+        "environment_identity": "benchmark-product-environment@1:" + "e" * 64,
+        "execution_mode": "warm",
+        "profile_id": "lexical_qdrant",
+        "run_id": "run-new",
+        "status": "ready",
+    }
+    assert captured.err == ""
+
+
+def test_bindings_must_be_an_exact_bounded_alias_to_video_object(
+    cli_workspace,
+    tmp_path,
+    capsys,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    _dataset_value, dataset_path, registry_root, _policy = cli_workspace
+    bindings = tmp_path / "bindings.json"
+    bindings.write_text('{"unknown-alias":"private-video"}', encoding="utf-8")
+    monkeypatch.setattr(
+        cli_module,
+        "open_product_benchmark_environment",
+        lambda *_args, **_kwargs: pytest.fail("invalid bindings must fail before open"),
+    )
+    data_dir = tmp_path / "product"
+    data_dir.mkdir()
+    scratch_parent = tmp_path / "scratch"
+    scratch_parent.mkdir(mode=0o700)
+    arguments = _run_arguments(
+        dataset_path=dataset_path,
+        registry_root=registry_root,
+        data_dir=data_dir,
+        scratch_parent=scratch_parent,
+        preflight=True,
+    )
+    arguments.extend(["--bindings", str(bindings)])
+
+    exit_code = main(arguments)
+    captured = capsys.readouterr()
+
+    assert exit_code == EXIT_DATA
+    assert json.loads(captured.err)["error"]["code"] == "invalid_data"
+    assert str(bindings) not in captured.err
+
+
+@pytest.mark.parametrize(
+    "status",
+    (
+        b" M docs/benchmark-core.md\0",
+        b"?? backend/src/videoscope/private.py\0",
+        b"?? backend/uv.lock\0",
+    ),
+)
+def test_code_identity_rejects_tracked_or_relevant_untracked_changes(
+    monkeypatch,
+    status: bytes,
+) -> None:
+    def git_bytes(_root, *arguments):  # type: ignore[no-untyped-def]
+        if arguments[0] == "rev-parse":
+            return b"a" * 40 + b"\n"
+        return status
+
+    monkeypatch.setattr(cli_module, "_git_bytes", git_bytes)
+
+    with pytest.raises(cli_module._CodeIdentityError):
+        cli_module._current_code_sha()
 
 
 def test_python_module_entrypoint_emits_parseable_json(

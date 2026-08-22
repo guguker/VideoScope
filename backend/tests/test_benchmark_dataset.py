@@ -200,6 +200,45 @@ def test_asset_rejects_invalid_hashes_and_numeric_boundaries(
         BenchmarkAsset(**values)
 
 
+def test_dataset_bounds_asset_count_and_declared_media_bytes() -> None:
+    provenance = AssetProvenance(source="camera", license_id="MIT")
+
+    with pytest.raises(BenchmarkDataError, match="byte size limit"):
+        BenchmarkAsset(
+            asset_id="oversized",
+            sha256="f" * 64,
+            byte_size=16 * 1024**3 + 1,
+            duration_seconds=10.0,
+            provenance=provenance,
+        )
+
+    too_many = tuple(
+        BenchmarkAsset(
+            asset_id=f"asset-{index}",
+            sha256=f"{index + 1:064x}",
+            byte_size=1,
+            duration_seconds=10.0,
+            provenance=provenance,
+        )
+        for index in range(129)
+    )
+    with pytest.raises(BenchmarkDataError, match="asset count limit"):
+        BenchmarkDataset(1, "bounded", "1", "", too_many, ())
+
+    aggregate_oversized = tuple(
+        BenchmarkAsset(
+            asset_id=f"large-{index}",
+            sha256=f"{index + 1:064x}",
+            byte_size=16 * 1024**3,
+            duration_seconds=10.0,
+            provenance=provenance,
+        )
+        for index in range(9)
+    )
+    with pytest.raises(BenchmarkDataError, match="aggregate media byte limit"):
+        BenchmarkDataset(1, "bounded", "1", "", aggregate_oversized, ())
+
+
 @pytest.mark.parametrize(
     ("start", "end"),
     [

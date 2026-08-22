@@ -12,8 +12,13 @@ from typing import Callable, Iterable, Literal, Protocol
 from videoscope.evaluation import RELEVANCE_IOU_THRESHOLD, temporal_iou
 
 from .catalog import AssetResolutionError, LocalAssetResolver, ResolvedAsset
+from .measurements import (
+    BenchmarkMeasurementFactory,
+    BenchmarkMeasurementSession,
+)
 from .profiles import BenchmarkProfile, get_profile
 from .schema import (
+    LEGACY_UNMEASURED_PROTOCOL_IDENTITY,
     MEASUREMENT_PROTOCOL_COMPONENT_ID,
     NOT_MEASURED_PROTOCOL_IDENTITY,
     RUN_SCHEMA_VERSION,
@@ -36,7 +41,8 @@ from .serialization import dataset_revision
 from .storage import BenchmarkRunRegistry
 
 
-BENCHMARK_METHODOLOGY_VERSION = 2
+BENCHMARK_METHODOLOGY_VERSION = 3
+EXECUTION_LIFECYCLE_COMPONENT_ID = "benchmark_execution_lifecycle"
 _COMPLETE_CAPABILITY_STATE = "complete"
 _KNOWN_INCOMPLETE_STATES = frozenset(
     {"queued", "running", "cancelled", "failed", "stale", "not_configured"}
@@ -110,6 +116,8 @@ class BenchmarkSearchSession(Protocol):
 
     def identities(self) -> ExecutionIdentities: ...
 
+    def lifecycle_identity(self) -> ComponentIdentity: ...
+
     def capability_state(
         self,
         asset: ResolvedAsset,
@@ -141,7 +149,11 @@ class BenchmarkSearchAdapter(Protocol):
         self,
         profile: BenchmarkProfile,
         assets: tuple[ResolvedAsset, ...],
+        *,
+        execution_mode: Literal["cold", "warm"],
     ) -> BenchmarkSearchSession: ...
+
+    def close(self) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -173,6 +185,7 @@ class BenchmarkRunner:
         search: BenchmarkSearchAdapter,
         hardware: HardwareProfile,
         code_sha: str,
+        measurement: BenchmarkMeasurementFactory | None = None,
         clock: Callable[[], datetime] | None = None,
         timer: Callable[[], float] = perf_counter,
         overlap: Callable[[float, float, float, float], float] = temporal_iou,
@@ -182,9 +195,15 @@ class BenchmarkRunner:
         self._search = search
         self._hardware = hardware
         self._code_sha = code_sha
+        self._measurement = measurement
         self._clock = clock or (lambda: datetime.now(UTC))
         self._timer = timer
         self._overlap = overlap
+        self._prepared_runs: dict[str, BenchmarkRunManifest] = {}
+
+    def close(self) -> None:
+        """Retry cleanup of adapter-owned resources after a failed run."""
+        self._close_adapter(suppress_error=False)
 
     def run(
         self,
@@ -193,6 +212,7 @@ class BenchmarkRunner:
         profile_id: str,
         run_id: str,
         execution_mode: Literal["cold", "warm"],
+        publish: bool = True,
     ) -> BenchmarkRunManifest:
         if not isinstance(dataset, BenchmarkDataset):
             raise BenchmarkExecutionError("benchmark dataset contract is invalid")
@@ -209,17 +229,55 @@ class BenchmarkRunner:
         _require_id(run_id, "run_id")
         if execution_mode not in {"cold", "warm"}:
             raise BenchmarkDataError("execution_mode must be cold or warm")
+        if type(publish) is not bool:
+            raise BenchmarkDataError("publish must be a boolean")
         profile = get_profile(profile_id)
-        if any(entry.run_id == run_id for entry in self.registry.list()):
+        if run_id in self._prepared_runs or any(
+            entry.run_id == run_id for entry in self.registry.list()
+        ):
             raise FileExistsError(f"benchmark run {run_id!r} already exists")
         started_at = self._timestamp()
-        resolved, resolution_failures = self._resolve_assets(dataset)
-        session = self._open_session(
-            profile,
-            tuple(resolved[key] for key in sorted(resolved)),
+        measurement_protocol = ComponentIdentity(
+            MEASUREMENT_PROTOCOL_COMPONENT_ID,
+            NOT_MEASURED_PROTOCOL_IDENTITY,
         )
+        measurement_status: Literal["not_measured", "complete", "failed"] = (
+            "not_measured"
+        )
+        measurement_started_at: str | None = None
+        measurement_finished_at: str | None = None
+        system_metrics: tuple[MetricValue, ...] = ()
+        measurement_session: BenchmarkMeasurementSession | None = None
+        measurement_active = False
+        if self._measurement is not None:
+            measurement_protocol = self._measurement_protocol(execution_mode)
+            measurement_started_at = self._timestamp()
+            try:
+                measurement_session = self._open_measurement_session()
+                measurement_session.start()
+                measurement_active = True
+            except Exception:
+                self._close_measurement_session(
+                    measurement_session,
+                    suppress_error=True,
+                )
+                measurement_status = "failed"
+                measurement_finished_at = self._timestamp()
+
+        session: BenchmarkSearchSession | None = None
+        search_closed = False
         try:
-            identities = self._execution_identities(session, profile)
+            resolved, resolution_failures = self._resolve_assets(dataset)
+            session = self._open_session(
+                profile,
+                tuple(resolved[key] for key in sorted(resolved)),
+                execution_mode=execution_mode,
+            )
+            identities = self._execution_identities(
+                session,
+                profile,
+                execution_mode=execution_mode,
+            )
             capability_failures = self._preflight_capabilities(
                 session,
                 profile,
@@ -233,13 +291,66 @@ class BenchmarkRunner:
                 resolution_failures,
                 capability_failures,
             )
-        except BaseException:
-            self._close_session(session, suppress_error=True)
+            ordered_outcomes = tuple(
+                sorted(outcomes, key=lambda item: item.case_id)
+            )
+            metrics = self._run_metrics(dataset, ordered_outcomes, tuple(scores))
+            if measurement_active:
+                try:
+                    if measurement_session is None:
+                        raise BenchmarkExecutionError(
+                            "benchmark measurement session is unavailable"
+                        )
+                    candidate_metrics = measurement_session.finish()
+                    system_metrics = self._validate_system_metrics(
+                        candidate_metrics,
+                        quality_metrics=metrics,
+                    )
+                except Exception:
+                    system_metrics = ()
+                    measurement_status = "failed"
+                else:
+                    measurement_status = "complete"
+                measurement_finished_at = self._timestamp()
+            self._close_session(session, suppress_error=False)
+            search_closed = True
+            self._close_adapter(suppress_error=False)
+        except BaseException as execution_error:
+            if session is not None and not search_closed:
+                self._close_session(session, suppress_error=True)
+            if measurement_active:
+                self._close_measurement_session(
+                    measurement_session,
+                    suppress_error=True,
+                )
+            try:
+                self._close_adapter(suppress_error=False)
+            except BaseException as cleanup_error:
+                if isinstance(execution_error, (KeyboardInterrupt, SystemExit)):
+                    raise execution_error from cleanup_error
+                if isinstance(execution_error, Exception) and isinstance(
+                    cleanup_error,
+                    Exception,
+                ):
+                    raise BenchmarkExecutionError(
+                        "benchmark execution and search adapter cleanup failed; "
+                        "resources could not be closed"
+                    ) from ExceptionGroup(
+                        "benchmark execution and search adapter cleanup failed",
+                        [execution_error, cleanup_error],
+                    )
+                raise cleanup_error from execution_error
             raise
-        self._close_session(session, suppress_error=False)
 
-        ordered_outcomes = tuple(sorted(outcomes, key=lambda item: item.case_id))
-        metrics = self._run_metrics(dataset, ordered_outcomes, tuple(scores))
+        if measurement_active:
+            try:
+                self._close_measurement_session(
+                    measurement_session,
+                    suppress_error=False,
+                )
+            except Exception:
+                system_metrics = ()
+                measurement_status = "failed"
         finished_at = self._timestamp()
         run = BenchmarkRunManifest(
             schema_version=RUN_SCHEMA_VERSION,
@@ -256,31 +367,55 @@ class BenchmarkRunner:
             hardware=self._hardware,
             execution_mode=execution_mode,
             quality_metrics=metrics,
-            system_metrics=(),
-            measurement_protocol=ComponentIdentity(
-                MEASUREMENT_PROTOCOL_COMPONENT_ID,
-                NOT_MEASURED_PROTOCOL_IDENTITY,
-            ),
-            measurement_status="not_measured",
-            measurement_started_at=None,
-            measurement_finished_at=None,
+            system_metrics=system_metrics,
+            measurement_protocol=measurement_protocol,
+            measurement_status=measurement_status,
+            measurement_started_at=measurement_started_at,
+            measurement_finished_at=measurement_finished_at,
             case_outcomes=ordered_outcomes,
         )
-        self.registry.add(run)
+        if publish:
+            self.registry.add(run)
+        else:
+            self._prepared_runs[run.run_id] = run
         return run
+
+    def publish_prepared_run(self, run: BenchmarkRunManifest) -> None:
+        """Commit one exact prepared run after its external owner is closed."""
+        if not isinstance(run, BenchmarkRunManifest):
+            raise BenchmarkExecutionError("benchmark run is not prepared")
+        prepared = self._prepared_runs.get(run.run_id)
+        if prepared is None or prepared != run:
+            raise BenchmarkExecutionError("benchmark run is not prepared")
+        if any(entry.run_id == run.run_id for entry in self.registry.list()):
+            raise FileExistsError(f"benchmark run {run.run_id!r} already exists")
+        self.registry.add(run)
+        del self._prepared_runs[run.run_id]
 
     def _open_session(
         self,
         profile: BenchmarkProfile,
         assets: tuple[ResolvedAsset, ...],
+        *,
+        execution_mode: Literal["cold", "warm"],
     ) -> BenchmarkSearchSession:
         try:
-            session = self._search.open_session(profile, assets)
+            session = self._search.open_session(
+                profile,
+                assets,
+                execution_mode=execution_mode,
+            )
         except Exception:
             raise BenchmarkExecutionError(
                 "pinned benchmark search session is unavailable"
             ) from None
-        methods = ("identities", "capability_state", "search", "close")
+        methods = (
+            "identities",
+            "lifecycle_identity",
+            "capability_state",
+            "search",
+            "close",
+        )
         if any(not callable(getattr(session, name, None)) for name in methods):
             close = getattr(session, "close", None)
             if callable(close):
@@ -307,10 +442,34 @@ class BenchmarkRunner:
                     "pinned benchmark search session could not be closed"
                 ) from None
 
+    def _close_adapter(self, *, suppress_error: bool) -> None:
+        close = getattr(self._search, "close", None)
+        if not callable(close):
+            if suppress_error:
+                return
+            raise BenchmarkExecutionError(
+                "benchmark search adapter has an invalid cleanup contract"
+            )
+        last_error: Exception | None = None
+        for _attempt in range(3):
+            try:
+                close()
+            except Exception as error:
+                last_error = error
+                continue
+            return
+        if not suppress_error:
+            assert last_error is not None
+            raise BenchmarkExecutionError(
+                "benchmark search adapter could not be closed"
+            ) from last_error
+
     def _execution_identities(
         self,
         session: BenchmarkSearchSession,
         profile: BenchmarkProfile,
+        *,
+        execution_mode: Literal["cold", "warm"],
     ) -> ExecutionIdentities:
         try:
             identities = session.identities()
@@ -326,6 +485,7 @@ class BenchmarkRunner:
             "benchmark_profile",
             "benchmark_methodology",
             "benchmark_search_plan",
+            EXECUTION_LIFECYCLE_COMPONENT_ID,
         }
         if reserved & {
             identity.component_id for identity in identities.config_identities
@@ -333,8 +493,20 @@ class BenchmarkRunner:
             raise BenchmarkExecutionError(
                 "execution identity uses a reserved benchmark component id"
             )
+        lifecycle = self._execution_lifecycle_identity(
+            session,
+            execution_mode=execution_mode,
+        )
+        measurement = self._measurement
+        if measurement is not None and lifecycle.identity != (
+            f"{execution_mode}:{measurement.cache_policy_identity}"
+        ):
+            raise BenchmarkExecutionError(
+                "benchmark measurement and execution lifecycle policies disagree"
+            )
         config_identities = (
             *identities.config_identities,
+            lifecycle,
             ComponentIdentity("benchmark_profile", profile.identity),
             ComponentIdentity(
                 "benchmark_search_plan",
@@ -350,6 +522,117 @@ class BenchmarkRunner:
             index_identities=_ordered_identities(identities.index_identities),
             config_identities=_ordered_identities(config_identities),
         )
+
+    @staticmethod
+    def _execution_lifecycle_identity(
+        session: BenchmarkSearchSession,
+        *,
+        execution_mode: Literal["cold", "warm"],
+    ) -> ComponentIdentity:
+        try:
+            identity = session.lifecycle_identity()
+        except Exception:
+            raise BenchmarkExecutionError(
+                "benchmark execution lifecycle identity is unavailable"
+            ) from None
+        if (
+            not isinstance(identity, ComponentIdentity)
+            or identity.component_id != EXECUTION_LIFECYCLE_COMPONENT_ID
+            or not identity.identity.startswith(f"{execution_mode}:")
+            or not identity.identity.removeprefix(f"{execution_mode}:").strip()
+        ):
+            raise BenchmarkExecutionError(
+                "benchmark execution lifecycle identity does not attest the run mode"
+            )
+        return identity
+
+    def _measurement_protocol(
+        self,
+        execution_mode: Literal["cold", "warm"],
+    ) -> ComponentIdentity:
+        factory = self._measurement
+        if factory is None:
+            raise BenchmarkExecutionError("benchmark measurement factory is unavailable")
+        if getattr(factory, "execution_mode", None) != execution_mode:
+            raise BenchmarkExecutionError(
+                "benchmark measurement lifecycle does not match execution_mode"
+            )
+        try:
+            protocol = factory.protocol_identity()
+        except Exception:
+            raise BenchmarkExecutionError(
+                "benchmark measurement protocol identity is unavailable"
+            ) from None
+        if (
+            not isinstance(protocol, ComponentIdentity)
+            or protocol.component_id != MEASUREMENT_PROTOCOL_COMPONENT_ID
+            or protocol.identity
+            in {
+                NOT_MEASURED_PROTOCOL_IDENTITY,
+                LEGACY_UNMEASURED_PROTOCOL_IDENTITY,
+            }
+        ):
+            raise BenchmarkExecutionError(
+                "benchmark measurement protocol identity is invalid"
+            )
+        return protocol
+
+    def _open_measurement_session(self) -> BenchmarkMeasurementSession:
+        factory = self._measurement
+        assert factory is not None
+        session = factory.open_session()
+        methods = ("start", "finish", "close")
+        if any(not callable(getattr(session, name, None)) for name in methods):
+            self._close_measurement_session(session, suppress_error=True)
+            raise BenchmarkExecutionError(
+                "benchmark measurement session has an invalid contract"
+            )
+        return session
+
+    @staticmethod
+    def _close_measurement_session(
+        session: BenchmarkMeasurementSession | object | None,
+        *,
+        suppress_error: bool,
+    ) -> None:
+        if session is None:
+            return
+        close = getattr(session, "close", None)
+        if not callable(close):
+            if not suppress_error:
+                raise BenchmarkExecutionError(
+                    "benchmark measurement session could not be closed"
+                )
+            return
+        try:
+            close()
+        except Exception:
+            if not suppress_error:
+                raise BenchmarkExecutionError(
+                    "benchmark measurement session could not be closed"
+                ) from None
+
+    @staticmethod
+    def _validate_system_metrics(
+        values: object,
+        *,
+        quality_metrics: tuple[MetricValue, ...],
+    ) -> tuple[MetricValue, ...]:
+        if not isinstance(values, tuple) or not values:
+            raise BenchmarkExecutionError(
+                "benchmark measurement did not return complete system metrics"
+            )
+        if any(not isinstance(value, MetricValue) for value in values):
+            raise BenchmarkExecutionError(
+                "benchmark measurement returned an invalid system metric"
+            )
+        names = tuple(value.name for value in values)
+        quality_names = {value.name for value in quality_metrics}
+        if len(names) != len(set(names)) or set(names) & quality_names:
+            raise BenchmarkExecutionError(
+                "benchmark measurement metric names are invalid"
+            )
+        return tuple(sorted(values, key=lambda item: item.name))
 
     def _resolve_assets(
         self,
@@ -764,6 +1047,14 @@ def audit_run_manifest(
         ),
         None,
     )
+    lifecycle_identity = next(
+        (
+            identity.identity
+            for identity in run.config_identities
+            if identity.component_id == EXECUTION_LIFECYCLE_COMPONENT_ID
+        ),
+        None,
+    )
     if profile_identity is None or methodology_identity != _methodology_identity():
         raise BenchmarkExecutionError(
             "benchmark run audit failed: methodology identity mismatch"
@@ -787,6 +1078,68 @@ def audit_run_manifest(
         raise BenchmarkExecutionError(
             "benchmark run audit failed: search plan identity mismatch"
         )
+    if (
+        lifecycle_identity is None
+        or not lifecycle_identity.startswith(f"{run.execution_mode}:")
+        or not lifecycle_identity.removeprefix(f"{run.execution_mode}:").strip()
+    ):
+        raise BenchmarkExecutionError(
+            "benchmark run audit failed: execution lifecycle identity mismatch"
+        )
+    if profile.profile_id == "lexical_qdrant":
+        model = {item.component_id: item.identity for item in run.model_identities}
+        index = {item.component_id: item.identity for item in run.index_identities}
+        config = {item.component_id: item.identity for item in run.config_identities}
+        expected_config_ids = {
+            "benchmark_execution_lifecycle",
+            "benchmark_methodology",
+            "benchmark_product_environment",
+            "benchmark_profile",
+            "benchmark_search_plan",
+            "evaluation_search_configuration",
+            "product_search_lifecycle",
+            "product_search_runtime",
+        }
+        is_sha256 = lambda value: (  # noqa: E731
+            type(value) is str
+            and len(value) == 64
+            and all(character in "0123456789abcdef" for character in value)
+        )
+        expected_evaluation_identity = profile.search_plan.identity.replace(
+            "evaluation-search-plan",
+            "evaluation-search-configuration",
+            1,
+        )
+        environment_identity = config.get("benchmark_product_environment", "")
+        if (
+            set(model) != {"text_embedding"}
+            or set(index) != {"text_vector_index", "text_vector_generations"}
+            or set(config) != expected_config_ids
+            or not model["text_embedding"].startswith("fastembed@")
+            or not is_sha256(index["text_vector_index"])
+            or not index["text_vector_generations"].startswith("sha256:")
+            or not is_sha256(
+                index["text_vector_generations"].removeprefix("sha256:")
+            )
+            or config["evaluation_search_configuration"]
+            != expected_evaluation_identity
+            or config["product_search_lifecycle"] != lifecycle_identity
+            or not config["product_search_runtime"].startswith("sha256:")
+            or not is_sha256(
+                config["product_search_runtime"].removeprefix("sha256:")
+            )
+            or not environment_identity.startswith(
+                "benchmark-product-environment@1:"
+            )
+            or not is_sha256(
+                environment_identity.removeprefix(
+                    "benchmark-product-environment@1:"
+                )
+            )
+        ):
+            raise BenchmarkExecutionError(
+                "benchmark run audit failed: product identity contract mismatch"
+            )
 
     cases_by_id = {case.case_id: case for case in dataset.cases}
     expected_case_ids = tuple(sorted(cases_by_id))
