@@ -10,8 +10,11 @@ def test_video_profile_uses_dedicated_reproducible_environment() -> None:
     makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
     install_video = makefile.split("install-video:", 1)[1].split("\n\n", 1)[0]
 
+    assert "install-video: worker-platform-check" in makefile
     assert 'UV_PROJECT_ENVIRONMENT="$(CURDIR)/.venv-qwen"' in install_video
     assert "--project backend --locked --extra video" in install_video
+    assert "--python .venv/bin/python" in install_video
+    assert "--no-python-downloads" in install_video
     assert "--inexact" not in install_video
     assert ".venv-qwen/bin/python scripts/download-models.py --profile video" in makefile
     assert ".venv-qwen/bin/python -m videoscope.providers.qwen_worker" in makefile
