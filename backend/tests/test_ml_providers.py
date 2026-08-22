@@ -1,8 +1,11 @@
 import sys
 import types
+from collections import deque
 from hashlib import sha256
 import json
 from pathlib import Path
+import struct
+import zlib
 
 import pytest
 import torch
@@ -12,6 +15,23 @@ from videoscope.providers.lighthouse import LighthouseRetriever
 from videoscope.providers.paddle_ocr import PaddleOCRReader, _result_payload
 from videoscope.providers.roboflow import RoboflowDetector
 from videoscope.providers.whisper import WhisperTranscriber
+
+
+def _tiny_png() -> bytes:
+    def chunk(kind: bytes, payload: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(payload))
+            + kind
+            + payload
+            + struct.pack(">I", zlib.crc32(kind + payload) & 0xFFFFFFFF)
+        )
+
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(b"\x00\x00\x00\x00"))
+        + chunk(b"IEND", b"")
+    )
 
 
 def test_whisper_transcriber_maps_mlx_segments(monkeypatch, tmp_path) -> None:
@@ -113,29 +133,35 @@ def test_whisper_drops_non_finite_segments_and_words(monkeypatch, tmp_path) -> N
 
 
 def test_paddle_reader_parses_current_result_shape(monkeypatch, tmp_path) -> None:
+    observed: list[object] = []
+
     class FakeResult:
         json = {"res": {"rec_texts": [" SCORE 87 ", "noise"], "rec_scores": [0.94, 0.1]}}
 
     class FakeModel:
-        def predict(self, _path: str):  # type: ignore[no-untyped-def]
+        def predict(self, decoded: object):
+            observed.append(decoded)
             return [FakeResult()]
 
     class FakePaddleOCR:
         def __init__(self, **_kwargs) -> None:  # type: ignore[no-untyped-def]
             pass
 
-        def predict(self, path: str):  # type: ignore[no-untyped-def]
-            return FakeModel().predict(path)
+        def predict(self, decoded: object):
+            return FakeModel().predict(decoded)
 
     module = types.ModuleType("paddleocr")
     module.PaddleOCR = FakePaddleOCR  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "paddleocr", module)
     reader = PaddleOCRReader(minimum_confidence=0.35)
+    image = tmp_path / "frame.png"
+    image.write_bytes(_tiny_png())
 
-    output = reader.read(tmp_path / "frame.jpg")
+    output = reader.read(image)
 
     assert reader.status().state is ProviderState.READY
     assert output == [("SCORE 87", 0.94)]
+    assert observed and not isinstance(observed[0], (str, Path))
     assert _result_payload(types.SimpleNamespace(json=lambda: '{"res":{"rec_texts":[]}}')) == {
         "rec_texts": []
     }
@@ -145,45 +171,133 @@ def test_paddle_reader_uses_isolated_worker_protocol(monkeypatch, tmp_path) -> N
     python = tmp_path / "python"
     worker = tmp_path / "worker.py"
     image = tmp_path / "frame.jpg"
-    for path in (python, worker, image):
+    for path in (python, worker):
         path.write_bytes(b"fixture")
-    writes: list[str] = []
+    image.write_bytes(_tiny_png())
+    lock = tmp_path / "requirements.lock"
+    lock.write_text(
+        "demo==1.0 \\\n    --hash=sha256:" + "a" * 64 + "\n",
+        encoding="utf-8",
+    )
+    dependency_hash = sha256(lock.read_bytes()).hexdigest()
+    model_root = tmp_path / "models"
+    model_directory = model_root / "detector"
+    model_directory.mkdir(parents=True)
+    model_artifact = model_directory / "model.bin"
+    model_artifact.write_bytes(b"model")
+    manifest_payload = {
+        "engine": "transformers",
+        "models": [
+            {
+                "artifacts": [
+                    {
+                        "name": model_artifact.name,
+                        "sha256": sha256(model_artifact.read_bytes()).hexdigest(),
+                        "size": model_artifact.stat().st_size,
+                    }
+                ],
+                "directory": model_directory.name,
+                "role": "detection",
+            }
+        ],
+        "profile": "test",
+        "schema_version": 1,
+    }
+    manifest = tmp_path / "models.lock.json"
+    manifest.write_text(json.dumps(manifest_payload), encoding="utf-8")
+    manifest_hash = sha256(
+        json.dumps(
+            manifest_payload,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    writes: list[bytes] = []
+
+    reader = PaddleOCRReader(
+        minimum_confidence=0.5,
+        worker_python=python,
+        worker_script=worker,
+        worker_dependency_lock=lock,
+        worker_model_manifest=manifest,
+        worker_model_root=model_root,
+        expected_dependency_identity=f"paddleocr-deps-v1:sha256:{dependency_hash}",
+        expected_runtime_identity=(
+            "videoscope-paddleocr-worker-v1|python==3.12.13|"
+            "platform==aarch64-apple-darwin-macos14plus|"
+            f"lock-sha256:{dependency_hash}"
+        ),
+        expected_model_identity=f"paddleocr-models-v1:sha256:{manifest_hash}",
+        expected_script_sha256=sha256(worker.read_bytes()).hexdigest(),
+    )
+    attestation = reader.worker_attestation
 
     class FakeInput:
-        def write(self, value: str) -> None:
+        def write(self, value: bytes) -> int:
             writes.append(value)
+            request = json.loads(value)
+            output.lines.append(
+                json.dumps(
+                    {
+                        "attestation": request["attestation"],
+                        "items": [[" SCORE 90 ", 0.96]],
+                        "ok": True,
+                        "request_id": request["request_id"],
+                        "type": "result",
+                    }
+                ).encode("utf-8")
+                + b"\n"
+            )
+            return len(value)
 
         def flush(self) -> None:
             pass
 
     class FakeOutput:
-        def readline(self) -> str:
-            return '{"ok":true,"items":[[" SCORE 90 ",0.96],["bad","NaN"]]}\n'
+        def __init__(self) -> None:
+            self.lines = deque(
+                [
+                    json.dumps(
+                        {"attestation": attestation, "ok": True, "type": "hello"}
+                    ).encode("utf-8")
+                    + b"\n"
+                ]
+            )
+
+        def readline(self, limit: int) -> bytes:
+            return self.lines.popleft()[:limit] if self.lines else b""
+
+    output = FakeOutput()
 
     class FakeProcess:
         stdin = FakeInput()
-        stdout = FakeOutput()
+        stdout = output
+        returncode = None
 
         def poll(self):  # type: ignore[no-untyped-def]
-            return None
+            return self.returncode
 
-    monkeypatch.setattr(
-        "videoscope.providers.paddle_ocr.subprocess.run",
-        lambda *_args, **_kwargs: types.SimpleNamespace(returncode=0),
-    )
+        def terminate(self) -> None:
+            self.returncode = -15
+
+        def wait(self, timeout=None):  # type: ignore[no-untyped-def]
+            return self.returncode
+
+        def kill(self) -> None:
+            self.returncode = -9
+
     monkeypatch.setattr(
         "videoscope.providers.paddle_ocr.subprocess.Popen",
         lambda *_args, **_kwargs: FakeProcess(),
     )
-    reader = PaddleOCRReader(
-        minimum_confidence=0.5,
-        worker_python=python,
-        worker_script=worker,
-    )
 
     assert reader.status().state is ProviderState.READY
     assert reader.read(image) == [("SCORE 90", 0.96)]
-    assert json.loads(writes[0]) == {"path": str(image)}
+    request = json.loads(writes[0])
+    assert "path" not in request
+    assert request["frame"]["sha256"] == sha256(image.read_bytes()).hexdigest()
+    assert request["frame"]["compressed_bytes"] == image.stat().st_size
+    assert request["attestation"] == attestation
 
 
 def test_roboflow_requires_explicit_configuration() -> None:

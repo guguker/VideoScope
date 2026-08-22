@@ -1,4 +1,4 @@
-.PHONY: install install-ml install-vision install-whisper install-ocr install-video vision-worker whisper-worker qwen-worker worker-platform-check lock-vision lock-whisper lock-lighthouse install-lighthouse lighthouse-worker models models-base models-ml models-vision models-whisper models-video models-lighthouse index-visual index-visual-quality index-lighthouse dev test test-backend test-frontend build demo
+.PHONY: install install-ml install-vision install-whisper install-ocr install-video vision-worker whisper-worker qwen-worker worker-platform-check lock-vision lock-whisper lock-ocr lock-ocr-check lock-lighthouse install-lighthouse lighthouse-worker models models-base models-ml models-vision models-whisper models-video models-lighthouse index-visual index-visual-quality index-lighthouse dev test test-backend test-frontend build demo
 
 install:
 	./scripts/bootstrap.sh
@@ -21,6 +21,15 @@ vision-worker:
 
 lock-whisper: worker-platform-check
 	.venv/bin/uv pip compile workers/whisper/pyproject.toml --python .venv/bin/python --generate-hashes --output-file workers/whisper/requirements.lock --custom-compile-command 'make lock-whisper'
+
+lock-ocr: worker-platform-check
+	.venv/bin/uv pip compile workers/ocr/pyproject.toml --python .venv/bin/python --generate-hashes --exclude-newer 2026-08-18T00:00:00Z --output-file workers/ocr/requirements.lock --custom-compile-command 'make lock-ocr' --no-python-downloads
+
+lock-ocr-check: worker-platform-check
+	@ocr_lock_tmp="$$(mktemp -t videoscope-ocr-lock.XXXXXX)"; \
+	trap 'rm -f "$$ocr_lock_tmp"' EXIT; \
+	.venv/bin/uv pip compile workers/ocr/pyproject.toml --python .venv/bin/python --generate-hashes --exclude-newer 2026-08-18T00:00:00Z --output-file "$$ocr_lock_tmp" --custom-compile-command 'make lock-ocr' --no-python-downloads; \
+	cmp -s workers/ocr/requirements.lock "$$ocr_lock_tmp" || { echo "workers/ocr/requirements.lock is stale; run make lock-ocr" >&2; exit 1; }
 
 install-whisper:
 	.venv/bin/uv venv --python 3.12.13 --managed-python .venv-whisper

@@ -1,0 +1,59 @@
+{
+  "engine": "transformers",
+  "models": [
+    {
+      "artifacts": [
+        {
+          "name": "config.json",
+          "sha256": "3ea7e760f64255c152ba139e2f5f798303f7189b87c923cf498e2b2e830cadd3",
+          "size": 2134
+        },
+        {
+          "name": "inference.yml",
+          "sha256": "7298d5ead546584af2504d03355f881ac7a7bc0eb1e282d3e159277c1d0af871",
+          "size": 886
+        },
+        {
+          "name": "model.safetensors",
+          "sha256": "bd393266c02e1a680b1b34c301d5d0d81e6290440b7f8ab0f5d5032276b17eb1",
+          "size": 88020412
+        },
+        {
+          "name": "preprocessor_config.json",
+          "sha256": "74421569a28a78d417db320f9bc039ce0997a1defe2b35f259dfc74299c9f1ed",
+          "size": 838
+        }
+      ],
+      "directory": "PP-OCRv6_medium_det_safetensors",
+      "role": "detection"
+    },
+    {
+      "artifacts": [
+        {
+          "name": "config.json",
+          "sha256": "aa5f351b4a7df95cc4953f013d53a6d44205f1bb0aee0ec7eb243d1d8fae1c27",
+          "size": 1131
+        },
+        {
+          "name": "inference.yml",
+          "sha256": "991b700facf5b50a7de193468207d5f4255b538dde0d312ae3b7c7a9b6873129",
+          "size": 150580
+        },
+        {
+          "name": "model.safetensors",
+          "sha256": "5f43c16f2a684b1d2284662178bdb604febd3d6bfdb5ca73828d08d0f7c0c3e9",
+          "size": 76741720
+        },
+        {
+          "name": "preprocessor_config.json",
+          "sha256": "2b24fa36f548893f26a931cf44f1a1a6b2b14ed7e2f8f8e28e6848801a8278db",
+          "size": 206177
+        }
+      ],
+      "directory": "PP-OCRv6_medium_rec_safetensors",
+      "role": "recognition"
+    }
+  ],
+  "profile": "pp-ocrv6-medium-safetensors",
+  "schema_version": 1
+}
