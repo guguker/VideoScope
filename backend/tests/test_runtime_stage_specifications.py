@@ -9,6 +9,7 @@ from videoscope.providers.whisper_worker import (
     WHISPER_DEPENDENCY_IDENTITY,
     WHISPER_WORKER_SCHEMA_VERSION,
 )
+from videoscope.providers.whisper import WhisperPromptSnapshot
 import videoscope.runtime as runtime_module
 
 
@@ -117,6 +118,29 @@ def test_indexing_run_plan_shares_one_bounded_whisper_prompt_snapshot(
     assert "Мозгов" in (plan.whisper_prompt_snapshot.effective_prompt or "")
     assert "Мозгов" not in speech.canonical_json
     assert str(settings.glossary_path) not in speech.canonical_json
+
+
+def test_runtime_builds_specifications_from_an_already_frozen_prompt_snapshot(
+    tmp_path,
+) -> None:
+    settings = AppSettings(
+        _env_file=None,
+        data_dir=tmp_path / "data",
+        glossary_path=tmp_path / "lexical-path-must-not-be-read.json",
+    )
+    snapshot = WhisperPromptSnapshot(
+        effective_prompt="frozen prompt",
+        effective_prompt_sha256="a" * 64,
+        glossary_state="ready",
+    )
+
+    specifications = runtime_module.create_indexing_specifications_from_prompt_snapshot(
+        settings,
+        snapshot,
+    )
+
+    assert specifications.speech.parameters["effective_prompt_sha256"] == "a" * 64
+    assert specifications.speech.parameters["glossary_state"] == "ready"
 
 
 def test_worker_stage_specs_bump_contracts_without_persisting_secrets_or_paths(

@@ -7,8 +7,9 @@ import logging
 import mimetypes
 from pathlib import Path
 import re
+import sqlite3
 import stat
-from typing import Protocol
+from typing import Callable, Protocol
 from urllib.parse import quote
 from uuid import uuid4
 
@@ -30,8 +31,8 @@ from videoscope.api_models import (
     GlossaryRequest,
     GlossaryResponse,
     HealthResponse,
+    JobResponse,
     ProviderResponse,
-    ReindexResponse,
     RenameVideoRequest,
     SearchRequest,
     SearchResultResponse,
@@ -52,8 +53,18 @@ from videoscope.evaluation import (
 )
 from videoscope.media.ffmpeg import FFmpeg
 from videoscope.media.uploads import UploadRejected, validate_upload
+from videoscope.jobs import (
+    JobState,
+    JobTransitionError,
+    VideoIndexJob,
+    VideoIndexPlanSnapshot,
+)
+from videoscope.processing.coordinator import (
+    VideoIndexCoordinator,
+    VideoIndexPlanUnavailable,
+)
 from videoscope.providers.base import ProviderRegistry, ProviderState, StaticProvider
-from videoscope.repository import Repository, VideoRecord
+from videoscope.repository import AssetIdentityError, Repository, VideoRecord
 from videoscope.runtime_lifecycle import ExclusiveRuntimeLock
 from videoscope.search.service import SearchService
 from videoscope.search.service import thumbnail_url_for_path
@@ -64,15 +75,30 @@ from videoscope.security import RequestBodyLimitMiddleware, RateLimit, SlidingWi
 
 UPLOAD_CHUNK_SIZE = 1024 * 1024
 UPLOAD_BODY_OVERHEAD_BYTES = 64 * 1024
+LATEST_JOB_BATCH_SIZE = 1000
 VIDEO_ID_RE = re.compile(VIDEO_ID_PATTERN)
+JOB_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 BINARY_FILE_SCHEMA = {"schema": {"type": "string", "format": "binary"}}
 logger = logging.getLogger(__name__)
 
 
 class ProcessingQueue(Protocol):
-    def submit(self, video_id: str) -> None: ...
-
     def close(self) -> None: ...
+
+
+class _ProcessingWakeup:
+    def __init__(self, worker: ProcessingQueue) -> None:
+        self.worker = worker
+
+    def wake(self, video_id: str) -> None:
+        wake = getattr(self.worker, "wake", None)
+        if callable(wake):
+            wake()
+            return
+        submit = getattr(self.worker, "submit", None)
+        if not callable(submit):
+            raise RuntimeError("video index dispatcher cannot be notified")
+        submit(video_id)
 
 
 def create_app(
@@ -83,6 +109,7 @@ def create_app(
     search_service: SearchService | None = None,
     clip_service: ClipService | None = None,
     provider_registry: ProviderRegistry | None = None,
+    video_index_plan_factory: Callable[[], VideoIndexPlanSnapshot] | None = None,
 ) -> FastAPI:
     resolved_settings = settings or AppSettings()
     owns_runtime = processing_queue is None
@@ -93,6 +120,7 @@ def create_app(
     resolved_search: SearchService | None = None
     resolved_clips: ClipService | None = None
     resolved_providers: ProviderRegistry | None = None
+    resolved_coordinator: VideoIndexCoordinator | None = None
     evaluation_service: EvaluationService | None = None
     evaluation_store = EvaluationStore(
         resolved_settings.evaluation_cases_path,
@@ -133,14 +161,33 @@ def create_app(
         active_search: SearchService,
         active_clips: ClipService,
         active_providers: ProviderRegistry,
+        active_video_index_plan_factory: (
+            Callable[[], VideoIndexPlanSnapshot] | None
+        ) = None,
     ) -> None:
         nonlocal resolved_repository, resolved_queue, resolved_search
-        nonlocal resolved_clips, resolved_providers, evaluation_service
+        nonlocal resolved_clips, resolved_providers, resolved_coordinator
+        nonlocal evaluation_service
         resolved_repository = active_repository
         resolved_queue = active_queue
         resolved_search = active_search
         resolved_clips = active_clips
         resolved_providers = active_providers
+        if video_index_plan_factory is not None:
+            plan_factory = video_index_plan_factory
+        elif active_video_index_plan_factory is not None:
+            plan_factory = active_video_index_plan_factory
+        else:
+            from videoscope.runtime import create_video_index_plan_snapshot
+
+            plan_factory = lambda: create_video_index_plan_snapshot(
+                resolved_settings
+            )
+        resolved_coordinator = VideoIndexCoordinator(
+            active_repository,
+            plan_factory=plan_factory,
+            wakeup=_ProcessingWakeup(active_queue),
+        )
         resolved_lexicon = active_search.lexicon or SearchLexicon(
             resolved_settings.glossary_path
         )
@@ -163,16 +210,17 @@ def create_app(
         target_app.state.evaluation_service = evaluation_service
         target_app.state.clip_service = active_clips
         target_app.state.provider_registry = active_providers
+        target_app.state.video_index_coordinator = resolved_coordinator
 
     def active_repository() -> Repository:
         if resolved_repository is None:
             raise RuntimeError("VideoScope runtime is not started")
         return resolved_repository
 
-    def active_queue() -> ProcessingQueue:
-        if resolved_queue is None:
+    def active_coordinator() -> VideoIndexCoordinator:
+        if resolved_coordinator is None:
             raise RuntimeError("VideoScope runtime is not started")
-        return resolved_queue
+        return resolved_coordinator
 
     def active_search() -> SearchService:
         if resolved_search is None:
@@ -223,6 +271,11 @@ def create_app(
                     active_search=search_service or owned_runtime.search,
                     active_clips=clip_service or owned_runtime.clips,
                     active_providers=provider_registry or owned_runtime.providers,
+                    active_video_index_plan_factory=getattr(
+                        owned_runtime,
+                        "video_index_plan_factory",
+                        None,
+                    ),
                 )
                 owned_runtime.start()
             except Exception:
@@ -317,7 +370,34 @@ def create_app(
             return "Не удалось обработать видео. Подробности записаны в журнале сервера."
         return "Некоторые необязательные этапы индексации завершились с предупреждением."
 
-    def video_payload(record: VideoRecord) -> dict[str, object]:
+    def job_summary_payload(job: VideoIndexJob) -> dict[str, object]:
+        return {
+            "job_id": job.job_id,
+            "intent": job.intent.value,
+            "state": job.state.value,
+            "progress": job.progress,
+            "stage": job.stage,
+            "attempt": job.attempt,
+            "cancel_requested_at": job.cancel_requested_at,
+            "error_code": job.error_code,
+            "created_at": job.created_at,
+            "started_at": job.started_at,
+            "finished_at": job.finished_at,
+            "updated_at": job.updated_at,
+        }
+
+    def job_payload(job: VideoIndexJob) -> dict[str, object]:
+        return {
+            **job_summary_payload(job),
+            "video_id": job.video_id,
+            "retry_of_job_id": job.retry_of_job_id,
+        }
+
+    def video_payload(
+        record: VideoRecord,
+        *,
+        latest_job: VideoIndexJob | None = None,
+    ) -> dict[str, object]:
         return {
             "id": record.id,
             "original_name": record.original_name,
@@ -339,7 +419,26 @@ def create_app(
                 record.thumbnail_path,
                 resolved_settings.thumbnails_dir,
             ),
+            "latest_job": (
+                job_summary_payload(latest_job)
+                if latest_job is not None
+                else None
+            ),
         }
+
+    def latest_jobs_for_records(
+        repository: Repository,
+        records: list[VideoRecord],
+    ) -> dict[str, VideoIndexJob]:
+        latest: dict[str, VideoIndexJob] = {}
+        video_ids = tuple(record.id for record in records)
+        for offset in range(0, len(video_ids), LATEST_JOB_BATCH_SIZE):
+            latest.update(
+                repository.get_latest_video_index_jobs(
+                    video_ids[offset : offset + LATEST_JOB_BATCH_SIZE]
+                )
+            )
+        return latest
 
     @app.middleware("http")
     async def security_headers(request, call_next):  # type: ignore[no-untyped-def]
@@ -373,14 +472,21 @@ def create_app(
 
     @app.get("/api/videos", response_model=list[VideoResponse])
     def list_videos() -> list[dict[str, object]]:
-        return [video_payload(record) for record in active_repository().list_videos()]
+        repository = active_repository()
+        records = repository.list_videos()
+        latest = latest_jobs_for_records(repository, records)
+        return [
+            video_payload(record, latest_job=latest.get(record.id))
+            for record in records
+        ]
 
     @app.get("/api/videos/{video_id}", response_model=VideoResponse)
     def get_video(video_id: str) -> dict[str, object]:
         record = active_repository().get_video(video_id)
         if record is None:
             raise HTTPException(status_code=404, detail="Video not found")
-        return video_payload(record)
+        latest = active_repository().get_latest_video_index_jobs((record.id,))
+        return video_payload(record, latest_job=latest.get(record.id))
 
     @app.patch("/api/videos/{video_id}", response_model=VideoResponse)
     def rename_video(video_id: str, request: RenameVideoRequest) -> dict[str, object]:
@@ -392,7 +498,8 @@ def create_app(
         if not name:
             raise HTTPException(status_code=422, detail="Video name is empty")
         updated = repository.update_video(video_id, display_name=name)
-        return video_payload(updated)
+        latest = repository.get_latest_video_index_jobs((updated.id,))
+        return video_payload(updated, latest_job=latest.get(updated.id))
 
     @app.post(
         "/api/videos",
@@ -420,7 +527,7 @@ def create_app(
             }
         },
     )
-    async def upload_video(request: Request) -> dict[str, object]:
+    async def upload_video(request: Request, response: Response) -> dict[str, object]:
         try:
             form = await request.form(max_files=1, max_fields=0)
         except StarletteHTTPException as error:
@@ -478,7 +585,7 @@ def create_app(
             await form.close()
 
         try:
-            record = active_repository().create_video_with_asset(
+            record, job = active_coordinator().create_ingest(
                 video_id=video_id,
                 original_name=filename,
                 stored_name=stored_name,
@@ -486,11 +593,18 @@ def create_app(
                 size_bytes=size_bytes,
                 source_sha256=source_digest.hexdigest(),
             )
+        except VideoIndexPlanUnavailable as error:
+            destination.unlink(missing_ok=True)
+            logger.warning("Video index plan is unavailable", exc_info=error)
+            raise HTTPException(
+                status_code=503,
+                detail="Indexing runtime is unavailable",
+            ) from error
         except Exception:
             destination.unlink(missing_ok=True)
             raise
-        active_queue().submit(video_id)
-        return video_payload(record)
+        response.headers["Location"] = f"/api/jobs/{job.job_id}"
+        return video_payload(record, latest_job=job)
 
     @app.get(
         "/api/videos/{video_id}/media",
@@ -566,15 +680,108 @@ def create_app(
     @app.post(
         "/api/videos/{video_id}/reindex",
         status_code=status.HTTP_202_ACCEPTED,
-        response_model=ReindexResponse,
+        response_model=VideoResponse,
     )
-    def reindex_video(video_id: str) -> dict[str, str]:
+    def reindex_video(video_id: str, response: Response) -> dict[str, object]:
         repository = active_repository()
         if repository.get_video(video_id) is None:
             raise HTTPException(status_code=404, detail="Video not found")
-        repository.update_video(video_id, status="queued", progress=0.0, stage="queued", error=None)
-        active_queue().submit(video_id)
-        return {"status": "queued", "video_id": video_id}
+        try:
+            job = active_coordinator().enqueue_reindex(video_id)
+        except KeyError as error:
+            raise HTTPException(status_code=404, detail="Video not found") from error
+        except (AssetIdentityError, JobTransitionError, sqlite3.IntegrityError) as error:
+            raise HTTPException(
+                status_code=409,
+                detail="Video already has incompatible active indexing work",
+            ) from error
+        except VideoIndexPlanUnavailable as error:
+            logger.warning("Video reindex plan is unavailable", exc_info=error)
+            raise HTTPException(
+                status_code=503,
+                detail="Indexing runtime is unavailable",
+            ) from error
+        record = repository.get_video(video_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="Video not found")
+        response.headers["Location"] = f"/api/jobs/{job.job_id}"
+        return video_payload(record, latest_job=job)
+
+    def public_job(job_id: str) -> VideoIndexJob:
+        if JOB_ID_RE.fullmatch(job_id) is None:
+            raise HTTPException(status_code=404, detail="Job not found")
+        try:
+            job = active_coordinator().get_job(job_id)
+        except ValueError as error:
+            logger.exception("Persisted video index job is invalid")
+            raise HTTPException(
+                status_code=503,
+                detail="Job state is unavailable",
+            ) from error
+        if job is None:
+            raise HTTPException(status_code=404, detail="Job not found")
+        return job
+
+    @app.get("/api/jobs/{job_id}", response_model=JobResponse)
+    def get_job(job_id: str) -> dict[str, object]:
+        return job_payload(public_job(job_id))
+
+    @app.post(
+        "/api/jobs/{job_id}/cancel",
+        response_model=JobResponse,
+        responses={409: {"model": ErrorResponse, "description": "Terminal job"}},
+    )
+    def cancel_job(job_id: str, response: Response) -> dict[str, object]:
+        current = public_job(job_id)
+        if current.state is JobState.CANCELLED:
+            response.status_code = status.HTTP_200_OK
+            return job_payload(current)
+        if current.state in {JobState.COMPLETE, JobState.FAILED}:
+            raise HTTPException(
+                status_code=409,
+                detail="Job is already terminal",
+            )
+        try:
+            job = active_coordinator().request_cancellation(job_id)
+        except KeyError as error:
+            raise HTTPException(status_code=404, detail="Job not found") from error
+        except JobTransitionError as error:
+            raise HTTPException(
+                status_code=409,
+                detail="Job is already terminal",
+            ) from error
+        response.status_code = (
+            status.HTTP_202_ACCEPTED
+            if job.state is JobState.RUNNING
+            else status.HTTP_200_OK
+        )
+        return job_payload(job)
+
+    @app.post(
+        "/api/jobs/{job_id}/retry",
+        status_code=status.HTTP_202_ACCEPTED,
+        response_model=JobResponse,
+        responses={409: {"model": ErrorResponse, "description": "Job state conflict"}},
+    )
+    def retry_job_endpoint(job_id: str, response: Response) -> dict[str, object]:
+        public_job(job_id)
+        try:
+            child = active_coordinator().retry(job_id)
+        except KeyError as error:
+            raise HTTPException(status_code=404, detail="Job not found") from error
+        except (JobTransitionError, sqlite3.IntegrityError) as error:
+            raise HTTPException(
+                status_code=409,
+                detail="Job cannot be retried",
+            ) from error
+        except ValueError as error:
+            logger.exception("Persisted video index retry is invalid")
+            raise HTTPException(
+                status_code=503,
+                detail="Job state is unavailable",
+            ) from error
+        response.headers["Location"] = f"/api/jobs/{child.job_id}"
+        return job_payload(child)
 
     @app.post("/api/search", response_model=list[SearchResultResponse])
     def search(request: SearchRequest) -> list[dict[str, object]]:

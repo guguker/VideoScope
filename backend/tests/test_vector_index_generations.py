@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+import videoscope.search.vector_index as vector_index_module
 from videoscope.artifacts import (
     StageKind,
     TextVectorBuildPlan,
@@ -598,7 +599,7 @@ def test_exhaustive_validation_is_cached_but_sentinel_and_count_are_always_reche
 
 
 @pytest.mark.parametrize("score", [float("nan"), float("inf"), float("-inf")])
-def test_generation_search_drops_non_finite_qdrant_scores(tmp_path, monkeypatch, score) -> None:  # type: ignore[no-untyped-def]
+def test_generation_search_rejects_non_finite_qdrant_scores(tmp_path, monkeypatch, score) -> None:  # type: ignore[no-untyped-def]
     index = QdrantVectorIndex(tmp_path / "qdrant", embedding=HashEmbedding(16))
     plan = _plan("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
     receipt = index.build_generation(plan)
@@ -625,8 +626,250 @@ def test_generation_search_drops_non_finite_qdrant_scores(tmp_path, monkeypatch,
         ),
     )
 
-    assert index.search_generations(
+    with pytest.raises(RuntimeError, match="invalid generation-scoped search result"):
+        index.search_generations(
+            "basket",
+            bindings=[binding],
+            modalities={"speech"},
+        )
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    [
+        "non_mapping_payload",
+        "unbound_generation",
+        "unknown_segment",
+        "wrong_record_type",
+    ],
+)
+def test_generation_search_rejects_malformed_or_out_of_scope_qdrant_payloads(
+    tmp_path,
+    monkeypatch,
+    corruption,
+) -> None:  # type: ignore[no-untyped-def]
+    index = QdrantVectorIndex(tmp_path / "qdrant", embedding=HashEmbedding(16))
+    plan = _plan("abababababababababababababababab")
+    receipt = index.build_generation(plan)
+    binding = _binding(plan, receipt)
+    point = plan.points[0]
+    payload: object = {
+        "generation_id": plan.generation_id,
+        "modality": point.modality,
+        "record_type": "segment",
+        "segment_generation_id": point.segment_generation_id,
+        "segment_id": point.segment_id,
+        "text_sha256": point.text_sha256,
+        "video_id": point.video_id,
+    }
+    if corruption == "non_mapping_payload":
+        payload = ["not", "a", "mapping"]
+    elif corruption == "unbound_generation":
+        assert isinstance(payload, dict)
+        payload["generation_id"] = "cd" * 16
+    elif corruption == "unknown_segment":
+        assert isinstance(payload, dict)
+        payload["segment_id"] = "unknown-segment"
+    else:
+        assert isinstance(payload, dict)
+        payload["record_type"] = "manifest"
+    monkeypatch.setattr(
+        index._get_client(),
+        "query_points",
+        lambda **_kwargs: SimpleNamespace(
+            points=[SimpleNamespace(score=0.75, payload=payload)]
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="invalid generation-scoped search result"):
+        index.search_generations(
+            "basket",
+            bindings=[binding],
+            modalities={"speech"},
+        )
+
+
+def test_generation_search_surfaces_hit_construction_failure(
+    tmp_path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    index = QdrantVectorIndex(tmp_path / "qdrant", embedding=HashEmbedding(16))
+    plan = _plan("acacacacacacacacacacacacacacacac")
+    receipt = index.build_generation(plan)
+    binding = _binding(plan, receipt)
+    point = plan.points[0]
+    monkeypatch.setattr(
+        index._get_client(),
+        "query_points",
+        lambda **_kwargs: SimpleNamespace(
+            points=[
+                SimpleNamespace(
+                    score=0.75,
+                    payload={
+                        "generation_id": plan.generation_id,
+                        "modality": point.modality,
+                        "record_type": "segment",
+                        "segment_generation_id": point.segment_generation_id,
+                        "segment_id": point.segment_id,
+                        "text_sha256": point.text_sha256,
+                        "video_id": point.video_id,
+                    },
+                )
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        vector_index_module,
+        "TextVectorSearchHit",
+        lambda **_kwargs: (_ for _ in ()).throw(ValueError("fixture construction failure")),
+    )
+
+    with pytest.raises(RuntimeError, match="invalid generation-scoped search result"):
+        index.search_generations(
+            "basket",
+            bindings=[binding],
+            modalities={"speech"},
+        )
+
+
+@pytest.mark.parametrize("score", [1.01, -1.01, 1e300, -1e300, True])
+def test_generation_search_rejects_out_of_range_or_boolean_qdrant_scores(
+    tmp_path,
+    monkeypatch,
+    score,
+) -> None:  # type: ignore[no-untyped-def]
+    index = QdrantVectorIndex(tmp_path / "qdrant", embedding=HashEmbedding(16))
+    plan = _plan("adadadadadadadadadadadadadadadad")
+    receipt = index.build_generation(plan)
+    binding = _binding(plan, receipt)
+    point = plan.points[0]
+    monkeypatch.setattr(
+        index._get_client(),
+        "query_points",
+        lambda **_kwargs: SimpleNamespace(
+            points=[
+                SimpleNamespace(
+                    score=score,
+                    payload={
+                        "generation_id": plan.generation_id,
+                        "modality": point.modality,
+                        "record_type": "segment",
+                        "segment_generation_id": point.segment_generation_id,
+                        "segment_id": point.segment_id,
+                        "text_sha256": point.text_sha256,
+                        "video_id": point.video_id,
+                    },
+                )
+            ]
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="invalid generation-scoped search result"):
+        index.search_generations(
+            "basket",
+            bindings=[binding],
+            modalities={"speech"},
+        )
+
+
+@pytest.mark.parametrize(
+    ("score", "expected"),
+    [(1.0 + 5e-7, 1.0), (-1.0 - 5e-7, 0.0)],
+)
+def test_generation_search_allows_tiny_cosine_rounding_tolerance(
+    tmp_path,
+    monkeypatch,
+    score,
+    expected,
+) -> None:  # type: ignore[no-untyped-def]
+    index = QdrantVectorIndex(tmp_path / "qdrant", embedding=HashEmbedding(16))
+    plan = _plan("b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0")
+    receipt = index.build_generation(plan)
+    binding = _binding(plan, receipt)
+    point = plan.points[0]
+    monkeypatch.setattr(
+        index._get_client(),
+        "query_points",
+        lambda **_kwargs: SimpleNamespace(
+            points=[
+                SimpleNamespace(
+                    score=score,
+                    payload={
+                        "generation_id": plan.generation_id,
+                        "modality": point.modality,
+                        "record_type": "segment",
+                        "segment_generation_id": point.segment_generation_id,
+                        "segment_id": point.segment_id,
+                        "text_sha256": point.text_sha256,
+                        "video_id": point.video_id,
+                    },
+                )
+            ]
+        ),
+    )
+
+    hits = index.search_generations(
         "basket",
         bindings=[binding],
         modalities={"speech"},
-    ) == []
+    )
+
+    assert [hit.score for hit in hits] == [expected]
+
+
+def test_generation_search_rejects_over_limit_response_before_point_iteration(
+    tmp_path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    index = QdrantVectorIndex(tmp_path / "qdrant", embedding=HashEmbedding(16))
+    plan = _plan("aeaeaeaeaeaeaeaeaeaeaeaeaeaeaeae")
+    receipt = index.build_generation(plan)
+    binding = _binding(plan, receipt)
+
+    class ExplodingPointList(list):
+        def __iter__(self):  # type: ignore[no-untyped-def]
+            raise AssertionError("over-limit response points were consumed")
+
+    monkeypatch.setattr(
+        index._get_client(),
+        "query_points",
+        lambda **_kwargs: SimpleNamespace(
+            points=ExplodingPointList([object(), object()])
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="invalid generation-scoped search response"):
+        index.search_generations(
+            "basket",
+            bindings=[binding],
+            modalities={"speech"},
+            limit=1,
+        )
+
+
+def test_generation_search_rejects_lazy_response_points_without_iteration(
+    tmp_path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    index = QdrantVectorIndex(tmp_path / "qdrant", embedding=HashEmbedding(16))
+    plan = _plan("afafafafafafafafafafafafafafafaf")
+    receipt = index.build_generation(plan)
+    binding = _binding(plan, receipt)
+
+    def exploding_points():  # type: ignore[no-untyped-def]
+        raise AssertionError("lazy response points were consumed")
+        yield object()
+
+    monkeypatch.setattr(
+        index._get_client(),
+        "query_points",
+        lambda **_kwargs: SimpleNamespace(points=exploding_points()),
+    )
+
+    with pytest.raises(RuntimeError, match="invalid generation-scoped search response"):
+        index.search_generations(
+            "basket",
+            bindings=[binding],
+            modalities={"speech"},
+            limit=1,
+        )

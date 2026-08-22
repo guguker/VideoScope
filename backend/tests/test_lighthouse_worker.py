@@ -19,6 +19,7 @@ from videoscope.providers.lighthouse_worker import (
     MAX_FEATURE_ARCHIVE_BYTES,
     MAX_RESPONSE_BYTES,
     LighthouseEncodedWindow,
+    LighthouseGenerationBindingPayload,
     LighthouseGenerationStore,
     LighthouseHitPayload,
     LighthousePrepareRequest,
@@ -56,6 +57,27 @@ class FakeWorkerRuntime:
 
     def activate_generation(self, video_id: str, generation_id: str) -> None:
         self.activate_calls.append((video_id, generation_id))
+
+    def generation_descriptor(
+        self,
+        video_id: str,
+        generation_id: str,
+        *,
+        force_content_validation: bool = False,
+    ) -> dict[str, object] | None:
+        del force_content_validation
+        if not self.build_calls:
+            return None
+        request, _source = self.build_calls[-1]
+        return {
+            "duration_seconds": getattr(request, "duration_seconds"),
+            "generation_id": generation_id,
+            "manifest_sha256": "c" * 64,
+            "source_sha256": getattr(request, "source_sha256"),
+            "source_size_bytes": getattr(request, "source_size_bytes"),
+            "specification_hash": self.specification.identity,
+            "video_id": video_id,
+        }
 
     def search(self, request: object) -> list[LighthouseHitPayload]:
         self.search_calls.append(request)
@@ -190,7 +212,7 @@ def test_health_exposes_exact_capability_without_loading_model(tmp_path: Path) -
         "specification": DEFAULT_LIGHTHOUSE_SPECIFICATION.to_dict(),
         "specification_hash": DEFAULT_LIGHTHOUSE_SPECIFICATION.identity,
         "loaded": False,
-        "operations": ["prepare", "search"],
+        "operations": ["build", "prepare", "search"],
         "max_input_bytes": 4096,
         "max_query_chars": 500,
         "max_video_ids": 100,
@@ -259,6 +281,28 @@ def test_prepare_checks_source_identity_before_activation(tmp_path: Path) -> Non
     assert response.status_code == 200
     assert response.json()["generation_id"] == "b" * 32
     assert runtime.activate_calls == [("video-1", "b" * 32)]
+
+
+def test_build_endpoint_returns_exact_descriptor_without_activation(
+    tmp_path: Path,
+) -> None:
+    media = tmp_path / "media"
+    media.mkdir()
+    source = media / "source.mp4"
+    source.write_bytes(b"safe source")
+    runtime = FakeWorkerRuntime()
+    client = _client(tmp_path, runtime)
+
+    response = client.post(
+        "/v1/build",
+        json=_prepare_request(source),
+        headers={"Authorization": f"Bearer {TOKEN}"},
+    )
+
+    assert response.status_code == 200
+    descriptor = response.json()["descriptor"]
+    assert descriptor == runtime.generation_descriptor("video-1", "b" * 32)
+    assert runtime.activate_calls == []
 
 
 def test_prepare_does_not_activate_when_source_changes_during_build(tmp_path: Path) -> None:
@@ -378,6 +422,145 @@ def test_generation_store_preserves_active_generation_on_failed_replacement(
     assert pointer.read_bytes() == before
     assert store.active_generation_id("video-1") == first
     assert store.cache_is_current("video-1") is True
+
+
+def test_local_search_rejects_same_generation_id_with_different_content_binding(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = LocalLighthouseWorkerRuntime(
+        checkpoint=tmp_path / "checkpoint.ckpt",
+        clip_checkpoint=tmp_path / "clip.pt",
+        cache_root=tmp_path / "cache",
+        work_root=tmp_path / "work",
+    )
+    generation_id = runtime.store.build_generation(
+        video_id="video-1",
+        source_sha256=SOURCE_SHA256,
+        source_size_bytes=10,
+        duration_seconds=4.0,
+        windows=[_encoded_window()],
+    )
+    runtime.store.activate("video-1", generation_id)
+    descriptor = runtime.store.generation_descriptor("video-1", generation_id)
+    assert descriptor is not None
+    descriptor["source_sha256"] = "b" * 64
+    request = lighthouse_worker_module.LighthouseSearchRequest(
+        schema_version=LIGHTHOUSE_WORKER_SCHEMA_VERSION,
+        request_id="9" * 32,
+        specification_hash=DEFAULT_LIGHTHOUSE_SPECIFICATION.identity,
+        model_identity=LIGHTHOUSE_MODEL_IDENTITY,
+        runtime_identity=LIGHTHOUSE_WORKER_RUNTIME_IDENTITY,
+        query="player shoots",
+        video_ids=["video-1"],
+        generation_bindings=[
+            LighthouseGenerationBindingPayload.model_validate(descriptor)
+        ],
+        limit=5,
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_load",
+        lambda: (_ for _ in ()).throw(AssertionError("model load reached")),
+    )
+
+    with pytest.raises(ValueError, match="stale or corrupt"):
+        runtime.search(request)
+
+
+@pytest.mark.parametrize("load_error", [None, OSError("transient read failure")])
+@pytest.mark.parametrize("descriptor_cached", [True, False])
+def test_local_generation_bound_search_fails_when_validated_generation_cannot_load(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    load_error: OSError | None,
+    descriptor_cached: bool,
+) -> None:
+    runtime = LocalLighthouseWorkerRuntime(
+        checkpoint=tmp_path / "checkpoint.ckpt",
+        clip_checkpoint=tmp_path / "clip.pt",
+        cache_root=tmp_path / "cache",
+        work_root=tmp_path / "work",
+    )
+    generation_id = runtime.store.build_generation(
+        video_id="video-1",
+        source_sha256=SOURCE_SHA256,
+        source_size_bytes=10,
+        duration_seconds=4.0,
+        windows=[_encoded_window()],
+    )
+    descriptor = runtime.store.generation_descriptor("video-1", generation_id)
+    assert descriptor is not None
+    if not descriptor_cached:
+        runtime.store._generation_descriptor_cache.clear()
+    request = lighthouse_worker_module.LighthouseSearchRequest(
+        schema_version=LIGHTHOUSE_WORKER_SCHEMA_VERSION,
+        request_id="8" * 32,
+        specification_hash=DEFAULT_LIGHTHOUSE_SPECIFICATION.identity,
+        model_identity=LIGHTHOUSE_MODEL_IDENTITY,
+        runtime_identity=LIGHTHOUSE_WORKER_RUNTIME_IDENTITY,
+        query="player shoots",
+        video_ids=["video-1"],
+        generation_bindings=[
+            LighthouseGenerationBindingPayload.model_validate(descriptor)
+        ],
+        limit=5,
+    )
+    def fail_load(*_args):  # type: ignore[no-untyped-def]
+        if load_error is not None:
+            raise load_error
+        return None
+
+    monkeypatch.setattr(runtime.store, "load_generation", fail_load)
+    monkeypatch.setattr(
+        runtime,
+        "_load",
+        lambda: (_ for _ in ()).throw(AssertionError("model load reached")),
+    )
+
+    with pytest.raises(RuntimeError, match="bound Lighthouse generation is unavailable"):
+        runtime.search(request)
+
+
+def test_lighthouse_descriptor_reuses_content_validation_until_forced(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = LighthouseGenerationStore(
+        tmp_path / "cache",
+        DEFAULT_LIGHTHOUSE_SPECIFICATION,
+    )
+    generation_id = store.build_generation(
+        video_id="video-1",
+        source_sha256=SOURCE_SHA256,
+        source_size_bytes=10,
+        duration_seconds=4.0,
+        windows=[_encoded_window()],
+    )
+    native_read = lighthouse_worker_module._read_bounded_regular_file_snapshot
+    content_reads = 0
+
+    def recording_read(path: Path, max_bytes: int):  # type: ignore[no-untyped-def]
+        nonlocal content_reads
+        content_reads += 1
+        return native_read(path, max_bytes)
+
+    monkeypatch.setattr(
+        lighthouse_worker_module,
+        "_read_bounded_regular_file_snapshot",
+        recording_read,
+    )
+
+    first = store.generation_descriptor("video-1", generation_id)
+    second = store.generation_descriptor("video-1", generation_id)
+    final = store.generation_descriptor(
+        "video-1",
+        generation_id,
+        force_content_validation=True,
+    )
+
+    assert first == second == final
+    assert content_reads == 4
 
 
 def test_generation_build_never_deletes_legacy_cache_before_activation(tmp_path: Path) -> None:
@@ -750,6 +933,17 @@ class FakeHTTPClient:
         if url.endswith("/search"):
             return FakeHTTPResponse(self.search_payload)
         request_id = getattr(json, "get", lambda _key: None)("request_id")
+        descriptor = None
+        if url.endswith("/build") and isinstance(json, dict):
+            descriptor = {
+                "duration_seconds": json["duration_seconds"],
+                "generation_id": "b" * 32,
+                "manifest_sha256": "c" * 64,
+                "source_sha256": json["source_sha256"],
+                "source_size_bytes": json["source_size_bytes"],
+                "specification_hash": DEFAULT_LIGHTHOUSE_SPECIFICATION.identity,
+                "video_id": json["video_id"],
+            }
         return FakeHTTPResponse(
             {
                 "schema_version": LIGHTHOUSE_WORKER_SCHEMA_VERSION,
@@ -759,6 +953,7 @@ class FakeHTTPClient:
                 "runtime_identity": LIGHTHOUSE_WORKER_RUNTIME_IDENTITY,
                 "video_id": "video-1",
                 "generation_id": "b" * 32,
+                **({"descriptor": descriptor} if descriptor is not None else {}),
             }
         )
 
@@ -772,7 +967,7 @@ def _health_payload() -> dict[str, object]:
         "specification": DEFAULT_LIGHTHOUSE_SPECIFICATION.to_dict(),
         "specification_hash": DEFAULT_LIGHTHOUSE_SPECIFICATION.identity,
         "loaded": False,
-        "operations": ["prepare", "search"],
+        "operations": ["build", "prepare", "search"],
         "max_input_bytes": 4096,
         "max_query_chars": 500,
         "max_video_ids": 100,
@@ -841,6 +1036,99 @@ def test_backend_client_preserves_retriever_behavior_and_caches_health(
     assert hits[0].segment_id == f"lighthouse:video-1:{'b' * 32}:0002:0000"
     assert client.timeout == 42
     assert client.identity["specification"] == DEFAULT_LIGHTHOUSE_SPECIFICATION.to_dict()
+
+
+def test_backend_client_builds_without_legacy_activation(tmp_path: Path) -> None:
+    media = tmp_path / "media"
+    media.mkdir()
+    source = media / "source.mp4"
+    source.write_bytes(b"source")
+    http = FakeHTTPClient(_health_payload(), {})
+    client = LighthouseWorkerClient(
+        endpoint="http://127.0.0.1:8782",
+        api_key=TOKEN,
+        input_root=media,
+        cache_dir=tmp_path / "cache",
+        client=http,
+    )
+
+    descriptor = client.build_video_source("video-1", source, 4.0)
+
+    assert descriptor["generation_id"] == "b" * 32
+    assert descriptor["video_id"] == "video-1"
+    assert [url for url, _payload in http.posts] == [
+        "http://127.0.0.1:8782/v1/build"
+    ]
+
+
+def test_backend_client_rejects_hits_from_an_unbound_generation(
+    tmp_path: Path,
+) -> None:
+    descriptor = {
+        "duration_seconds": 4.0,
+        "generation_id": "b" * 32,
+        "manifest_sha256": "c" * 64,
+        "source_sha256": SOURCE_SHA256,
+        "source_size_bytes": 10,
+        "specification_hash": DEFAULT_LIGHTHOUSE_SPECIFICATION.identity,
+        "video_id": "video-1",
+    }
+    http = FakeHTTPClient(_health_payload(), {})
+    client = LighthouseWorkerClient(
+        endpoint="http://127.0.0.1:8782",
+        api_key=TOKEN,
+        input_root=tmp_path,
+        cache_dir=tmp_path / "cache",
+        client=http,
+    )
+
+    def post_with_wrong_generation(
+        url: str,
+        *,
+        json: object,
+        **_kwargs: object,
+    ) -> FakeHTTPResponse:
+        assert url.endswith("/search")
+        assert isinstance(json, dict)
+        bindings = json["generation_bindings"]
+        assert isinstance(bindings, list)
+        bindings_identity = sha256(
+            json.dumps(
+                bindings,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        return FakeHTTPResponse(
+            {
+                "schema_version": LIGHTHOUSE_WORKER_SCHEMA_VERSION,
+                "request_id": json["request_id"],
+                "specification_hash": DEFAULT_LIGHTHOUSE_SPECIFICATION.identity,
+                "model_identity": LIGHTHOUSE_MODEL_IDENTITY,
+                "runtime_identity": LIGHTHOUSE_WORKER_RUNTIME_IDENTITY,
+                "generation_bindings_sha256": bindings_identity,
+                "hits": [
+                    {
+                        "video_id": "video-1",
+                        "generation_id": "d" * 32,
+                        "window_index": 0,
+                        "rank": 0,
+                        "start": 1.0,
+                        "end": 3.0,
+                        "score": 0.9,
+                    }
+                ],
+            }
+        )
+
+    http.post = post_with_wrong_generation  # type: ignore[method-assign]
+
+    with pytest.raises(RuntimeError, match="worker search failed"):
+        client.search_generations(
+            "player shoots",
+            {"video-1": descriptor},
+            limit=12,
+        )
 
 
 def test_client_rejects_remote_endpoint_and_response_identity_mismatch(

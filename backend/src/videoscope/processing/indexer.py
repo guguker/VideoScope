@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import logging
 import inspect
+import logging
+from dataclasses import dataclass
 from pathlib import Path
 import shutil
 from threading import Event, Thread
@@ -12,11 +13,17 @@ from videoscope.artifacts import (
     IndexingSpecifications,
     StageKind,
     StageRun,
+    StageSpecification,
     StageState,
     TextVectorBuildPlan,
     TextVectorBuildReceipt,
     TextVectorIndexSpecification,
     validate_artifact_identifier,
+)
+from videoscope.jobs import (
+    JobFenceError,
+    JobState,
+    VideoIndexPlanSnapshot,
 )
 from videoscope.media.ffmpeg import FFmpeg
 from videoscope.providers.scenes import SceneDetector
@@ -36,6 +43,27 @@ class TextVectorLeaseLost(RuntimeError):
     pass
 
 
+class JobCancelled(RuntimeError):
+    """Cooperative stop requested for the currently fenced durable job."""
+
+
+@dataclass(frozen=True, slots=True)
+class VideoIndexExecutionContext:
+    """Immutable ownership and plan snapshot for one durable job attempt."""
+
+    job_id: str
+    execution_token: str
+    plan: VideoIndexPlanSnapshot
+
+    def __post_init__(self) -> None:
+        if type(self.job_id) is not str or not self.job_id:
+            raise ValueError("video index execution context requires a job id")
+        if type(self.execution_token) is not str or not self.execution_token:
+            raise ValueError("video index execution context requires an execution token")
+        if not isinstance(self.plan, VideoIndexPlanSnapshot):
+            raise ValueError("video index execution context requires a validated plan")
+
+
 class _TextVectorBuildHeartbeat:
     def __init__(
         self,
@@ -44,11 +72,13 @@ class _TextVectorBuildHeartbeat:
         *,
         lease_seconds: int,
         interval: float,
+        execution_token: str | None = None,
     ) -> None:
         self.repository = repository
         self.generation_id = generation_id
         self.lease_seconds = lease_seconds
         self.interval = interval
+        self.execution_token = execution_token
         self._stop = Event()
         self._error: Exception | None = None
         self._thread = Thread(
@@ -60,10 +90,17 @@ class _TextVectorBuildHeartbeat:
     def _run(self) -> None:
         while not self._stop.wait(self.interval):
             try:
-                self.repository.heartbeat_text_vector_build(
-                    self.generation_id,
-                    lease_seconds=self.lease_seconds,
-                )
+                if self.execution_token is None:
+                    self.repository.heartbeat_text_vector_build(
+                        self.generation_id,
+                        lease_seconds=self.lease_seconds,
+                    )
+                else:
+                    self.repository.heartbeat_text_vector_build(
+                        self.generation_id,
+                        lease_seconds=self.lease_seconds,
+                        execution_token=self.execution_token,
+                    )
             except Exception as error:
                 self._error = error
                 return
@@ -173,6 +210,16 @@ class DenseFrameExtractor(Protocol):
 
 
 class VisualIndex(Protocol):
+    def build_video_source(
+        self,
+        video_id: str,
+        source: Path,
+        duration: float,
+        extractor: DenseFrameExtractor,
+        *,
+        frames_dir: Path | None = None,
+    ) -> dict[str, object]: ...
+
     def replace_video_source(
         self,
         video_id: str,
@@ -185,6 +232,13 @@ class VisualIndex(Protocol):
 
 
 class MomentRetriever(Protocol):
+    def build_video_source(
+        self,
+        video_id: str,
+        source: Path,
+        duration: float,
+    ) -> dict[str, object]: ...
+
     def prepare(self, video_id: str, source: Path, duration: float) -> None: ...
 
 
@@ -264,12 +318,24 @@ class Indexer:
         video_id: str,
         specifications: IndexingSpecifications,
         kind: StageKind,
+        *,
+        context: VideoIndexExecutionContext | None = None,
     ) -> StageRun:
         queued = self.repository.create_stage_run(
             video_id=video_id,
             specification=specifications.for_kind(kind),
+            job_id=context.job_id if context is not None else None,
+            execution_token=(
+                context.execution_token if context is not None else None
+            ),
         )
-        return self.repository.transition_stage_run(queued.run_id, StageState.RUNNING)
+        return self.repository.transition_stage_run(
+            queued.run_id,
+            StageState.RUNNING,
+            execution_token=(
+                context.execution_token if context is not None else None
+            ),
+        )
 
     def _resolve_indexing_plan(self) -> tuple[IndexingSpecifications, object | None]:
         resolved = self.specification_resolver()
@@ -281,7 +347,19 @@ class Indexer:
             raise ValueError("indexing specification resolver returned invalid data")
         return specifications, prompt_snapshot
 
-    def _verify_run_specification(self, run: StageRun) -> None:
+    def _verify_run_specification(
+        self,
+        run: StageRun,
+        *,
+        context: VideoIndexExecutionContext | None = None,
+    ) -> None:
+        if context is not None:
+            planned = context.plan.for_kind(run.stage_kind)
+            if planned.specification_hash != run.specification_hash:
+                raise IndexingSpecificationChanged(
+                    "durable indexing stage differs from its pinned plan"
+                )
+            return
         try:
             current, _prompt_snapshot = self._resolve_indexing_plan()
         except (TypeError, ValueError) as error:
@@ -291,17 +369,141 @@ class Indexer:
         if current.for_kind(run.stage_kind).specification_hash != run.specification_hash:
             raise IndexingSpecificationChanged("indexing specification changed during stage")
 
+    def _translate_job_cancellation(
+        self,
+        context: VideoIndexExecutionContext | None,
+        *,
+        cause: BaseException,
+    ) -> None:
+        if context is None:
+            return
+        try:
+            job = self.repository.get_video_index_job(context.job_id)
+        except Exception:
+            return
+        if job is not None and (
+            job.state is JobState.CANCELLED
+            or (
+                job.state is JobState.RUNNING
+                and job.execution_token == context.execution_token
+                and job.cancel_requested_at is not None
+            )
+        ):
+            raise JobCancelled("video index job cancellation was requested") from cause
+
+    def _checkpoint(
+        self,
+        context: VideoIndexExecutionContext | None,
+        *,
+        progress: float,
+        stage: str,
+    ) -> None:
+        if context is None:
+            return
+        try:
+            self.repository.checkpoint_video_index_job(
+                context.job_id,
+                execution_token=context.execution_token,
+                progress=progress,
+                stage=stage,
+            )
+        except Exception as error:
+            self._translate_job_cancellation(context, cause=error)
+            raise
+
+    def _validate_execution_context(
+        self,
+        video_id: str,
+        context: VideoIndexExecutionContext,
+    ) -> None:
+        job = self.repository.get_video_index_job(context.job_id)
+        if job is None:
+            raise KeyError(context.job_id)
+        if job.video_id != video_id or job.plan_hash != context.plan.plan_hash:
+            raise ValueError("video index execution context does not match its job")
+        persisted_plan = self.repository.get_video_index_job_plan(context.job_id)
+        if (
+            persisted_plan is None
+            or persisted_plan.canonical_json != context.plan.canonical_json
+        ):
+            raise ValueError("video index execution context plan is not persisted")
+        if (
+            job.state is not JobState.RUNNING
+            or job.execution_token != context.execution_token
+        ):
+            raise JobFenceError("video index execution token does not own this attempt")
+        if job.cancel_requested_at is not None:
+            raise JobCancelled("video index job cancellation was requested")
+
     def _record_not_configured(
         self,
         video_id: str,
         specifications: IndexingSpecifications,
         kind: StageKind,
+        *,
+        context: VideoIndexExecutionContext | None = None,
+    ) -> None:
+        self._record_specification_not_configured(
+            video_id,
+            specifications.for_kind(kind),
+            context=context,
+        )
+
+    def _record_specification_not_configured(
+        self,
+        video_id: str,
+        specification: StageSpecification,
+        *,
+        context: VideoIndexExecutionContext | None = None,
     ) -> None:
         queued = self.repository.create_stage_run(
             video_id=video_id,
-            specification=specifications.for_kind(kind),
+            specification=specification,
+            job_id=context.job_id if context is not None else None,
+            execution_token=(
+                context.execution_token if context is not None else None
+            ),
         )
-        self.repository.transition_stage_run(queued.run_id, StageState.NOT_CONFIGURED)
+        self.repository.transition_stage_run(
+            queued.run_id,
+            StageState.NOT_CONFIGURED,
+            execution_token=(
+                context.execution_token if context is not None else None
+            ),
+        )
+
+    def _record_missing_external_provider(
+        self,
+        video_id: str,
+        *,
+        kind: StageKind,
+        context: VideoIndexExecutionContext,
+        warning: str,
+        warnings: list[str],
+    ) -> None:
+        specification = context.plan.for_kind(kind)
+        boundary = specification.parameters.get("boundary")
+        if boundary == "disabled":
+            self._record_specification_not_configured(
+                video_id,
+                specification,
+                context=context,
+            )
+            return
+        if boundary != "isolated-worker":
+            raise ValueError("durable external provider boundary is invalid")
+        queued = self.repository.create_stage_run(
+            video_id=video_id,
+            specification=specification,
+            job_id=context.job_id,
+            execution_token=context.execution_token,
+        )
+        self._record_failed(
+            queued,
+            f"{kind.value}_provider_unavailable",
+            context=context,
+        )
+        warnings.append(warning)
 
     def _record_failed(
         self,
@@ -309,6 +511,7 @@ class Indexer:
         error_code: str,
         *,
         error: Exception | None = None,
+        context: VideoIndexExecutionContext | None = None,
     ) -> None:
         if error is not None:
             logger.warning(
@@ -317,11 +520,18 @@ class Indexer:
                 run.video_id,
                 exc_info=error,
             )
-        self.repository.transition_stage_run(
-            run.run_id,
-            StageState.FAILED,
-            error_code=error_code,
-        )
+        try:
+            self.repository.transition_stage_run(
+                run.run_id,
+                StageState.FAILED,
+                error_code=error_code,
+                execution_token=(
+                    context.execution_token if context is not None else None
+                ),
+            )
+        except Exception as transition_error:
+            self._translate_job_cancellation(context, cause=transition_error)
+            raise
 
     def _validated_generations_root(self, video_id: str) -> Path:
         validate_artifact_identifier(video_id, field_name="thumbnail video id")
@@ -372,12 +582,29 @@ class Indexer:
         duration: float,
         specifications: IndexingSpecifications,
         warnings: list[str],
+        *,
+        context: VideoIndexExecutionContext | None = None,
     ) -> tuple[bool, list[tuple[float, float, Path]]]:
-        run = self._create_running_stage(video_id, specifications, StageKind.SCENES)
+        run = self._create_running_stage(
+            video_id,
+            specifications,
+            StageKind.SCENES,
+            context=context,
+        )
         try:
+            self._checkpoint(context, progress=0.08, stage="scenes")
             scene_intervals = self.scenes.detect(source, duration)
+            self._checkpoint(context, progress=0.10, stage="scenes")
+        except JobCancelled:
+            raise
         except Exception as error:
-            self._record_failed(run, "scene_provider_failed", error=error)
+            self._translate_job_cancellation(context, cause=error)
+            self._record_failed(
+                run,
+                "scene_provider_failed",
+                error=error,
+                context=context,
+            )
             warnings.append("scenes stage failed")
             return False, []
 
@@ -401,11 +628,13 @@ class Indexer:
                 filename = f"scene-{index:04d}.jpg"
                 temporary_path = temporary_dir / filename
                 final_path = final_dir / filename
+                self._checkpoint(context, progress=0.12, stage="scenes")
                 self.ffmpeg.extract_frame(
                     source,
                     temporary_path,
                     start + (end - start) / 2,
                 )
+                self._checkpoint(context, progress=0.12, stage="scenes")
                 candidates.append(
                     SegmentRecord(
                         id=uuid4().hex,
@@ -420,15 +649,20 @@ class Indexer:
                     )
                 )
                 frame_paths.append((start, end, final_path))
-            self._verify_run_specification(run)
+            self._verify_run_specification(run, context=context)
+            self._checkpoint(context, progress=0.20, stage="scenes")
             temporary_dir.replace(final_dir)
             published = True
+            self._checkpoint(context, progress=0.22, stage="scenes")
             self.repository.commit_segment_generation(
                 run.run_id,
                 segments=candidates,
                 generation_id=generation_id,
                 video_thumbnail_path=(
                     str(frame_paths[0][2]) if frame_paths else None
+                ),
+                execution_token=(
+                    context.execution_token if context is not None else None
                 ),
             )
         except Exception as error:
@@ -444,12 +678,20 @@ class Indexer:
                     video_id,
                     exc_info=True,
                 )
+            if isinstance(error, JobCancelled):
+                raise
+            self._translate_job_cancellation(context, cause=error)
             error_code = (
                 "scene_specification_changed"
                 if isinstance(error, IndexingSpecificationChanged)
                 else "scene_build_failed"
             )
-            self._record_failed(run, error_code, error=error)
+            self._record_failed(
+                run,
+                error_code,
+                error=error,
+                context=context,
+            )
             warnings.append("scenes stage failed")
             return False, []
 
@@ -462,39 +704,65 @@ class Indexer:
         specifications: IndexingSpecifications,
         prompt_snapshot: object | None,
         warnings: list[str],
+        *,
+        context: VideoIndexExecutionContext | None = None,
     ) -> None:
         if self.speech is None:
-            self._record_not_configured(video_id, specifications, StageKind.SPEECH)
+            self._record_not_configured(
+                video_id,
+                specifications,
+                StageKind.SPEECH,
+                context=context,
+            )
             return
-        run = self._create_running_stage(video_id, specifications, StageKind.SPEECH)
+        run = self._create_running_stage(
+            video_id,
+            specifications,
+            StageKind.SPEECH,
+            context=context,
+        )
         try:
             transcribe = self.speech.transcribe
             accepts_prompt_snapshot = "prompt_snapshot" in inspect.signature(
                 transcribe
             ).parameters
+            self._checkpoint(context, progress=0.25, stage="speech")
             transcribed = (
                 transcribe(source, prompt_snapshot=prompt_snapshot)
-                if accepts_prompt_snapshot
+                if context is not None or accepts_prompt_snapshot
                 else transcribe(source)
             )
+            self._checkpoint(context, progress=0.35, stage="speech")
             candidates = [
                 segment
                 for item in merge_timed_text(transcribed)
                 if (segment := self._timed_text_segment(video_id, "speech", item))
                 is not None
             ]
-            self._verify_run_specification(run)
+            self._verify_run_specification(run, context=context)
+            self._checkpoint(context, progress=0.40, stage="speech")
             self.repository.commit_segment_generation(
                 run.run_id,
                 segments=candidates,
+                execution_token=(
+                    context.execution_token if context is not None else None
+                ),
             )
+        except JobCancelled:
+            raise
         except Exception as error:
+            self._translate_job_cancellation(context, cause=error)
             error_code = (
                 "speech_specification_changed"
                 if isinstance(error, IndexingSpecificationChanged)
                 else "speech_provider_failed"
             )
-            self._record_failed(run, error_code, error=error)
+            self._record_failed(
+                run,
+                error_code,
+                error=error,
+                context=context,
+            )
             warnings.append("speech stage failed")
 
     def _index_ocr(
@@ -505,19 +773,35 @@ class Indexer:
         scenes_available: bool,
         specifications: IndexingSpecifications,
         warnings: list[str],
+        context: VideoIndexExecutionContext | None = None,
     ) -> None:
         if self.ocr is None:
-            self._record_not_configured(video_id, specifications, StageKind.OCR)
+            self._record_not_configured(
+                video_id,
+                specifications,
+                StageKind.OCR,
+                context=context,
+            )
             return
-        run = self._create_running_stage(video_id, specifications, StageKind.OCR)
+        run = self._create_running_stage(
+            video_id,
+            specifications,
+            StageKind.OCR,
+            context=context,
+        )
         if not scenes_available:
-            self._record_failed(run, "scene_dependency_unavailable")
+            self._record_failed(
+                run,
+                "scene_dependency_unavailable",
+                context=context,
+            )
             warnings.append("ocr stage failed")
             return
         try:
             candidates: list[SegmentRecord] = []
             for index, (start, end, frame_path) in enumerate(frame_paths):
                 unique: dict[str, tuple[str, float]] = {}
+                self._checkpoint(context, progress=0.52, stage="vision")
                 for text, confidence in self.ocr.read(frame_path):
                     normalized = " ".join(text.split()).strip()
                     key = normalized.casefold()
@@ -526,6 +810,7 @@ class Indexer:
                     current = unique.get(key)
                     if current is None or confidence > current[1]:
                         unique[key] = (normalized, confidence)
+                self._checkpoint(context, progress=0.52, stage="vision")
                 if not unique:
                     continue
                 ordered = list(unique.values())
@@ -543,15 +828,30 @@ class Indexer:
                         thumbnail_path=str(frame_path),
                     )
                 )
-            self._verify_run_specification(run)
-            self.repository.commit_segment_generation(run.run_id, segments=candidates)
+            self._verify_run_specification(run, context=context)
+            self._checkpoint(context, progress=0.58, stage="vision")
+            self.repository.commit_segment_generation(
+                run.run_id,
+                segments=candidates,
+                execution_token=(
+                    context.execution_token if context is not None else None
+                ),
+            )
+        except JobCancelled:
+            raise
         except Exception as error:
+            self._translate_job_cancellation(context, cause=error)
             error_code = (
                 "ocr_specification_changed"
                 if isinstance(error, IndexingSpecificationChanged)
                 else "ocr_provider_failed"
             )
-            self._record_failed(run, error_code, error=error)
+            self._record_failed(
+                run,
+                error_code,
+                error=error,
+                context=context,
+            )
             warnings.append("ocr stage failed")
 
     def _index_objects(
@@ -562,19 +862,36 @@ class Indexer:
         scenes_available: bool,
         specifications: IndexingSpecifications,
         warnings: list[str],
+        context: VideoIndexExecutionContext | None = None,
     ) -> None:
         if self.objects is None:
-            self._record_not_configured(video_id, specifications, StageKind.OBJECTS)
+            self._record_not_configured(
+                video_id,
+                specifications,
+                StageKind.OBJECTS,
+                context=context,
+            )
             return
-        run = self._create_running_stage(video_id, specifications, StageKind.OBJECTS)
+        run = self._create_running_stage(
+            video_id,
+            specifications,
+            StageKind.OBJECTS,
+            context=context,
+        )
         if not scenes_available:
-            self._record_failed(run, "scene_dependency_unavailable")
+            self._record_failed(
+                run,
+                "scene_dependency_unavailable",
+                context=context,
+            )
             warnings.append("objects stage failed")
             return
         try:
             candidates: list[SegmentRecord] = []
             for index, (start, end, frame_path) in enumerate(frame_paths):
+                self._checkpoint(context, progress=0.66, stage="vision")
                 tags = self.objects.detect(frame_path)
+                self._checkpoint(context, progress=0.66, stage="vision")
                 if not tags:
                     continue
                 candidates.append(
@@ -600,15 +917,30 @@ class Indexer:
                         thumbnail_path=str(frame_path),
                     )
                 )
-            self._verify_run_specification(run)
-            self.repository.commit_segment_generation(run.run_id, segments=candidates)
+            self._verify_run_specification(run, context=context)
+            self._checkpoint(context, progress=0.72, stage="vision")
+            self.repository.commit_segment_generation(
+                run.run_id,
+                segments=candidates,
+                execution_token=(
+                    context.execution_token if context is not None else None
+                ),
+            )
+        except JobCancelled:
+            raise
         except Exception as error:
+            self._translate_job_cancellation(context, cause=error)
             error_code = (
                 "objects_specification_changed"
                 if isinstance(error, IndexingSpecificationChanged)
                 else "objects_provider_failed"
             )
-            self._record_failed(run, error_code, error=error)
+            self._record_failed(
+                run,
+                error_code,
+                error=error,
+                context=context,
+            )
             warnings.append("objects stage failed")
 
     def _replace_text_vectors(
@@ -616,22 +948,28 @@ class Indexer:
         video_id: str,
         specifications: IndexingSpecifications,
         warnings: list[str],
+        *,
+        context: VideoIndexExecutionContext | None = None,
     ) -> None:
-        try:
-            current, _prompt_snapshot = self._resolve_indexing_plan()
-        except Exception as error:
-            logger.warning(
-                "Text vector specification resolution failed for %s",
-                video_id,
-                exc_info=error,
-            )
-            warnings.append("text vector stage failed")
-            return
+        if context is None:
+            try:
+                current, _prompt_snapshot = self._resolve_indexing_plan()
+            except Exception as error:
+                logger.warning(
+                    "Text vector specification resolution failed for %s",
+                    video_id,
+                    exc_info=error,
+                )
+                warnings.append("text vector stage failed")
+                return
+        else:
+            current = specifications
         if not bool(getattr(self.vector_index, "available", True)):
             self._record_not_configured(
                 video_id,
                 current,
                 StageKind.TEXT_VECTORS,
+                context=context,
             )
             warnings.append("text vector stage not configured")
             return
@@ -647,6 +985,7 @@ class Indexer:
                 video_id,
                 current,
                 StageKind.TEXT_VECTORS,
+                context=context,
             )
             with self.text_vector_storage_gate.build_activity():
                 self._build_text_vector_generation(
@@ -654,7 +993,26 @@ class Indexer:
                     current,
                     run,
                     warnings,
+                    context=context,
                 )
+            return
+
+        if context is not None:
+            # Durable attempts may only publish through the immutable,
+            # receipt-validated generation protocol. The in-process replacement
+            # seam below is retained solely for legacy callers.
+            run = self._create_running_stage(
+                video_id,
+                current,
+                StageKind.TEXT_VECTORS,
+                context=context,
+            )
+            self._record_failed(
+                run,
+                "text_vector_generation_unverified",
+                context=context,
+            )
+            warnings.append("text vector generation unverified")
             return
 
         # Compatibility seam for old test/in-process indexes. The write remains
@@ -663,17 +1021,32 @@ class Indexer:
             video_id,
             current,
             StageKind.TEXT_VECTORS,
+            context=context,
         )
         try:
             segments = self.repository.list_current_active_segments(
                 current.semantic_segment_specifications,
                 video_ids=[video_id],
             )
+            self._checkpoint(context, progress=0.84, stage="index")
             self.vector_index.replace_video(video_id, segments)
-            self._record_failed(run, "text_vector_generation_unverified")
+            self._checkpoint(context, progress=0.88, stage="index")
+            self._record_failed(
+                run,
+                "text_vector_generation_unverified",
+                context=context,
+            )
             warnings.append("text vector generation unverified")
+        except JobCancelled:
+            raise
         except Exception as error:
-            self._record_failed(run, "text_vector_index_failed", error=error)
+            self._translate_job_cancellation(context, cause=error)
+            self._record_failed(
+                run,
+                "text_vector_index_failed",
+                error=error,
+                context=context,
+            )
             warnings.append("text vector stage failed")
 
     def _build_text_vector_generation(
@@ -682,6 +1055,8 @@ class Indexer:
         specifications: IndexingSpecifications,
         run: StageRun,
         warnings: list[str],
+        *,
+        context: VideoIndexExecutionContext | None = None,
     ) -> None:
         plan: TextVectorBuildPlan | None = None
         try:
@@ -697,22 +1072,37 @@ class Indexer:
                 index_specification=index_specification,
                 semantic_specifications=specifications.semantic_segment_specifications,
                 lease_seconds=self.text_vector_lease_seconds,
+                execution_token=(
+                    context.execution_token if context is not None else None
+                ),
             )
             with _TextVectorBuildHeartbeat(
                 self.repository,
                 plan.generation_id,
                 lease_seconds=self.text_vector_lease_seconds,
                 interval=self.text_vector_heartbeat_interval,
+                execution_token=(
+                    context.execution_token if context is not None else None
+                ),
             ):
+                self._checkpoint(context, progress=0.84, stage="index")
                 receipt = self.vector_index.build_generation(plan)
+                self._checkpoint(context, progress=0.88, stage="index")
             if not isinstance(receipt, TextVectorBuildReceipt):
                 raise ValueError("vector writer returned an invalid generation receipt")
-            self._verify_run_specification(run)
+            self._verify_run_specification(run, context=context)
+            self._checkpoint(context, progress=0.89, stage="index")
             self.repository.commit_text_vector_generation(
                 run.run_id,
                 receipt=receipt,
+                execution_token=(
+                    context.execution_token if context is not None else None
+                ),
             )
+        except JobCancelled:
+            raise
         except Exception as error:
+            self._translate_job_cancellation(context, cause=error)
             message = str(error)
             if isinstance(error, IndexingSpecificationChanged):
                 error_code = "text_vector_specification_changed"
@@ -739,6 +1129,9 @@ class Indexer:
                     self.repository.fail_text_vector_build(
                         run.run_id,
                         error_code=error_code,
+                        execution_token=(
+                            context.execution_token if context is not None else None
+                        ),
                     )
                 except Exception as cleanup_error:
                     logger.warning(
@@ -748,10 +1141,231 @@ class Indexer:
                     )
                     persisted = self.repository.get_stage_run(run.run_id)
                     if persisted is not None and persisted.state is StageState.RUNNING:
-                        self._record_failed(run, error_code)
+                        self._record_failed(run, error_code, context=context)
             else:
-                self._record_failed(run, error_code)
+                self._record_failed(run, error_code, context=context)
             warnings.append("text vector stage failed")
+
+    def _index_external_generation(
+        self,
+        video_id: str,
+        source: Path,
+        duration: float,
+        *,
+        kind: StageKind,
+        provider: object,
+        context: VideoIndexExecutionContext,
+        progress_before: float,
+        progress_after_build: float,
+        progress_after_commit: float,
+        warning: str,
+        warnings: list[str],
+    ) -> None:
+        specification = context.plan.for_kind(kind)
+        queued = self.repository.create_stage_run(
+            video_id=video_id,
+            specification=specification,
+            job_id=context.job_id,
+            execution_token=context.execution_token,
+        )
+        run = self.repository.transition_stage_run(
+            queued.run_id,
+            StageState.RUNNING,
+            execution_token=context.execution_token,
+        )
+        try:
+            self._checkpoint(
+                context,
+                progress=progress_before,
+                stage=kind.value,
+            )
+            build = getattr(provider, "build_video_source", None)
+            if not callable(build):
+                raise RuntimeError("durable external build API is unavailable")
+            if kind is StageKind.VISUAL_DENSE:
+                descriptor = build(
+                    video_id,
+                    source,
+                    duration,
+                    self.ffmpeg,
+                    frames_dir=self.thumbnails_dir / video_id,
+                )
+            elif kind is StageKind.LIGHTHOUSE:
+                descriptor = build(video_id, source, duration)
+            else:
+                raise ValueError("unsupported external indexing stage")
+            self._checkpoint(
+                context,
+                progress=progress_after_build,
+                stage=kind.value,
+            )
+            self._verify_run_specification(run, context=context)
+            self.repository.commit_external_index_generation(
+                run.run_id,
+                descriptor=descriptor,
+                execution_token=context.execution_token,
+            )
+            self._checkpoint(
+                context,
+                progress=progress_after_commit,
+                stage=kind.value,
+            )
+        except JobCancelled:
+            raise
+        except Exception as error:
+            self._translate_job_cancellation(context, cause=error)
+            self._record_failed(
+                run,
+                f"{kind.value}_generation_failed",
+                error=error,
+                context=context,
+            )
+            warnings.append(warning)
+
+    def process_durable(
+        self,
+        video_id: str,
+        *,
+        context: VideoIndexExecutionContext,
+    ) -> tuple[str, ...]:
+        """Run one already-claimed job without consulting mutable runtime settings.
+
+        Job completion, failure, and cancellation acknowledgement intentionally
+        belong to the dispatcher that owns activation of the durable attempt.
+        """
+        if not isinstance(context, VideoIndexExecutionContext):
+            raise ValueError("durable video indexing requires an execution context")
+        self._validate_execution_context(video_id, context)
+        video = self.repository.get_video(video_id)
+        if video is None:
+            raise KeyError(video_id)
+        source = Path(video.media_path)
+        specifications = context.plan.specifications
+        prompt_snapshot = context.plan.whisper_prompt_snapshot
+        warnings: list[str] = []
+
+        try:
+            self._checkpoint(context, progress=0.01, stage="probe")
+            self.repository.verify_asset_identity(video_id, media_root=self.media_root)
+            self._checkpoint(context, progress=0.02, stage="probe")
+            self._checkpoint(context, progress=0.03, stage="probe")
+            probe = self.ffmpeg.probe(source)
+            self._checkpoint(context, progress=0.08, stage="scenes")
+            if probe.duration <= 0:
+                raise ValueError("video duration is zero")
+            # Probe metadata is deterministic for the immutable source. This is
+            # deliberately non-terminal; job state/progress remain fenced by
+            # checkpoint_video_index_job and the owning dispatcher.
+            self.repository.update_video(
+                video_id,
+                duration=probe.duration,
+                width=probe.width,
+                height=probe.height,
+                fps=probe.fps,
+            )
+
+            scenes_available, frame_paths = self._index_scenes(
+                video_id,
+                source,
+                probe.duration,
+                specifications,
+                warnings,
+                context=context,
+            )
+            self._checkpoint(context, progress=0.25, stage="speech")
+            self._index_speech(
+                video_id,
+                source,
+                specifications,
+                prompt_snapshot,
+                warnings,
+                context=context,
+            )
+
+            self._checkpoint(context, progress=0.45, stage="vision")
+            self._index_ocr(
+                video_id,
+                frame_paths,
+                scenes_available=scenes_available,
+                specifications=specifications,
+                warnings=warnings,
+                context=context,
+            )
+            self._index_objects(
+                video_id,
+                frame_paths,
+                scenes_available=scenes_available,
+                specifications=specifications,
+                warnings=warnings,
+                context=context,
+            )
+
+            self._checkpoint(context, progress=0.80, stage="index")
+            self._replace_text_vectors(
+                video_id,
+                specifications,
+                warnings,
+                context=context,
+            )
+            if self.visual_index is not None:
+                self._index_external_generation(
+                    video_id,
+                    source,
+                    probe.duration,
+                    kind=StageKind.VISUAL_DENSE,
+                    provider=self.visual_index,
+                    context=context,
+                    progress_before=0.91,
+                    progress_after_build=0.92,
+                    progress_after_commit=0.94,
+                    warning="dense visual stage failed",
+                    warnings=warnings,
+                )
+            else:
+                self._record_missing_external_provider(
+                    video_id,
+                    kind=StageKind.VISUAL_DENSE,
+                    context=context,
+                    warning="dense visual stage failed",
+                    warnings=warnings,
+                )
+            if self.moment_retriever is not None:
+                self._index_external_generation(
+                    video_id,
+                    source,
+                    probe.duration,
+                    kind=StageKind.LIGHTHOUSE,
+                    provider=self.moment_retriever,
+                    context=context,
+                    progress_before=0.95,
+                    progress_after_build=0.96,
+                    progress_after_commit=0.97,
+                    warning="lighthouse stage failed",
+                    warnings=warnings,
+                )
+            else:
+                self._record_missing_external_provider(
+                    video_id,
+                    kind=StageKind.LIGHTHOUSE,
+                    context=context,
+                    warning="lighthouse stage failed",
+                    warnings=warnings,
+                )
+            self._checkpoint(context, progress=0.99, stage="finalizing")
+        except JobCancelled:
+            raise
+        except Exception as error:
+            self._translate_job_cancellation(context, cause=error)
+            logger.exception("Durable video processing failed for %s", video_id)
+            raise
+
+        if warnings:
+            logger.warning(
+                "Optional indexing stages failed for %s: %s",
+                video_id,
+                "; ".join(warnings),
+            )
+        return tuple(warnings)
 
     def process(self, video_id: str) -> None:
         video = self.repository.get_video(video_id)

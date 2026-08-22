@@ -1,0 +1,35 @@
+{
+  "algorithm_version": "mean-pooling-v1",
+  "dimensions": 768,
+  "files": [
+    {
+      "relative_path": "config.json",
+      "sha256": "14533f158fb2476510b3a83256386b983daa8cfa799ea35217c89947be63835e",
+      "size_bytes": 751
+    },
+    {
+      "relative_path": "onnx/model.onnx",
+      "sha256": "92f682c55d39e728187c6bffd488f17462d4e05e3c5fe86ef9ba6f38d66122ed",
+      "size_bytes": 1110059084
+    },
+    {
+      "relative_path": "special_tokens_map.json",
+      "sha256": "06e405a36dfe4b9604f484f6a1e619af1a7f7d09e34a8555eb0b77b66318067f",
+      "size_bytes": 280
+    },
+    {
+      "relative_path": "tokenizer.json",
+      "sha256": "b60b6b43406a48bf3638526314f3d232d97058bc93472ff2de930d43686fa441",
+      "size_bytes": 17082913
+    },
+    {
+      "relative_path": "tokenizer_config.json",
+      "sha256": "efb5c0d09722e5fe59a462cd2a9976ee216d55b037597d997cd3fe833216da15",
+      "size_bytes": 418
+    }
+  ],
+  "model_name": "sentence-transformers/paraphrase-multilingual-mpnet-base-v2",
+  "model_repository": "xenova/paraphrase-multilingual-mpnet-base-v2",
+  "model_revision": "e5d116277351513fd260955ece953ecddde7046e",
+  "runtime_version": "0.8.0"
+}

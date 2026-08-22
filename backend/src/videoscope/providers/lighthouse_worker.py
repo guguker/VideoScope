@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import OrderedDict
 from dataclasses import dataclass
 from hashlib import sha256
 import hmac
@@ -55,14 +56,14 @@ from videoscope.storage import atomic_write_json
 
 logger = logging.getLogger(__name__)
 
-LIGHTHOUSE_WORKER_SCHEMA_VERSION = "lighthouse-worker-v1"
+LIGHTHOUSE_WORKER_SCHEMA_VERSION = "lighthouse-worker-v2"
 LIGHTHOUSE_CACHE_SCHEMA_VERSION = 2
 LIGHTHOUSE_MODEL_IDENTITY = f"lighthouse/qd-detr-qvhighlight@sha256:{LIGHTHOUSE_CHECKPOINT_SHA256}"
 LIGHTHOUSE_WORKER_LOCK_SHA256 = (
     "c0fb00e3f7b106bf063b2b31e1dacda66a36ad51153258d2a5cdf0407fa25235"
 )
 LIGHTHOUSE_WORKER_RUNTIME_IDENTITY = (
-    "videoscope-lighthouse-worker-v1|python==3.11.14|platform==aarch64-apple-darwin|"
+    "videoscope-lighthouse-worker-v2|python==3.11.14|platform==aarch64-apple-darwin|"
     f"lock-sha256:{LIGHTHOUSE_WORKER_LOCK_SHA256}"
 )
 MAX_REQUEST_BYTES = 64 * 1024
@@ -119,7 +120,7 @@ class LighthouseSpecification:
             "feature_name": "clip",
             "lighthouse_revision": self.lighthouse_revision,
             "max_window_seconds": self.max_window_seconds,
-            "model_adapter": "videoscope.lighthouse-qd-detr-v2",
+            "model_adapter": "videoscope.lighthouse-qd-detr-v3",
             "preprocessing": {
                 "color": "rgb",
                 "frame_sampling": "temporal-centers-by-checkpoint-clip-length",
@@ -201,6 +202,32 @@ class LighthousePrepareRequest(_ContractModel):
         return _validate_relative_path(value)
 
 
+class LighthouseGenerationBindingPayload(_ContractModel):
+    video_id: str = Field(min_length=1, max_length=64)
+    generation_id: str = Field(pattern=_GENERATION_ID_RE.pattern)
+    source_sha256: str = Field(pattern=_SHA256_RE.pattern)
+    source_size_bytes: int = Field(gt=0)
+    duration_seconds: float = Field(gt=0, le=24 * 60 * 60)
+    specification_hash: str = Field(pattern=_SHA256_RE.pattern)
+    manifest_sha256: str = Field(pattern=_SHA256_RE.pattern)
+
+    @field_validator("video_id")
+    @classmethod
+    def validate_video_id(cls, value: str) -> str:
+        return _validate_video_id(value)
+
+
+def _generation_bindings_identity(
+    bindings: list[LighthouseGenerationBindingPayload] | None,
+) -> str | None:
+    if bindings is None:
+        return None
+    payload = [item.model_dump(mode="json") for item in bindings]
+    return sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
 class LighthouseSearchRequest(_ContractModel):
     schema_version: Literal[LIGHTHOUSE_WORKER_SCHEMA_VERSION]
     request_id: str = Field(pattern=_REQUEST_ID_RE.pattern)
@@ -209,6 +236,11 @@ class LighthouseSearchRequest(_ContractModel):
     runtime_identity: str = Field(min_length=1, max_length=600)
     query: str = Field(min_length=1, max_length=MAX_QUERY_CHARS)
     video_ids: list[str] = Field(min_length=1, max_length=MAX_VIDEO_IDS)
+    generation_bindings: list[LighthouseGenerationBindingPayload] | None = Field(
+        default=None,
+        min_length=1,
+        max_length=MAX_VIDEO_IDS,
+    )
     limit: int = Field(ge=1, le=MAX_HITS)
 
     @field_validator("video_ids")
@@ -217,6 +249,15 @@ class LighthouseSearchRequest(_ContractModel):
         if len(set(value)) != len(value):
             raise ValueError("video IDs must be unique")
         return [_validate_video_id(video_id) for video_id in value]
+
+    @model_validator(mode="after")
+    def validate_generation_ids(self) -> "LighthouseSearchRequest":
+        if self.generation_bindings is None:
+            return self
+        binding_ids = [item.video_id for item in self.generation_bindings]
+        if binding_ids != self.video_ids or len(set(binding_ids)) != len(binding_ids):
+            raise ValueError("generation bindings must bind requested videos in order")
+        return self
 
 
 class LighthouseHitPayload(_ContractModel):
@@ -250,12 +291,27 @@ class LighthousePrepareResponse(_ContractModel):
     generation_id: str = Field(pattern=_GENERATION_ID_RE.pattern)
 
 
+class LighthouseBuildResponse(_ContractModel):
+    schema_version: Literal[LIGHTHOUSE_WORKER_SCHEMA_VERSION]
+    request_id: str = Field(pattern=_REQUEST_ID_RE.pattern)
+    specification_hash: str = Field(pattern=_SHA256_RE.pattern)
+    model_identity: str = Field(min_length=1, max_length=200)
+    runtime_identity: str = Field(min_length=1, max_length=600)
+    video_id: str = Field(min_length=1, max_length=64)
+    generation_id: str = Field(pattern=_GENERATION_ID_RE.pattern)
+    descriptor: LighthouseGenerationBindingPayload
+
+
 class LighthouseSearchResponse(_ContractModel):
     schema_version: Literal[LIGHTHOUSE_WORKER_SCHEMA_VERSION]
     request_id: str = Field(pattern=_REQUEST_ID_RE.pattern)
     specification_hash: str = Field(pattern=_SHA256_RE.pattern)
     model_identity: str = Field(min_length=1, max_length=200)
     runtime_identity: str = Field(min_length=1, max_length=600)
+    generation_bindings_sha256: str | None = Field(
+        default=None,
+        pattern=_SHA256_RE.pattern,
+    )
     hits: list[LighthouseHitPayload] = Field(max_length=MAX_HITS)
 
 
@@ -267,7 +323,10 @@ class LighthouseHealthResponse(_ContractModel):
     specification: dict[str, object]
     specification_hash: str = Field(pattern=_SHA256_RE.pattern)
     loaded: bool
-    operations: list[Literal["prepare", "search"]] = Field(min_length=2, max_length=2)
+    operations: list[Literal["build", "prepare", "search"]] = Field(
+        min_length=3,
+        max_length=3,
+    )
     max_input_bytes: int = Field(gt=0)
     max_query_chars: Literal[MAX_QUERY_CHARS]
     max_video_ids: Literal[MAX_VIDEO_IDS]
@@ -278,9 +337,9 @@ class LighthouseHealthResponse(_ContractModel):
     @classmethod
     def validate_operations(
         cls,
-        value: list[Literal["prepare", "search"]],
-    ) -> list[Literal["prepare", "search"]]:
-        if value != ["prepare", "search"]:
+        value: list[Literal["build", "prepare", "search"]],
+    ) -> list[Literal["build", "prepare", "search"]]:
+        if value != ["build", "prepare", "search"]:
             raise ValueError("operations do not match the contract")
         return value
 
@@ -297,6 +356,8 @@ class LighthouseEncodedWindow:
 class _SourceFingerprint:
     device: int
     inode: int
+    mode: int
+    link_count: int
     size: int
     modified_ns: int
     changed_ns: int
@@ -361,13 +422,18 @@ def _fingerprint(metadata: os.stat_result) -> _SourceFingerprint:
     return _SourceFingerprint(
         device=metadata.st_dev,
         inode=metadata.st_ino,
+        mode=metadata.st_mode,
+        link_count=metadata.st_nlink,
         size=metadata.st_size,
         modified_ns=metadata.st_mtime_ns,
         changed_ns=metadata.st_ctime_ns,
     )
 
 
-def _read_bounded_regular_file(path: Path, max_bytes: int) -> bytes | None:
+def _read_bounded_regular_file_snapshot(
+    path: Path,
+    max_bytes: int,
+) -> tuple[bytes, _SourceFingerprint] | None:
     flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
     try:
         descriptor = os.open(path, flags)
@@ -377,6 +443,7 @@ def _read_bounded_regular_file(path: Path, max_bytes: int) -> bytes | None:
         before = os.fstat(descriptor)
         if (
             not stat.S_ISREG(before.st_mode)
+            or before.st_nlink != 1
             or before.st_size < 0
             or before.st_size > max_bytes
         ):
@@ -394,7 +461,31 @@ def _read_bounded_regular_file(path: Path, max_bytes: int) -> bytes | None:
         or _fingerprint(before) != _fingerprint(after)
     ):
         return None
-    return payload
+    return payload, _fingerprint(after)
+
+
+def _read_bounded_regular_file(path: Path, max_bytes: int) -> bytes | None:
+    snapshot = _read_bounded_regular_file_snapshot(path, max_bytes)
+    return snapshot[0] if snapshot is not None else None
+
+
+def _regular_file_fingerprint(path: Path) -> _SourceFingerprint | None:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError:
+        return None
+    try:
+        metadata = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_nlink != 1
+        or metadata.st_size < 0
+    ):
+        return None
+    return _fingerprint(metadata)
 
 
 def _source_snapshot(path: Path) -> tuple[str, int, _SourceFingerprint]:
@@ -416,6 +507,13 @@ class LighthouseGenerationStore:
     ) -> None:
         self.root = Path(os.path.abspath(root))
         self.specification = specification
+        self._generation_descriptor_cache: OrderedDict[
+            tuple[str, str],
+            tuple[
+                tuple[tuple[str, _SourceFingerprint], ...],
+                dict[str, object],
+            ],
+        ] = OrderedDict()
 
     @staticmethod
     def _reject_unsafe_ancestors(path: Path) -> None:
@@ -594,7 +692,11 @@ class LighthouseGenerationStore:
         self,
         generation: Path,
         generation_id: str,
-    ) -> tuple[dict[str, object], list[LighthouseEncodedWindow]] | None:
+    ) -> tuple[
+        dict[str, object],
+        list[LighthouseEncodedWindow],
+        tuple[tuple[str, _SourceFingerprint], ...],
+    ] | None:
         if (
             _GENERATION_ID_RE.fullmatch(generation_id) is None
             or not generation.is_dir()
@@ -602,9 +704,13 @@ class LighthouseGenerationStore:
         ):
             return None
         manifest_path = generation / "manifest.json"
-        manifest_bytes = _read_bounded_regular_file(manifest_path, MAX_MANIFEST_BYTES)
-        if manifest_bytes is None:
+        manifest_snapshot = _read_bounded_regular_file_snapshot(
+            manifest_path,
+            MAX_MANIFEST_BYTES,
+        )
+        if manifest_snapshot is None:
             return None
+        manifest_bytes, manifest_fingerprint = manifest_snapshot
         try:
             payload: object = json.loads(manifest_bytes.decode("utf-8"))
         except (OSError, UnicodeError, ValueError, TypeError):
@@ -649,6 +755,9 @@ class LighthouseGenerationStore:
         ):
             return None
         windows: list[LighthouseEncodedWindow] = []
+        file_fingerprints: list[tuple[str, _SourceFingerprint]] = [
+            ("manifest.json", manifest_fingerprint)
+        ]
         expected_offset = 0.0
         aggregate_bytes = 0
         try:
@@ -674,12 +783,14 @@ class LighthouseGenerationStore:
                 ):
                     return None
                 window_path = generation / name
-                archive_bytes = _read_bounded_regular_file(
+                archive_snapshot = _read_bounded_regular_file_snapshot(
                     window_path,
                     MAX_FEATURE_ARCHIVE_BYTES,
                 )
-                if archive_bytes is None or not archive_bytes:
+                if archive_snapshot is None or not archive_snapshot[0]:
                     return None
+                archive_bytes, archive_fingerprint = archive_snapshot
+                file_fingerprints.append((name, archive_fingerprint))
                 archive_size = len(archive_bytes)
                 aggregate_bytes += archive_size
                 if (
@@ -724,7 +835,13 @@ class LighthouseGenerationStore:
             return None
         if not math.isclose(expected_offset, float(duration), rel_tol=1e-9, abs_tol=1e-6):
             return None
-        return payload, windows
+        captured = tuple(file_fingerprints)
+        if tuple(
+            (name, _regular_file_fingerprint(generation / name))
+            for name, _fingerprint_value in captured
+        ) != captured:
+            return None
+        return payload, windows, captured
 
     @staticmethod
     def _archive_layout_is_safe(
@@ -785,11 +902,11 @@ class LighthouseGenerationStore:
             return False
         return True
 
-    def _load_generation(
+    def _generation_directory(
         self,
         video_id: str,
         generation_id: str,
-    ) -> tuple[dict[str, object], list[LighthouseEncodedWindow]] | None:
+    ) -> Path | None:
         try:
             video_dir = self._video_dir(video_id)
             generations = video_dir / "generations"
@@ -800,6 +917,20 @@ class LighthouseGenerationStore:
                 generations.resolve(strict=True)
             )
         except (OSError, ValueError):
+            return None
+        return generation
+
+    def _load_generation(
+        self,
+        video_id: str,
+        generation_id: str,
+    ) -> tuple[
+        dict[str, object],
+        list[LighthouseEncodedWindow],
+        tuple[tuple[str, _SourceFingerprint], ...],
+    ] | None:
+        generation = self._generation_directory(video_id, generation_id)
+        if generation is None:
             return None
         return self._load_generation_path(generation, generation_id)
 
@@ -845,6 +976,70 @@ class LighthouseGenerationStore:
         pointer = self._active_pointer(video_id)
         return pointer[0] if pointer is not None else None
 
+    def load_generation(
+        self,
+        video_id: str,
+        generation_id: str,
+    ) -> tuple[str, dict[str, object], list[LighthouseEncodedWindow]] | None:
+        """Load a named immutable generation without consulting active state."""
+        loaded = self._load_generation(video_id, generation_id)
+        if loaded is None:
+            return None
+        manifest, windows, _fingerprints = loaded
+        return generation_id, manifest, windows
+
+    def generation_descriptor(
+        self,
+        video_id: str,
+        generation_id: str,
+        *,
+        force_content_validation: bool = False,
+    ) -> dict[str, object] | None:
+        cache_key = (video_id, generation_id)
+        if force_content_validation:
+            self._generation_descriptor_cache.pop(cache_key, None)
+        cached = self._generation_descriptor_cache.get(cache_key)
+        if cached is not None:
+            fingerprints, descriptor = cached
+            try:
+                generation = self._generation_directory(video_id, generation_id)
+            except ValueError:
+                generation = None
+            if generation is not None and tuple(
+                (name, _regular_file_fingerprint(generation / name))
+                for name, _fingerprint_value in fingerprints
+            ) == fingerprints:
+                self._generation_descriptor_cache.move_to_end(cache_key)
+                return dict(descriptor)
+            self._generation_descriptor_cache.pop(cache_key, None)
+        loaded = self._load_generation(video_id, generation_id)
+        if loaded is None:
+            return None
+        manifest, _windows, fingerprints = loaded
+        manifest_sha256 = sha256(
+            json.dumps(
+                manifest,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode("utf-8")
+        ).hexdigest()
+        descriptor = {
+            "duration_seconds": manifest["duration_seconds"],
+            "generation_id": generation_id,
+            "manifest_sha256": manifest_sha256,
+            "source_sha256": manifest["source_sha256"],
+            "source_size_bytes": manifest["source_size_bytes"],
+            "specification_hash": manifest["specification_hash"],
+            "video_id": video_id,
+        }
+        self._generation_descriptor_cache[cache_key] = (fingerprints, descriptor)
+        self._generation_descriptor_cache.move_to_end(cache_key)
+        while len(self._generation_descriptor_cache) > 128:
+            self._generation_descriptor_cache.popitem(last=False)
+        return dict(descriptor)
+
     def load_active(
         self,
         video_id: str,
@@ -865,7 +1060,7 @@ class LighthouseGenerationStore:
             return None
         if current_pointer != snapshot:
             return None
-        manifest, windows = loaded
+        manifest, windows, _fingerprints = loaded
         return generation_id, manifest, windows
 
     def cache_is_current(self, video_id: str) -> bool:
@@ -946,6 +1141,14 @@ class LighthouseWorkerRuntime(Protocol):
     def build_generation(self, request: LighthousePrepareRequest, source: Path) -> str: ...
 
     def activate_generation(self, video_id: str, generation_id: str) -> None: ...
+
+    def generation_descriptor(
+        self,
+        video_id: str,
+        generation_id: str,
+        *,
+        force_content_validation: bool = False,
+    ) -> dict[str, object] | None: ...
 
     def search(self, request: LighthouseSearchRequest) -> list[LighthouseHitPayload]: ...
 
@@ -1083,12 +1286,49 @@ class LocalLighthouseWorkerRuntime:
     def activate_generation(self, video_id: str, generation_id: str) -> None:
         self.store.activate(video_id, generation_id)
 
+    def generation_descriptor(
+        self,
+        video_id: str,
+        generation_id: str,
+        *,
+        force_content_validation: bool = False,
+    ) -> dict[str, object] | None:
+        return self.store.generation_descriptor(
+            video_id,
+            generation_id,
+            force_content_validation=force_content_validation,
+        )
+
     def search(self, request: LighthouseSearchRequest) -> list[LighthouseHitPayload]:
         cached: list[tuple[str, str, list[LighthouseEncodedWindow]]] = []
+        bindings_by_video = {
+            item.video_id: item
+            for item in (request.generation_bindings or [])
+        }
         for video_id in request.video_ids:
-            active = self.store.load_active(video_id)
-            if active is not None:
-                cached.append((video_id, active[0], active[2]))
+            if request.generation_bindings is None:
+                loaded = self.store.load_active(video_id)
+            else:
+                binding = bindings_by_video[video_id]
+                expected = binding.model_dump(mode="json")
+                if self.store.generation_descriptor(
+                    video_id,
+                    binding.generation_id,
+                ) != expected:
+                    raise ValueError("Lighthouse generation binding is stale or corrupt")
+                try:
+                    loaded = self.store.load_generation(
+                        video_id,
+                        binding.generation_id,
+                    )
+                except Exception as error:
+                    raise RuntimeError(
+                        "bound Lighthouse generation is unavailable"
+                    ) from error
+                if loaded is None:
+                    raise RuntimeError("bound Lighthouse generation is unavailable")
+            if loaded is not None:
+                cached.append((video_id, loaded[0], loaded[2]))
         if not cached:
             return []
         model = self._load()
@@ -1134,6 +1374,12 @@ class LocalLighthouseWorkerRuntime:
                             score=max(0.0, min(1.0, score)),
                         )
                     )
+        if request.generation_bindings is not None and any(
+            self.store.generation_descriptor(item.video_id, item.generation_id)
+            != item.model_dump(mode="json")
+            for item in request.generation_bindings
+        ):
+            raise ValueError("Lighthouse generation changed during search")
         return sorted(hits, key=lambda hit: hit.score, reverse=True)[: request.limit]
 
 
@@ -1312,7 +1558,7 @@ def create_lighthouse_worker_app(
             specification=runtime.specification.to_dict(),
             specification_hash=runtime.specification.identity,
             loaded=runtime.loaded,
-            operations=["prepare", "search"],
+            operations=["build", "prepare", "search"],
             max_input_bytes=max_input_bytes,
             max_query_chars=MAX_QUERY_CHARS,
             max_video_ids=MAX_VIDEO_IDS,
@@ -1320,8 +1566,11 @@ def create_lighthouse_worker_app(
             max_concurrency=1,
         )
 
-    @app.post("/v1/prepare", response_model=LighthousePrepareResponse)
-    async def prepare(request: LighthousePrepareRequest) -> LighthousePrepareResponse:
+    async def build_inactive_generation(
+        request: LighthousePrepareRequest,
+        *,
+        legacy_activation: bool,
+    ) -> tuple[str, LighthouseGenerationBindingPayload]:
         if not _request_identity_matches(runtime, request):
             raise HTTPException(409, "Lighthouse worker identity does not match")
         try:
@@ -1335,32 +1584,100 @@ def create_lighthouse_worker_app(
             raise HTTPException(409, "Lighthouse source identity does not match")
         if not capacity.acquire(blocking=False):
             raise HTTPException(429, "Lighthouse worker is busy")
+        failure_detail = (
+            "Lighthouse worker preparation failed"
+            if legacy_activation
+            else "Lighthouse worker build failed"
+        )
+        change_detail = (
+            "Lighthouse source changed during preparation"
+            if legacy_activation
+            else "Lighthouse source changed during build"
+        )
         try:
             try:
                 generation_id = await run_in_threadpool(runtime.build_generation, request, source)
             except Exception as error:
-                logger.exception("Lighthouse worker preparation failed")
-                raise HTTPException(503, "Lighthouse worker preparation failed") from error
-            if _GENERATION_ID_RE.fullmatch(generation_id) is None:
+                logger.exception(failure_detail)
+                raise HTTPException(503, failure_detail) from error
+            if (
+                type(generation_id) is not str
+                or _GENERATION_ID_RE.fullmatch(generation_id) is None
+            ):
                 logger.error("Lighthouse runtime returned an invalid generation ID")
-                raise HTTPException(503, "Lighthouse worker preparation failed")
+                raise HTTPException(503, failure_detail)
             try:
                 after = _source_snapshot(source)
             except (OSError, RuntimeError) as error:
-                raise HTTPException(409, "Lighthouse source changed during preparation") from error
+                raise HTTPException(409, change_detail) from error
             if after != before:
-                raise HTTPException(409, "Lighthouse source changed during preparation")
+                raise HTTPException(409, change_detail)
             try:
-                await run_in_threadpool(
-                    runtime.activate_generation,
-                    request.video_id,
-                    generation_id,
+                raw_descriptor = await run_in_threadpool(
+                    lambda: runtime.generation_descriptor(
+                        request.video_id,
+                        generation_id,
+                        force_content_validation=True,
+                    )
+                )
+                descriptor = LighthouseGenerationBindingPayload.model_validate(
+                    raw_descriptor
                 )
             except Exception as error:
-                logger.exception("Lighthouse worker activation failed")
-                raise HTTPException(503, "Lighthouse worker preparation failed") from error
+                logger.exception("Lighthouse worker generation attestation failed")
+                raise HTTPException(503, failure_detail) from error
+            if (
+                descriptor.video_id != request.video_id
+                or descriptor.generation_id != generation_id
+                or descriptor.source_sha256 != request.source_sha256
+                or descriptor.source_size_bytes != request.source_size_bytes
+                or not math.isclose(
+                    descriptor.duration_seconds,
+                    request.duration_seconds,
+                    rel_tol=1e-9,
+                    abs_tol=1e-6,
+                )
+                or descriptor.specification_hash != runtime.specification.identity
+            ):
+                logger.error("Lighthouse worker generation attestation mismatched")
+                raise HTTPException(503, failure_detail)
+            if legacy_activation:
+                try:
+                    await run_in_threadpool(
+                        runtime.activate_generation,
+                        request.video_id,
+                        generation_id,
+                    )
+                except Exception as error:
+                    logger.exception("Lighthouse worker activation failed")
+                    raise HTTPException(503, failure_detail) from error
         finally:
             capacity.release()
+        return generation_id, descriptor
+
+    @app.post("/v1/build", response_model=LighthouseBuildResponse)
+    async def build(request: LighthousePrepareRequest) -> LighthouseBuildResponse:
+        generation_id, descriptor = await build_inactive_generation(
+            request,
+            legacy_activation=False,
+        )
+        return LighthouseBuildResponse(
+            schema_version=LIGHTHOUSE_WORKER_SCHEMA_VERSION,
+            request_id=request.request_id,
+            specification_hash=runtime.specification.identity,
+            model_identity=runtime.model_identity,
+            runtime_identity=runtime.runtime_identity,
+            video_id=request.video_id,
+            generation_id=generation_id,
+            descriptor=descriptor,
+        )
+
+    @app.post("/v1/prepare", response_model=LighthousePrepareResponse)
+    async def prepare(request: LighthousePrepareRequest) -> LighthousePrepareResponse:
+        generation_id, _descriptor = await build_inactive_generation(
+            request,
+            legacy_activation=True,
+        )
         return LighthousePrepareResponse(
             schema_version=LIGHTHOUSE_WORKER_SCHEMA_VERSION,
             request_id=request.request_id,
@@ -1392,6 +1709,9 @@ def create_lighthouse_worker_app(
             specification_hash=runtime.specification.identity,
             model_identity=runtime.model_identity,
             runtime_identity=runtime.runtime_identity,
+            generation_bindings_sha256=_generation_bindings_identity(
+                request.generation_bindings
+            ),
             hits=hits[: request.limit],
         )
 
@@ -1654,6 +1974,76 @@ class LighthouseWorkerClient:
     def cache_is_current(self, video_id: str) -> bool:
         return self.store.cache_is_current(video_id)
 
+    def active_generation_id(self, video_id: str) -> str | None:
+        return self.store.active_generation_id(video_id)
+
+    def generation_descriptor(
+        self,
+        video_id: str,
+        generation_id: str,
+        *,
+        force_content_validation: bool = False,
+    ) -> dict[str, object] | None:
+        return self.store.generation_descriptor(
+            video_id,
+            generation_id,
+            force_content_validation=force_content_validation,
+        )
+
+    def build_video_source(
+        self,
+        video_id: str,
+        source: Path,
+        duration: float,
+    ) -> dict[str, object]:
+        """Build an immutable worker generation without activating provider state."""
+        try:
+            source_path = Path(source)
+            before = _source_snapshot(source_path)
+            source_sha, source_size, _fingerprint = before
+            request_id = uuid4().hex
+            request = LighthousePrepareRequest(
+                schema_version=LIGHTHOUSE_WORKER_SCHEMA_VERSION,
+                request_id=request_id,
+                specification_hash=self.specification.identity,
+                model_identity=LIGHTHOUSE_MODEL_IDENTITY,
+                runtime_identity=LIGHTHOUSE_WORKER_RUNTIME_IDENTITY,
+                video_id=video_id,
+                relative_path=self._relative_source(source_path),
+                duration_seconds=float(duration),
+                source_sha256=source_sha,
+                source_size_bytes=source_size,
+            )
+            response = self._http_client().post(
+                f"{self.endpoint}/v1/build",
+                json=request.model_dump(mode="json"),
+                headers=self._headers(json_request=True),
+                timeout=self.timeout,
+            )
+            response.raise_for_status()
+            payload = LighthouseBuildResponse.model_validate(response.json())
+            self._validate_response_identity(payload, request_id)
+            descriptor = payload.descriptor
+            if (
+                payload.video_id != video_id
+                or payload.generation_id != descriptor.generation_id
+                or descriptor.video_id != video_id
+                or descriptor.source_sha256 != source_sha
+                or descriptor.source_size_bytes != source_size
+                or not math.isclose(
+                    descriptor.duration_seconds,
+                    float(duration),
+                    rel_tol=1e-9,
+                    abs_tol=1e-6,
+                )
+                or descriptor.specification_hash != self.specification.identity
+                or _source_snapshot(source_path) != before
+            ):
+                raise ValueError("Lighthouse worker build receipt mismatch")
+            return descriptor.model_dump(mode="json")
+        except Exception:
+            raise RuntimeError("Lighthouse worker build failed") from None
+
     def prepare(self, video_id: str, source: Path, duration: float) -> None:
         try:
             source_sha, source_size, _ = _source_snapshot(Path(source))
@@ -1691,6 +2081,43 @@ class LighthouseWorkerClient:
         *,
         limit: int = 30,
     ) -> list[EvidenceHit]:
+        return self._search(
+            query,
+            video_ids,
+            generation_bindings=None,
+            limit=limit,
+        )
+
+    def search_generations(
+        self,
+        query: str,
+        generation_bindings: dict[str, dict[str, object]],
+        *,
+        limit: int = 30,
+    ) -> list[EvidenceHit]:
+        if type(generation_bindings) is not dict or not generation_bindings:
+            raise ValueError("Lighthouse generation bindings must be non-empty")
+        validated = [
+            LighthouseGenerationBindingPayload.model_validate(binding)
+            for binding in generation_bindings.values()
+        ]
+        if [item.video_id for item in validated] != list(generation_bindings):
+            raise ValueError("Lighthouse generation binding video IDs disagree")
+        return self._search(
+            query,
+            list(generation_bindings),
+            generation_bindings=validated,
+            limit=limit,
+        )
+
+    def _search(
+        self,
+        query: str,
+        video_ids: list[str],
+        *,
+        generation_bindings: list[LighthouseGenerationBindingPayload] | None,
+        limit: int,
+    ) -> list[EvidenceHit]:
         request_id = uuid4().hex
         try:
             request = LighthouseSearchRequest(
@@ -1701,17 +2128,38 @@ class LighthouseWorkerClient:
                 runtime_identity=LIGHTHOUSE_WORKER_RUNTIME_IDENTITY,
                 query=query,
                 video_ids=video_ids,
+                generation_bindings=generation_bindings,
                 limit=limit,
             )
             response = self._http_client().post(
                 f"{self.endpoint}/v1/search",
-                json=request.model_dump(mode="json"),
+                json=request.model_dump(mode="json", exclude_none=True),
                 headers=self._headers(json_request=True),
                 timeout=self.timeout,
             )
             response.raise_for_status()
             payload = LighthouseSearchResponse.model_validate(response.json())
             self._validate_response_identity(payload, request_id)
+            expected_binding_identity = _generation_bindings_identity(
+                generation_bindings
+            )
+            if payload.generation_bindings_sha256 != expected_binding_identity:
+                raise ValueError("Lighthouse worker generation binding mismatch")
+            requested_videos = set(video_ids)
+            if any(hit.video_id not in requested_videos for hit in payload.hits):
+                raise ValueError("Lighthouse worker returned an unrequested video")
+            if generation_bindings is not None:
+                expected_generations = {
+                    item.video_id: item.generation_id
+                    for item in generation_bindings
+                }
+                if any(
+                    expected_generations.get(hit.video_id) != hit.generation_id
+                    for hit in payload.hits
+                ):
+                    raise ValueError(
+                        "Lighthouse worker returned an unbound generation"
+                    )
         except Exception:
             raise RuntimeError("Lighthouse worker search failed") from None
         return [

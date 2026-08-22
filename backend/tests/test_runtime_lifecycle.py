@@ -191,6 +191,92 @@ def test_runtime_lock_cannot_be_acquired_twice_by_one_instance(tmp_path) -> None
         lock.close()
 
 
+def test_existing_runtime_lock_reuses_the_private_inode_without_mutating_it(
+    tmp_path,
+) -> None:
+    creator = ExclusiveRuntimeLock(tmp_path)
+    creator.acquire()
+    creator.close()
+    before = creator.path.stat(follow_symlinks=False)
+
+    first = ExclusiveRuntimeLock(tmp_path)
+    first.acquire_existing()
+    try:
+        with pytest.raises(RuntimeError, match="already owns"):
+            ExclusiveRuntimeLock(tmp_path).acquire_existing()
+    finally:
+        first.close()
+        first.close()
+
+    after = creator.path.stat(follow_symlinks=False)
+    assert (after.st_dev, after.st_ino, after.st_mode, after.st_nlink) == (
+        before.st_dev,
+        before.st_ino,
+        before.st_mode,
+        before.st_nlink,
+    )
+    assert (after.st_size, after.st_mtime_ns, after.st_ctime_ns) == (
+        before.st_size,
+        before.st_mtime_ns,
+        before.st_ctime_ns,
+    )
+
+
+def test_existing_runtime_lock_never_creates_missing_state(tmp_path) -> None:
+    missing_data = tmp_path / "missing"
+    with pytest.raises(RuntimeError, match="unavailable"):
+        ExclusiveRuntimeLock(missing_data).acquire_existing()
+    assert missing_data.exists() is False
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    with pytest.raises(RuntimeError, match="lock.*unavailable"):
+        ExclusiveRuntimeLock(data_dir).acquire_existing()
+    assert list(data_dir.iterdir()) == []
+
+
+@pytest.mark.parametrize("unsafe_kind", ["symlink", "directory", "hardlink", "mode"])
+def test_existing_runtime_lock_rejects_unsafe_persistent_files(
+    tmp_path,
+    unsafe_kind: str,
+) -> None:
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    lock_path = data_dir / ExclusiveRuntimeLock.filename
+    outside = tmp_path / "outside.lock"
+    outside.write_text("persistent", encoding="utf-8")
+    outside.chmod(0o600)
+    if unsafe_kind == "symlink":
+        lock_path.symlink_to(outside)
+    elif unsafe_kind == "directory":
+        lock_path.mkdir()
+    elif unsafe_kind == "hardlink":
+        lock_path.hardlink_to(outside)
+    else:
+        lock_path.write_text("persistent", encoding="utf-8")
+        lock_path.chmod(0o644)
+
+    with pytest.raises(RuntimeError, match="managed regular file"):
+        ExclusiveRuntimeLock(data_dir).acquire_existing()
+
+    assert outside.read_text(encoding="utf-8") == "persistent"
+
+
+def test_existing_runtime_lock_rejects_a_symbolic_link_ancestor(tmp_path) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    lock_path = outside / ExclusiveRuntimeLock.filename
+    lock_path.write_text("persistent", encoding="utf-8")
+    lock_path.chmod(0o600)
+    linked = tmp_path / "linked"
+    linked.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(RuntimeError, match="symbolic link"):
+        ExclusiveRuntimeLock(linked).acquire_existing()
+
+    assert lock_path.read_text(encoding="utf-8") == "persistent"
+
+
 def test_artifact_gc_startup_recovery_is_bounded_and_explicit() -> None:
     repository = FakeGCRepository()
     collector = ArtifactGarbageCollector(
@@ -637,11 +723,12 @@ def test_runtime_orders_recovery_before_indexing_and_releases_resources() -> Non
             return True
 
     class RecordingQueue:
+        def recover_startup(self) -> tuple[str, ...]:
+            events.append("queue-recover")
+            return ()
+
         def start(self) -> None:
             events.append("queue-start")
-
-        def submit(self, video_id: str) -> None:
-            events.append(f"queue-submit:{video_id}")
 
         def close(self, *, timeout: float | None = 5) -> bool:
             del timeout
@@ -652,6 +739,11 @@ def test_runtime_orders_recovery_before_indexing_and_releases_resources() -> Non
         def close(self) -> None:
             events.append("store-close")
 
+    class RecordingEmbeddingRuntime:
+        def close(self) -> bool:
+            events.append("embedding-close")
+            return True
+
     runtime = Runtime(
         queue=RecordingQueue(),  # type: ignore[arg-type]
         search=object(),  # type: ignore[arg-type]
@@ -660,20 +752,27 @@ def test_runtime_orders_recovery_before_indexing_and_releases_resources() -> Non
         runtime_lock=RecordingLock(),  # type: ignore[arg-type]
         artifact_gc=RecordingCollector(),  # type: ignore[arg-type]
         generation_store=RecordingStore(),  # type: ignore[arg-type]
-        resume_video_ids=("video-1", "video-2"),
+        legacy_job_adopter=lambda: events.append("legacy-adopt"),
+        text_embedding_runtime=RecordingEmbeddingRuntime(),  # type: ignore[arg-type]
     )
 
     runtime.start()
     assert events == [
         "lock-acquire",
         "gc-recover",
+        "legacy-adopt",
+        "queue-recover",
         "gc-start",
         "queue-start",
-        "queue-submit:video-1",
-        "queue-submit:video-2",
     ]
     assert runtime.close() is True
-    assert events[-4:] == ["queue-close", "gc-close", "store-close", "lock-close"]
+    assert events[-5:] == [
+        "queue-close",
+        "gc-close",
+        "store-close",
+        "embedding-close",
+        "lock-close",
+    ]
 
 
 def test_runtime_start_failure_releases_preacquired_ownership() -> None:
@@ -701,11 +800,11 @@ def test_runtime_start_failure_releases_preacquired_ownership() -> None:
             return True
 
     class Queue:
+        def recover_startup(self) -> tuple[str, ...]:
+            raise AssertionError("must not recover jobs")
+
         def start(self) -> None:
             raise AssertionError("must not start")
-
-        def submit(self, _video_id: str) -> None:
-            raise AssertionError("must not submit")
 
         def close(self, *, timeout: float | None = 5) -> bool:
             events.append(f"queue-close:{timeout}")
@@ -763,10 +862,10 @@ def test_runtime_does_not_release_storage_lock_while_queue_is_still_running() ->
     class Queue:
         close_results = [False, True]
 
-        def start(self) -> None:
-            return None
+        def recover_startup(self) -> tuple[str, ...]:
+            return ()
 
-        def submit(self, _video_id: str) -> None:
+        def start(self) -> None:
             return None
 
         def close(self, *, timeout: float | None = 5) -> bool:
@@ -825,10 +924,10 @@ def test_runtime_reaper_eventually_releases_ownership_after_slow_work() -> None:
     class SlowQueue:
         close_calls: list[float | None] = []
 
-        def start(self) -> None:
-            return None
+        def recover_startup(self) -> tuple[str, ...]:
+            return ()
 
-        def submit(self, _video_id: str) -> None:
+        def start(self) -> None:
             return None
 
         def close(self, *, timeout: float | None = 5) -> bool:
@@ -892,10 +991,10 @@ def test_runtime_store_close_failure_retains_lock_until_reaper_retry_succeeds() 
             return True
 
     class Queue:
-        def start(self) -> None:
-            return None
+        def recover_startup(self) -> tuple[str, ...]:
+            return ()
 
-        def submit(self, _video_id: str) -> None:
+        def start(self) -> None:
             return None
 
         def close(self, *, timeout: float | None = 5) -> bool:
@@ -975,10 +1074,10 @@ def test_runtime_lock_close_error_retries_only_release_phase() -> None:
             return True
 
     class Queue:
-        def start(self) -> None:
-            return None
+        def recover_startup(self) -> tuple[str, ...]:
+            return ()
 
-        def submit(self, _video_id: str) -> None:
+        def start(self) -> None:
             return None
 
         def close(self, *, timeout: float | None = 5) -> bool:
@@ -1046,10 +1145,10 @@ def test_runtime_reaper_start_failure_finishes_retries_synchronously(
             return True
 
     class Queue:
-        def start(self) -> None:
-            return None
+        def recover_startup(self) -> tuple[str, ...]:
+            return ()
 
-        def submit(self, _video_id: str) -> None:
+        def start(self) -> None:
             return None
 
         def close(self, *, timeout: float | None = 5) -> bool:

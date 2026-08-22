@@ -231,6 +231,19 @@ def test_stage_specification_rejects_noncanonical_persisted_data(
         StageSpecification.from_canonical_json(value)
 
 
+def test_stage_specification_normalizes_deeply_nested_persisted_data() -> None:
+    nested_parameters = '{"nested":' * 1_200 + "null" + "}" * 1_200
+    persisted = (
+        '{"dependencies":{},"implementation_revision":"speech-v1",'
+        '"kind":"speech","model_identity":null,"parameters":'
+        + nested_parameters
+        + ',"schema_version":1}'
+    )
+
+    with pytest.raises(ValueError, match="invalid canonical stage specification"):
+        StageSpecification.from_canonical_json(persisted)
+
+
 def test_stage_run_rejects_raw_error_details() -> None:
     with pytest.raises(ValueError, match="error code"):
         StageRun(

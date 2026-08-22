@@ -6,10 +6,17 @@ from urllib.parse import quote
 from fastapi.testclient import TestClient
 import pytest
 
-from videoscope.artifacts import StageState
+from videoscope.artifacts import (
+    IndexingSpecifications,
+    StageKind,
+    StageSpecification,
+    StageState,
+)
 from videoscope.api import UPLOAD_BODY_OVERHEAD_BYTES, create_app
 from videoscope.config import AppSettings
+from videoscope.jobs import VideoIndexPlanSnapshot
 from videoscope.providers.base import ProviderRegistry
+from videoscope.providers.whisper import WhisperPromptSnapshot
 from videoscope.repository import Repository
 from videoscope.runtime import create_indexing_specifications
 from videoscope.search.service import SearchService
@@ -25,6 +32,44 @@ class RecordingQueue:
 
     def close(self) -> None:
         return None
+
+
+def _plan_stage(kind: StageKind) -> StageSpecification:
+    parameters: dict[str, object] = {}
+    if kind is StageKind.SPEECH:
+        parameters = {
+            "effective_prompt_sha256": hashlib.sha256(b"").hexdigest(),
+            "glossary_state": "not_configured",
+        }
+    return StageSpecification(
+        kind=kind,
+        schema_version=1,
+        implementation_revision=f"test.{kind.value}.v1",
+        parameters=parameters,
+        dependencies={"videoscope": "test"},
+    )
+
+
+def _video_index_plan() -> VideoIndexPlanSnapshot:
+    prompt = WhisperPromptSnapshot(
+        effective_prompt=None,
+        effective_prompt_sha256=hashlib.sha256(b"").hexdigest(),
+        glossary_state="not_configured",
+    )
+    return VideoIndexPlanSnapshot(
+        schema_version=2,
+        specifications=IndexingSpecifications(
+            scenes=_plan_stage(StageKind.SCENES),
+            speech=_plan_stage(StageKind.SPEECH),
+            ocr=_plan_stage(StageKind.OCR),
+            objects=_plan_stage(StageKind.OBJECTS),
+            text_vectors=_plan_stage(StageKind.TEXT_VECTORS),
+        ),
+        visual_dense_specification=_plan_stage(StageKind.VISUAL_DENSE),
+        lighthouse_specification=_plan_stage(StageKind.LIGHTHOUSE),
+        whisper_prompt_snapshot=prompt,
+        executor_identity="sha256:" + "a" * 64,
+    )
 
 
 def settings_for(tmp_path: Path) -> AppSettings:
@@ -179,7 +224,11 @@ def ready_repository(settings: AppSettings, *, duration: float = 30.0) -> Reposi
 
 def test_upload_creates_library_item_and_queues_processing(tmp_path) -> None:
     queue = RecordingQueue()
-    app = create_app(settings=settings_for(tmp_path), processing_queue=queue)
+    app = create_app(
+        settings=settings_for(tmp_path),
+        processing_queue=queue,
+        video_index_plan_factory=_video_index_plan,
+    )
 
     with TestClient(app) as client:
         response = client.post(
@@ -224,6 +273,7 @@ def test_upload_hashes_stream_while_writing_and_persists_asset_identity(
         settings=settings,
         repository=repository,
         processing_queue=RecordingQueue(),
+        video_index_plan_factory=_video_index_plan,
     )
 
     with TestClient(app) as client:
@@ -243,9 +293,9 @@ def test_upload_hashes_stream_while_writing_and_persists_asset_identity(
 
 def test_upload_removes_moved_media_when_asset_transaction_is_rejected(tmp_path) -> None:
     class RejectingAssetRepository(Repository):
-        def create_video_with_asset(self, **kwargs):  # type: ignore[no-untyped-def]
+        def create_video_with_asset_and_index_job(self, **kwargs):  # type: ignore[no-untyped-def]
             kwargs["source_sha256"] = "invalid-digest"
-            return super().create_video_with_asset(**kwargs)
+            return super().create_video_with_asset_and_index_job(**kwargs)
 
     settings = settings_for(tmp_path)
     repository = RejectingAssetRepository(settings.database_path)
@@ -254,6 +304,7 @@ def test_upload_removes_moved_media_when_asset_transaction_is_rejected(tmp_path)
         settings=settings,
         repository=repository,
         processing_queue=RecordingQueue(),
+        video_index_plan_factory=_video_index_plan,
     )
 
     with TestClient(app, raise_server_exceptions=False) as client:
@@ -295,7 +346,11 @@ def test_upload_removes_temporary_media_when_atomic_move_fails(
 
 
 def test_video_api_contract_does_not_expose_storage_implementation(tmp_path) -> None:
-    app = create_app(settings=settings_for(tmp_path), processing_queue=RecordingQueue())
+    app = create_app(
+        settings=settings_for(tmp_path),
+        processing_queue=RecordingQueue(),
+        video_index_plan_factory=_video_index_plan,
+    )
 
     with TestClient(app) as client:
         response = client.post(
@@ -343,7 +398,11 @@ def test_video_api_does_not_expose_internal_processing_error(tmp_path) -> None:
 
 
 def test_request_models_reject_unknown_fields(tmp_path) -> None:
-    app = create_app(settings=settings_for(tmp_path), processing_queue=RecordingQueue())
+    app = create_app(
+        settings=settings_for(tmp_path),
+        processing_queue=RecordingQueue(),
+        video_index_plan_factory=_video_index_plan,
+    )
 
     with TestClient(app) as client:
         uploaded = client.post(
@@ -688,7 +747,11 @@ def test_api_rejects_untrusted_host_header(tmp_path) -> None:
 
 def test_video_can_be_renamed_without_changing_uploaded_filename(tmp_path) -> None:
     queue = RecordingQueue()
-    app = create_app(settings=settings_for(tmp_path), processing_queue=queue)
+    app = create_app(
+        settings=settings_for(tmp_path),
+        processing_queue=queue,
+        video_index_plan_factory=_video_index_plan,
+    )
 
     with TestClient(app) as client:
         uploaded = client.post(

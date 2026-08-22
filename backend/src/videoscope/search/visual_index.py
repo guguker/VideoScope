@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import OrderedDict
 import json
 from dataclasses import dataclass
 from hashlib import sha256
@@ -8,6 +9,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import tempfile
 from typing import Any, Protocol
 from uuid import uuid4
@@ -68,6 +70,155 @@ VISUAL_INDEX_EXTRACTOR_IDENTITY = "ffmpeg-fixed-step-v1"
 _VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _GENERATION_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_GENERATION_DESCRIPTOR_CACHE_SIZE = 128
+_MAX_VISUAL_ACTIVE_POINTER_BYTES = 4 * 1024
+_MAX_VISUAL_MANIFEST_BYTES = 256 * 1024
+_MAX_VISUAL_METADATA_BYTES = 64 * 1024 * 1024
+_MAX_VISUAL_FRAME_COUNT = 1_000_000
+_MAX_VISUAL_FRAME_BYTES = 64 * 1024 * 1024
+_MAX_VISUAL_GENERATION_FRAME_BYTES = 64 * 1024 * 1024 * 1024
+_MAX_VISUAL_VECTOR_DIMENSIONS = 65_536
+_MAX_VISUAL_VECTOR_BYTES = 8 * 1024 * 1024 * 1024
+
+
+def _regular_file_stat_identity(path: Path) -> tuple[int, ...]:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    try:
+        metadata = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_nlink != 1
+        or metadata.st_size <= 0
+    ):
+        raise ValueError("visual generation input must be a private regular file")
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_mode,
+        metadata.st_nlink,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
+
+
+def _stable_regular_file_identity(path: Path) -> tuple[str, int]:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    try:
+        before = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_nlink != 1
+            or before.st_size <= 0
+        ):
+            raise ValueError("visual generation input must be a private regular file")
+        digest = sha256()
+        size = 0
+        with os.fdopen(descriptor, "rb", closefd=False) as handle:
+            while chunk := handle.read(1024 * 1024):
+                digest.update(chunk)
+                size += len(chunk)
+        after = os.fstat(descriptor)
+        stable_fields = ("st_dev", "st_ino", "st_mode", "st_nlink", "st_size", "st_mtime_ns")
+        if any(getattr(before, name) != getattr(after, name) for name in stable_fields):
+            raise ValueError("visual generation input changed while hashing")
+        if size != before.st_size:
+            raise ValueError("visual generation input size changed while hashing")
+        return digest.hexdigest(), size
+    finally:
+        os.close(descriptor)
+
+
+def _read_bounded_regular_file(path: Path, *, max_bytes: int) -> bytes:
+    if isinstance(max_bytes, bool) or not isinstance(max_bytes, int) or max_bytes <= 0:
+        raise ValueError("visual artifact byte limit must be positive")
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    try:
+        before = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_nlink != 1
+            or before.st_size <= 0
+            or before.st_size > max_bytes
+        ):
+            raise ValueError("visual artifact exceeds its resource contract")
+        chunks: list[bytes] = []
+        consumed = 0
+        while consumed <= max_bytes:
+            block = os.read(descriptor, min(1024 * 1024, max_bytes - consumed + 1))
+            if not block:
+                break
+            chunks.append(block)
+            consumed += len(block)
+        after = os.fstat(descriptor)
+        stable_fields = (
+            "st_dev",
+            "st_ino",
+            "st_mode",
+            "st_nlink",
+            "st_size",
+            "st_mtime_ns",
+            "st_ctime_ns",
+        )
+        if (
+            consumed != before.st_size
+            or consumed > max_bytes
+            or any(getattr(before, name) != getattr(after, name) for name in stable_fields)
+        ):
+            raise ValueError("visual artifact changed while reading")
+        return b"".join(chunks)
+    finally:
+        os.close(descriptor)
+
+
+def _read_bounded_json(path: Path, *, max_bytes: int) -> object:
+    return json.loads(
+        _read_bounded_regular_file(path, max_bytes=max_bytes).decode("utf-8")
+    )
+
+
+def _bounded_regular_file_size(path: Path, *, max_bytes: int) -> int:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    try:
+        metadata = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_nlink != 1
+        or metadata.st_size <= 0
+        or metadata.st_size > max_bytes
+    ):
+        raise ValueError("visual vector artifact exceeds its resource contract")
+    return metadata.st_size
+
+
+def _canonical_generation_digest(
+    generation: Path,
+    names: tuple[str, ...],
+) -> str:
+    manifest = [
+        {
+            "name": name,
+            "sha256": identity[0],
+            "size_bytes": identity[1],
+        }
+        for name in names
+        for identity in [_stable_regular_file_identity(generation / name)]
+    ]
+    return sha256(
+        json.dumps(
+            manifest,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
 
 
 @dataclass(frozen=True, slots=True)
@@ -250,6 +401,10 @@ class SiglipVisualIndex:
         self._logit_bias = float(
             getattr(worker_specification, "siglip_logit_bias", 0.0)
         )
+        self._generation_descriptor_cache: OrderedDict[
+            tuple[str, str, tuple[tuple[str, tuple[int, ...]], ...]],
+            dict[str, object],
+        ] = OrderedDict()
 
     @property
     def model_identity(self) -> str:
@@ -269,6 +424,11 @@ class SiglipVisualIndex:
             sort_keys=True,
             separators=(",", ":"),
         )
+
+    @property
+    def specification_identity(self) -> str:
+        """Stable configuration identity excluding mutable active pointers."""
+        return self.specification.identity
 
     def status(self, *, check_index: bool = True) -> ProviderStatus:
         if self.inference_client is None:
@@ -411,8 +571,8 @@ class SiglipVisualIndex:
         return digest.hexdigest(), size_bytes
 
     @staticmethod
-    def _read_json(path: Path) -> object:
-        return json.loads(path.read_text(encoding="utf-8"))
+    def _read_json(path: Path, *, max_bytes: int) -> object:
+        return _read_bounded_json(path, max_bytes=max_bytes)
 
     def _read_active_pointer(self, video_id: str) -> tuple[str, bytes] | None:
         try:
@@ -420,10 +580,11 @@ class SiglipVisualIndex:
         except ValueError:
             return None
         pointer_path = video_dir / "active.json"
-        if not pointer_path.is_file() or pointer_path.is_symlink():
-            return None
         try:
-            snapshot = pointer_path.read_bytes()
+            snapshot = _read_bounded_regular_file(
+                pointer_path,
+                max_bytes=_MAX_VISUAL_ACTIVE_POINTER_BYTES,
+            )
             payload: object = json.loads(snapshot.decode("utf-8"))
         except (OSError, UnicodeError, ValueError, TypeError):
             return None
@@ -442,6 +603,60 @@ class SiglipVisualIndex:
     def active_generation_id(self, video_id: str) -> str | None:
         pointer = self._read_active_pointer(video_id)
         return pointer[0] if pointer is not None else None
+
+    def generation_descriptor(
+        self,
+        video_id: str,
+        generation_id: str,
+        *,
+        force_content_validation: bool = False,
+    ) -> dict[str, object] | None:
+        """Describe one immutable generation without following ``active.json``."""
+        generation = self._generation_dir(video_id, generation_id)
+        if generation is None:
+            return None
+        if force_content_validation:
+            for cache_key in tuple(self._generation_descriptor_cache):
+                if cache_key[:2] == (video_id, generation_id):
+                    self._generation_descriptor_cache.pop(cache_key, None)
+        names = ("manifest.json", "metadata.json", "vectors.npy")
+        try:
+            before = tuple(
+                (name, _regular_file_stat_identity(generation / name))
+                for name in names
+            )
+            cache_key = (video_id, generation_id, before)
+            cached = self._generation_descriptor_cache.get(cache_key)
+            if cached is not None:
+                self._generation_descriptor_cache.move_to_end(cache_key)
+                return dict(cached)
+            loaded = self._load_generation(video_id, generation_id, memory_map=True)
+            if loaded is None:
+                return None
+            _vectors, _metadata, manifest = loaded
+            content_sha256 = _canonical_generation_digest(generation, names)
+            after = tuple(
+                (name, _regular_file_stat_identity(generation / name))
+                for name in names
+            )
+        except (OSError, ValueError):
+            return None
+        if after != before:
+            return None
+        descriptor = {
+            "content_sha256": content_sha256,
+            "duration_seconds": manifest["duration_seconds"],
+            "generation_id": generation_id,
+            "source_sha256": manifest["source_sha256"],
+            "source_size_bytes": manifest["source_size_bytes"],
+            "specification_hash": manifest["specification_hash"],
+            "video_id": video_id,
+        }
+        self._generation_descriptor_cache[cache_key] = descriptor
+        self._generation_descriptor_cache.move_to_end(cache_key)
+        while len(self._generation_descriptor_cache) > _GENERATION_DESCRIPTOR_CACHE_SIZE:
+            self._generation_descriptor_cache.popitem(last=False)
+        return dict(descriptor)
 
     def _generation_dir(self, video_id: str, generation_id: str) -> Path | None:
         if not self._valid_video_id(video_id) or _GENERATION_ID_RE.fullmatch(generation_id) is None:
@@ -504,6 +719,13 @@ class SiglipVisualIndex:
             or type(raw_manifest.get("source_sha256")) is not str
             or _SHA256_RE.fullmatch(str(raw_manifest["source_sha256"])) is None
             or raw_manifest["frame_count"] != raw_manifest["vector_count"]
+            or raw_manifest["frame_count"] > _MAX_VISUAL_FRAME_COUNT
+            or raw_manifest["vector_count"] > _MAX_VISUAL_FRAME_COUNT
+            or raw_manifest["vector_dimensions"] > _MAX_VISUAL_VECTOR_DIMENSIONS
+            or raw_manifest["vector_count"]
+            * raw_manifest["vector_dimensions"]
+            * np.dtype(np.float32).itemsize
+            > _MAX_VISUAL_VECTOR_BYTES
         ):
             return None
         return raw_manifest
@@ -515,12 +737,19 @@ class SiglipVisualIndex:
         generation: Path,
         duration: float,
         validate_thumbnail_paths: bool = True,
+        expected_count: int | None = None,
     ) -> list[dict[str, Any]] | None:
-        if not isinstance(raw_metadata, list) or not raw_metadata:
+        if (
+            not isinstance(raw_metadata, list)
+            or not raw_metadata
+            or len(raw_metadata) > _MAX_VISUAL_FRAME_COUNT
+            or (expected_count is not None and len(raw_metadata) != expected_count)
+        ):
             return None
         metadata: list[dict[str, Any]] = []
         segment_ids: set[str] = set()
         previous_start = -1.0
+        aggregate_frame_bytes = 0
         try:
             generation_root = generation.resolve()
             for index, raw_item in enumerate(raw_metadata):
@@ -569,6 +798,16 @@ class SiglipVisualIndex:
                 raw_frame = generation / frame_path
                 if raw_frame.is_symlink() or not resolved_frame.is_file():
                     raise ValueError("visual generation frame is missing")
+                frame_stat = resolved_frame.stat(follow_symlinks=False)
+                if (
+                    not stat.S_ISREG(frame_stat.st_mode)
+                    or frame_stat.st_size <= 0
+                    or frame_stat.st_size > _MAX_VISUAL_FRAME_BYTES
+                ):
+                    raise ValueError("visual generation frame exceeds its resource contract")
+                aggregate_frame_bytes += frame_stat.st_size
+                if aggregate_frame_bytes > _MAX_VISUAL_GENERATION_FRAME_BYTES:
+                    raise ValueError("visual generation frames exceed their resource contract")
                 if validate_thumbnail_paths:
                     raw_thumbnail = Path(thumbnail_path)
                     resolved_thumbnail = raw_thumbnail.resolve()
@@ -612,15 +851,26 @@ class SiglipVisualIndex:
             return None
         try:
             manifest = self._validate_manifest(
-                self._read_json(manifest_path),
+                self._read_json(
+                    manifest_path,
+                    max_bytes=_MAX_VISUAL_MANIFEST_BYTES,
+                ),
                 generation_id=generation_id,
             )
             if manifest is None:
                 return None
             metadata = self._validate_metadata(
-                self._read_json(metadata_path),
+                self._read_json(
+                    metadata_path,
+                    max_bytes=_MAX_VISUAL_METADATA_BYTES,
+                ),
                 generation=generation,
                 duration=float(manifest["duration_seconds"]),
+                expected_count=int(manifest["frame_count"]),
+            )
+            _bounded_regular_file_size(
+                vectors_path,
+                max_bytes=_MAX_VISUAL_VECTOR_BYTES,
             )
             vectors = np.load(
                 vectors_path,
@@ -634,10 +884,15 @@ class SiglipVisualIndex:
         try:
             vectors_are_valid = (
                 vectors.ndim == 2
+                and vectors.dtype == np.dtype("<f4")
                 and vectors.shape[0] == len(metadata)
                 and vectors.shape[1] > 0
                 and vectors.shape[0] == manifest["vector_count"]
                 and vectors.shape[1] == manifest["vector_dimensions"]
+                and vectors.nbytes
+                == manifest["vector_count"]
+                * manifest["vector_dimensions"]
+                * np.dtype(np.float32).itemsize
                 and bool(np.all(np.isfinite(vectors)))
             )
         except (TypeError, ValueError):
@@ -662,7 +917,11 @@ class SiglipVisualIndex:
         if loaded is None:
             return None
         try:
-            if (self._video_dir(video_id) / "active.json").read_bytes() != pointer_snapshot:
+            current_pointer = _read_bounded_regular_file(
+                self._video_dir(video_id) / "active.json",
+                max_bytes=_MAX_VISUAL_ACTIVE_POINTER_BYTES,
+            )
+            if current_pointer != pointer_snapshot:
                 return None
         except (OSError, ValueError):
             return None
@@ -762,7 +1021,7 @@ class SiglipVisualIndex:
             raise
         return created
 
-    def replace_video_source(
+    def build_video_source(
         self,
         video_id: str,
         source: Path,
@@ -770,8 +1029,8 @@ class SiglipVisualIndex:
         extractor: DenseFrameExtractor,
         *,
         frames_dir: Path | None = None,
-    ) -> str:
-        """Build and atomically activate an immutable dense visual generation."""
+    ) -> dict[str, object]:
+        """Build one immutable generation without changing the active pointer."""
         duration = float(duration)
         if not math.isfinite(duration) or duration <= 0:
             raise ValueError("video duration must be positive")
@@ -785,7 +1044,7 @@ class SiglipVisualIndex:
         generation = generations_dir / generation_id
         staging.mkdir(exist_ok=False)
         created_aliases: list[Path] = []
-        activated = False
+        completed = False
         try:
             extracted_dir = staging / "frames"
             frames = extractor.extract_frames(
@@ -799,8 +1058,11 @@ class SiglipVisualIndex:
             if not frames:
                 raise RuntimeError("dense frame extraction returned no frames")
             paths = [Path(getattr(frame, "path")) for frame in frames]
+            if len(paths) > _MAX_VISUAL_FRAME_COUNT:
+                raise ValueError("visual extractor exceeded the frame count limit")
             timestamps = [float(getattr(frame, "timestamp")) for frame in frames]
             previous_timestamp = -1.0
+            aggregate_frame_bytes = 0
             for timestamp, path in zip(timestamps, paths, strict=True):
                 if (
                     not math.isfinite(timestamp)
@@ -820,6 +1082,12 @@ class SiglipVisualIndex:
                     raise ValueError("visual extractor returned a frame outside its generation") from error
                 if not resolved_path.is_file() or resolved_path.is_symlink():
                     raise ValueError("visual extractor returned a missing or unsafe frame")
+                frame_size = resolved_path.stat(follow_symlinks=False).st_size
+                if frame_size <= 0 or frame_size > _MAX_VISUAL_FRAME_BYTES:
+                    raise ValueError("visual extractor returned an oversized frame")
+                aggregate_frame_bytes += frame_size
+                if aggregate_frame_bytes > _MAX_VISUAL_GENERATION_FRAME_BYTES:
+                    raise ValueError("visual extractor exceeded the frame byte limit")
                 previous_timestamp = timestamp
 
             vectors = self._image_vectors(paths).astype(np.float32, copy=False)
@@ -828,6 +1096,8 @@ class SiglipVisualIndex:
                 or vectors.shape[0] != len(paths)
                 or vectors.shape[0] <= 0
                 or vectors.shape[1] <= 0
+                or vectors.shape[1] > _MAX_VISUAL_VECTOR_DIMENSIONS
+                or vectors.nbytes > _MAX_VISUAL_VECTOR_BYTES
                 or not bool(np.all(np.isfinite(vectors)))
             ):
                 raise ValueError("SigLIP index vectors do not match finite frame rows")
@@ -868,14 +1138,21 @@ class SiglipVisualIndex:
             atomic_write_json(staging / "metadata.json", metadata, sort_keys=True)
             atomic_write_json(staging / "manifest.json", manifest, sort_keys=True)
             staged = self._validate_manifest(
-                self._read_json(staging / "manifest.json"),
+                self._read_json(
+                    staging / "manifest.json",
+                    max_bytes=_MAX_VISUAL_MANIFEST_BYTES,
+                ),
                 generation_id=generation_id,
             )
             staged_metadata = self._validate_metadata(
-                self._read_json(staging / "metadata.json"),
+                self._read_json(
+                    staging / "metadata.json",
+                    max_bytes=_MAX_VISUAL_METADATA_BYTES,
+                ),
                 generation=staging,
                 duration=duration,
                 validate_thumbnail_paths=False,
+                expected_count=len(metadata),
             )
             if staged is None or staged_metadata is None:
                 raise ValueError("visual generation validation failed")
@@ -890,22 +1167,65 @@ class SiglipVisualIndex:
             created_aliases = self._create_thumbnail_aliases(generation, metadata)
             if self._load_generation(video_id, generation_id, memory_map=True) is None:
                 raise ValueError("completed visual generation failed read validation")
-            atomic_write_json(
-                video_dir / "active.json",
-                {
-                    "generation_id": generation_id,
-                    "schema_version": VISUAL_INDEX_MANIFEST_SCHEMA_VERSION,
-                },
-                sort_keys=True,
+            descriptor = self.generation_descriptor(
+                video_id,
+                generation_id,
+                force_content_validation=True,
             )
-            activated = True
-            return generation_id
+            if descriptor is None:
+                raise ValueError("completed visual generation failed attestation")
+            # The receipt is returned to the caller, but the first independent
+            # consumer must still validate the durable artifact under its
+            # current resource contract.  In particular, do not let the build
+            # attestation pre-populate the serving cache.
+            for cache_key in tuple(self._generation_descriptor_cache):
+                if cache_key[:2] == (video_id, generation_id):
+                    self._generation_descriptor_cache.pop(cache_key, None)
+            completed = True
+            return descriptor
         finally:
             if staging.exists():
                 shutil.rmtree(staging)
-            if not activated:
+            if not completed:
                 for alias in created_aliases:
                     alias.unlink(missing_ok=True)
+
+    def activate_generation(self, video_id: str, generation_id: str) -> None:
+        """Activate a validated generation for the explicit legacy path only."""
+        video_dir = self._video_dir(video_id)
+        if self._load_generation(video_id, generation_id, memory_map=True) is None:
+            raise ValueError("visual generation cannot be activated")
+        atomic_write_json(
+            video_dir / "active.json",
+            {
+                "generation_id": generation_id,
+                "schema_version": VISUAL_INDEX_MANIFEST_SCHEMA_VERSION,
+            },
+            sort_keys=True,
+        )
+
+    def replace_video_source(
+        self,
+        video_id: str,
+        source: Path,
+        duration: float,
+        extractor: DenseFrameExtractor,
+        *,
+        frames_dir: Path | None = None,
+    ) -> str:
+        """Legacy compatibility wrapper: build, then explicitly activate."""
+        descriptor = self.build_video_source(
+            video_id,
+            source,
+            duration,
+            extractor,
+            frames_dir=frames_dir,
+        )
+        generation_id = descriptor["generation_id"]
+        if type(generation_id) is not str:
+            raise ValueError("visual generation receipt is invalid")
+        self.activate_generation(video_id, generation_id)
+        return generation_id
 
     def _probability(self, similarity: float) -> float:
         logit = similarity * self._logit_scale + self._logit_bias
@@ -927,6 +1247,77 @@ class SiglipVisualIndex:
         *,
         video_ids: list[str] | None = None,
         limit: int = 50,
+    ) -> list[EvidenceHit]:
+        return self._search(
+            query,
+            video_ids=video_ids,
+            generation_ids=None,
+            limit=limit,
+        )
+
+    def search_generations(
+        self,
+        query: str,
+        *,
+        generation_bindings: dict[str, dict[str, object]],
+        limit: int = 50,
+    ) -> list[EvidenceHit]:
+        """Search exact immutable generations and never consult active pointers."""
+        if type(generation_bindings) is not dict or not generation_bindings:
+            raise ValueError("visual generation bindings must be a non-empty mapping")
+        generation_ids: dict[str, str] = {}
+        for video_id, expected in generation_bindings.items():
+            if not self._valid_video_id(video_id) or not isinstance(expected, dict):
+                raise ValueError("visual generation bindings are invalid")
+            generation_id = expected.get("generation_id")
+            if (
+                type(generation_id) is not str
+                or _GENERATION_ID_RE.fullmatch(generation_id) is None
+            ):
+                raise ValueError("visual generation binding is stale or corrupt")
+            try:
+                current_descriptor = self.generation_descriptor(
+                    video_id,
+                    generation_id,
+                )
+            except Exception as error:
+                raise RuntimeError(
+                    "bound visual generation is unavailable"
+                ) from error
+            if current_descriptor is None:
+                raise RuntimeError("bound visual generation is unavailable")
+            if current_descriptor != expected:
+                raise ValueError("visual generation binding is stale or corrupt")
+            generation_ids[video_id] = generation_id
+        hits = self._search(
+            query,
+            video_ids=list(generation_ids),
+            generation_ids=dict(generation_ids),
+            limit=limit,
+        )
+        for video_id, expected in generation_bindings.items():
+            try:
+                current_descriptor = self.generation_descriptor(
+                    video_id,
+                    generation_ids[video_id],
+                )
+            except Exception as error:
+                raise RuntimeError(
+                    "bound visual generation is unavailable"
+                ) from error
+            if current_descriptor is None:
+                raise RuntimeError("bound visual generation is unavailable")
+            if current_descriptor != expected:
+                raise ValueError("visual generation changed during search")
+        return hits
+
+    def _search(
+        self,
+        query: str,
+        *,
+        video_ids: list[str] | None,
+        generation_ids: dict[str, str] | None,
+        limit: int,
     ) -> list[EvidenceHit]:
         if not query.strip() or limit <= 0 or not self.path.is_dir():
             return []
@@ -963,9 +1354,27 @@ class SiglipVisualIndex:
         ):
             raise RuntimeError("SigLIP returned non-finite query vectors")
         candidates: list[EvidenceHit] = []
-        selected = video_ids or [path.name for path in self.path.iterdir() if path.is_dir()]
+        selected = (
+            video_ids
+            if video_ids is not None
+            else [path.name for path in self.path.iterdir() if path.is_dir()]
+        )
         for video_id in selected:
-            loaded_index = self._load_video_index(video_id)
+            if generation_ids is None:
+                loaded_index = self._load_video_index(video_id)
+            else:
+                try:
+                    loaded_generation = self._load_generation(
+                        video_id,
+                        generation_ids[video_id],
+                    )
+                except Exception as error:
+                    raise RuntimeError(
+                        "bound visual generation is unavailable"
+                    ) from error
+                if loaded_generation is None:
+                    raise RuntimeError("bound visual generation is unavailable")
+                loaded_index = (loaded_generation[0], loaded_generation[1])
             if loaded_index is None:
                 continue
             vectors, metadata = loaded_index
@@ -975,6 +1384,10 @@ class SiglipVisualIndex:
                 else query_vectors.shape[1]  # type: ignore[union-attr]
             )
             if vectors.shape[1] != expected_dimensions:
+                if generation_ids is not None:
+                    raise RuntimeError(
+                        "bound visual generation dimensions are incompatible"
+                    )
                 continue
             if event_stage_vectors is not None:
                 assert event_specification is not None

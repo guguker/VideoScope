@@ -19,6 +19,18 @@ MAX_GLOSSARY_BYTES = 1024 * 1024
 MAX_GLOSSARY_TERMS = 120
 MAX_GLOSSARY_TERM_CHARS = 160
 MAX_WHISPER_EFFECTIVE_PROMPT_CHARS = 16_000
+_GLOSSARY_STATES = frozenset(
+    {
+        "not_configured",
+        "missing",
+        "unsafe",
+        "oversized",
+        "changed",
+        "ready",
+        "invalid",
+        "unreadable",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -199,25 +211,34 @@ def _read_regular_file_without_following(path: Path) -> tuple[bytes | None, str]
     return raw, "ready"
 
 
-def snapshot_whisper_prompt(
+def snapshot_whisper_prompt_from_content(
     initial_prompt: str | None,
-    glossary_path: Path | None,
+    glossary_content: bytes | None,
+    *,
+    glossary_state: str,
 ) -> WhisperPromptSnapshot:
-    """Capture the exact prompt used by one indexing run without symlink races."""
+    """Normalize one already-frozen glossary payload with production semantics."""
+    if glossary_state not in _GLOSSARY_STATES:
+        raise ValueError("Whisper glossary state is invalid")
+    if (glossary_content is None) == (glossary_state == "ready"):
+        raise ValueError("Whisper glossary content and state do not match")
+    if glossary_content is not None and (
+        type(glossary_content) is not bytes
+        or len(glossary_content) > MAX_GLOSSARY_BYTES
+    ):
+        raise ValueError("Whisper glossary content exceeds the bounded contract")
     normalized_initial = initial_prompt.strip() if initial_prompt else ""
     if len(normalized_initial) > MAX_WHISPER_EFFECTIVE_PROMPT_CHARS:
         raise ValueError("Whisper initial prompt exceeds the bounded worker contract")
     parts = [normalized_initial] if normalized_initial else []
-    state = "not_configured" if glossary_path is None else "missing"
+    state = glossary_state
     payload: object = {}
-    if glossary_path is not None:
-        raw, state = _read_regular_file_without_following(Path(glossary_path))
-        if raw is not None:
-            try:
-                payload = json.loads(raw.decode("utf-8"))
-                state = "ready" if isinstance(payload, dict) else "invalid"
-            except (UnicodeError, json.JSONDecodeError, RecursionError):
-                state = "invalid"
+    if glossary_content is not None:
+        try:
+            payload = json.loads(glossary_content.decode("utf-8"))
+            state = "ready" if isinstance(payload, dict) else "invalid"
+        except (UnicodeError, json.JSONDecodeError, RecursionError):
+            state = "invalid"
     terms: list[str] = []
     if state == "ready" and isinstance(payload, dict):
         for canonical, aliases in payload.items():
@@ -248,6 +269,22 @@ def snapshot_whisper_prompt(
     return WhisperPromptSnapshot(
         effective_prompt=effective_prompt,
         effective_prompt_sha256=digest,
+        glossary_state=state,
+    )
+
+
+def snapshot_whisper_prompt(
+    initial_prompt: str | None,
+    glossary_path: Path | None,
+) -> WhisperPromptSnapshot:
+    """Capture the exact prompt used by one indexing run without symlink races."""
+    state = "not_configured" if glossary_path is None else "missing"
+    raw: bytes | None = None
+    if glossary_path is not None:
+        raw, state = _read_regular_file_without_following(Path(glossary_path))
+    return snapshot_whisper_prompt_from_content(
+        initial_prompt,
+        raw,
         glossary_state=state,
     )
 
