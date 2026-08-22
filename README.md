@@ -6,13 +6,16 @@
 
 - загрузка больших видео с ограничением размера, проверкой расширения и последующей
   проверкой контейнера через FFprobe в фоновой очереди;
-- фоновая очередь индексации и прогресс по стадиям;
+- durable SQLite-очередь индексации с прогрессом, отменой, повтором и
+  восстановлением незавершённых попыток после перезапуска;
 - сцены PySceneDetect и кадры-превью через FFmpeg;
 - локальная расшифровка Whisper Large v3 Turbo через изолированный Apple MLX worker;
-- PaddleOCR через актуальный Transformers engine;
+- опциональная аттестованная граница PaddleOCR/Transformers; worker остаётся
+  недоступным без заранее предоставленных exact model bytes;
 - мультиязычный поиск по кадрам через изолированный SigLIP 2 worker с быстрым 224 и quality-профилем 384;
 - локальный RF-DETR Small в том же изолированном vision worker;
-- Roboflow Serverless для пользовательских Universe-моделей при наличии ключа;
+- legacy Roboflow Serverless adapter для пользовательских Universe-моделей;
+  durable jobs намеренно не доверяют этому неаттестованному cloud boundary;
 - Lighthouse QD-DETR как подтверждающий visual moment retriever с окнами до 150 секунд;
 - воспроизводимый плотный SigLIP-индекс по всей временной шкале с атомарным
   переключением проверенных поколений;
@@ -51,7 +54,7 @@ make install-vision
 make models-vision
 make install-whisper
 make models-whisper
-make install-ocr    # необязательно; отдельный совместимый worker
+make install-ocr    # необязательно; требует заранее provisioned reviewed model bytes
 make install-video
 make models-video
 make install-lighthouse   # необязательно; отдельный Python 3.11 worker
@@ -75,11 +78,24 @@ offline maintenance-команды для уже загруженной библ
 поэтому несовместимые старые окна автоматически не читаются. Профили и известные
 ограничения зависимостей описаны в
 [docs/dependencies.md](docs/dependencies.md).
+Точные OCR model bytes пока не имеют воспроизводимого downloader в репозитории:
+`make install-ocr` только проверяет заранее предоставленный набор из
+`workers/ocr/model-artifacts.lock.json`. Подробности — в
+`workers/ocr/README.md`.
 
 После обновления старой базы до схемы поколений ранее сохранённые сегменты не
 считаются проверенными и не попадают в поиск автоматически. Для каждого нужного
 видео явно нажмите «Переиндексировать»; готовая библиотека специально не
 перестраивается при запуске приложения.
+
+Загрузка и переиндексация возвращают `202 Accepted` и создают durable job.
+Интерфейс продолжает опрашивать один список видео, показывает persisted stage и
+progress, позволяет запросить кооперативную отмену и повторить только
+`failed`/`cancelled` попытку. Источник, canonical plan и lineage повтора
+сохраняются в SQLite; сырые execution tokens, локальные пути и тексты внутренних
+ошибок через API не возвращаются. Для диагностики доступны
+`GET /api/jobs/{job_id}`, `POST /api/jobs/{job_id}/cancel` и
+`POST /api/jobs/{job_id}/retry`.
 
 Интерфейс: `http://127.0.0.1:5173`  
 API и OpenAPI: `http://127.0.0.1:8765/api/docs`
@@ -93,9 +109,9 @@ API и OpenAPI: `http://127.0.0.1:8765/api/docs`
 | FFmpeg | probe, кадры, клипы, монтаж | критический |
 | PySceneDetect | временные границы сцен | один полный сегмент |
 | Изолированный Whisper MLX worker | речь с таймкодами | поиск работает по другим сигналам |
-| PaddleOCR worker | текст на экране в отдельном Python-окружении | этап пропускается |
+| PaddleOCR worker | текст на экране в отдельном Python-окружении | durable stage фиксируется как `failed` с warning; job может завершиться без OCR evidence |
 | Изолированный Vision worker | SigLIP 2 dense encoder + локальный RF-DETR; 384 доступен как quality-профиль | visual/object этапы отключаются |
-| Roboflow Serverless | явно выбранная облачная Universe-модель | этап объектов отключается |
+| Roboflow Serverless | legacy cloud boundary без immutable runtime attestation | durable indexing fail-closed; используйте изолированный Vision worker |
 | Qdrant + MPNet | локальный семантический индекс речи, OCR и объектов с атомарным переключением поколений | остаётся точный поиск по словам |
 | Lighthouse worker | video moment retrieval в отдельном Python 3.11 процессе | нужен настроенный worker и закреплённые модели |
 | Qwen3.5 9B + MLX worker | локальная проверка коротких видеособытий по последовательности кадров в отдельном процессе | этап пропускается или используется настроенный InternVideo |

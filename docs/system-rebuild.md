@@ -268,16 +268,17 @@ Approved ablations run an identical frozen benchmark through explicit profiles:
 
 ## Reliability scope
 
-Crash-safe text-vector ownership, recovery and GC are implemented. Remaining
-reliability work covers user-facing resources and long-running product jobs:
+Crash-safe text-vector ownership, recovery and GC are implemented. The durable
+video-index job slice now persists plans, progress, cancellation, retry and
+deduplication; its deterministic browser smoke test crosses the real Vite proxy,
+FastAPI, SQLite dispatcher and React polling path without loading production
+models. Remaining reliability work is narrower:
 
 - video and export deletion with validated cascade plans;
 - free-space checks, quotas, retention and temporary-file scavenging;
 - expose recovery quarantine/degraded state and audit/storage growth in health metrics;
-- durable job progress, cancellation, retry and deduplication;
 - background evaluation/export and bounded heavy reranking;
 - generated OpenAPI-to-TypeScript contracts plus runtime response validation;
-- real frontend-to-FastAPI integration test with a deterministic demo asset;
 - frontend coverage gates focused on critical flows;
 - backup/restore verification for the numbered SQLite migrations;
 - local serving of the built frontend without macOS application packaging.
@@ -304,8 +305,10 @@ Design and nonessential product features remain last priority.
 5. **Benchmark registry** — portable manifests, immutable runs and baseline.
 6. **Ablations** — evidence-based provider retention decisions.
 7. **Sports engine** — detector/tracker/OCR/rules, then learned fusion if justified.
-8. **Lifecycle/jobs/contracts/E2E** — text-vector crash recovery is complete;
-   user jobs, retention, contracts and integration coverage remain.
+8. **Lifecycle/jobs/contracts/E2E** — text-vector crash recovery, durable video
+   jobs, atomic release publication and one deterministic real-stack browser
+   path are implemented; retention, generated contracts and broader integration
+   coverage remain.
 9. **GitHub/release** — protected, documented release baseline.
 
 No phase may claim completion only because unit tests are green. Relevant data

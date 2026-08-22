@@ -5,11 +5,11 @@
 ```mermaid
 flowchart LR
     U["Upload API"] --> V["FFprobe validation"]
-    V --> Q["Serial processing queue"]
+    V --> Q["SQLite durable job dispatcher"]
     Q --> S["PySceneDetect"]
     Q --> W["Isolated Whisper MLX worker"]
-    S --> O["PaddleOCR"]
-    S --> R["Isolated RF-DETR / explicit hosted Roboflow"]
+    S --> O["Optional attested PaddleOCR worker"]
+    S --> R["Attested isolated RF-DETR"]
     S --> L["Isolated Lighthouse worker"]
     S --> T["Immutable scene generations"]
     Q --> G["Isolated SigLIP 2 → dense generation"]
@@ -48,8 +48,9 @@ as temporal segments:
 
 Qdrant stores vectors and identity-only payloads in immutable per-video
 generations; SQLite owns the active-generation pointer and upstream lineage.
-SigLIP and Lighthouse keep rebuildable, versioned per-video artifacts outside
-SQLite. Their query-time
+SigLIP and Lighthouse keep immutable, versioned per-video artifacts outside
+SQLite, while SQLite stores the exact descriptors and owns the active release.
+Their query-time
 `visual`/`lighthouse` evidence and Qwen/InternVideo judgements are returned in the
 search response, but are not accepted as persistent segment modalities. SQLite
 remains the source of truth for video metadata, processing state, and persisted
@@ -59,8 +60,11 @@ The API acquires an exclusive lock for `data/` before SQLite initialization,
 recovery or provider construction. Offline visual and Lighthouse maintenance use
 the same ownership boundary. Within one runtime, Indexer and GC share a
 `TextVectorStorageGate`, and a single lazy embedded-Qdrant client is reused.
-Shutdown stops intake and drops queued backlog; if the current ML operation is
-still running, a reaper retains Qdrant and the lock until workers actually stop.
+Shutdown stops new claims but preserves queued rows. If the current ML operation
+is still running, a reaper retains Qdrant and the data lock until the dispatcher
+and GC actually stop. Startup first recovers artifact builds, then terminalizes
+an abandoned RUNNING job and creates an exact-plan retry child before starting
+new workers.
 
 ## Ranking
 
@@ -107,6 +111,18 @@ generations; text-vector, dense visual and Lighthouse activation preserve their
 previous pointers. Dense and Lighthouse failures become video warnings, while
 Qwen and InternVideo failures are logged at query time.
 
+Every upload/reindex is a durable `video_index` job. The upload record, immutable
+Asset identity, persisted canonical plan and QUEUED job are committed together;
+reindex snapshots the prior video projection in one transaction. A RUNNING job
+owns a fresh secret execution token, and every linked stage/build mutation is
+fenced by that token. Job-owned segment, vector, SigLIP and Lighthouse outputs
+remain inactive while the job runs. Only `complete_video_index_job` publishes one
+coherent SQLite release; cancellation, failure or crash recovery therefore leave
+the previous release selected. Completion also requires exactly one terminal,
+plan-matching receipt for each of the seven stages; a missing optional provider
+is recorded explicitly instead of disappearing from history. Provider
+`active.json` files are legacy caches, not authority for job-backed search.
+
 Text-vector recovery is leased and fenced. Temporary Qdrant failures remain
 retryable with capped backoff, permanent contract violations fail closed, and
 corrupt recovery metadata is quarantined without becoming a deletion target.
@@ -123,12 +139,19 @@ before a job completes.
   then accepts exactly one file and enforces the media-size limit again while
   copying it into application storage.
 - FFmpeg is always invoked with argument arrays, never through a shell.
+- Durable indexing uses content-attested FFmpeg/FFprobe paths with an empty
+  subprocess environment and binds their bytes/version output, the reviewed
+  Python lock, required distributions, and exact Python runtime platform into
+  the persisted executor identity. Drift is checked before release activation.
 - SQLite writes use parameters.
 - Public request models reject unknown fields, unsafe video IDs, non-finite values
   and inverted intervals.
 - Media, thumbnail, and export routes resolve symlinks and verify containment in
   their dedicated directories.
-- Local RF-DETR processes frames on the VideoScope machine. Only the optional Roboflow Serverless path receives frames, and only after both an API key and a non-local model ID are explicitly configured.
+- Local RF-DETR processes frames on the VideoScope machine. The legacy
+  Roboflow Serverless adapter can receive selected frames only after both an API
+  key and a non-local model ID are explicitly configured; durable jobs reject
+  that mutable cloud boundary and require the attested isolated worker.
 - SigLIP and local RF-DETR run in one authenticated loopback-only vision worker
   with a dedicated hashed environment and an identity-bound MPS/float32 compute
   contract. It accepts only bounded immutable image snapshots from allowlisted
