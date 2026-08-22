@@ -21,6 +21,7 @@ for path in \
   .venv-vision/pyvenv.cfg \
   .venv-whisper/pyvenv.cfg \
   frontend/dist/index.html \
+  frontend/coverage/index.html \
   test-results/result.json \
   playwright-report/index.html \
   .pnpm-store/index.json \

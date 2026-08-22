@@ -33,6 +33,7 @@ frontend/.vite/
 .playwright-cli/
 playwright-report/
 test-results/
+frontend/coverage/
 output/
 outputs/
 
