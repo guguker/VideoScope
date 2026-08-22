@@ -12,6 +12,7 @@ import {
 } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import type { VideoItem } from '../types'
+import { isActiveJob, isRetryableJob, jobStatusLabel } from '../lib/jobs'
 import { formatBytes, formatDuration } from '../lib/time'
 
 interface LibraryPanelProps {
@@ -21,6 +22,8 @@ interface LibraryPanelProps {
   onToggleCollapsed: () => void
   onSelect: (video: VideoItem) => void
   onReindex: (video: VideoItem) => void
+  onCancelJob: (video: VideoItem) => void
+  onRetryJob: (video: VideoItem) => void
   onRename: (video: VideoItem, name: string) => Promise<void>
   onUpload: () => void
 }
@@ -43,6 +46,8 @@ export function LibraryPanel({
   onToggleCollapsed,
   onSelect,
   onReindex,
+  onCancelJob,
+  onRetryJob,
   onRename,
   onUpload,
 }: LibraryPanelProps) {
@@ -107,9 +112,22 @@ export function LibraryPanel({
         />
       </label>
       <div className="library-list">
-        {visibleVideos.map((video) => (
+        {visibleVideos.map((video) => {
+          const job = video.latest_job
+          const activeJob = isActiveJob(job) ? job : null
+          const retryableJob = isRetryableJob(job) ? job : null
+          const legacyWork = !job && (video.status === 'processing' || video.status === 'queued')
+          const showsProgress = Boolean(activeJob) || legacyWork
+          const progress = activeJob?.progress ?? video.progress
+          const statusLabel = job ? jobStatusLabel(job) : statusLabels[video.status]
+          const statusClass = activeJob
+            ? 'processing'
+            : retryableJob
+              ? 'failed'
+              : video.status
+          return (
           <div
-            className={`library-row ${selectedId === video.id ? 'is-selected' : ''}`}
+            className={`library-row ${selectedId === video.id ? 'is-selected' : ''} ${activeJob ? 'has-active-job' : ''} ${retryableJob ? 'has-retryable-job' : ''}`}
             key={video.id}
           >
             {editingId === video.id && !collapsed ? (
@@ -159,7 +177,7 @@ export function LibraryPanel({
               <span className="library-thumb">
                 {video.thumbnail_url ? (
                   <img src={video.thumbnail_url} alt="" />
-                ) : video.status === 'processing' || video.status === 'queued' ? (
+                ) : showsProgress ? (
                   <LoaderCircle className="spin" size={19} />
                 ) : (
                   <Film size={19} />
@@ -170,19 +188,19 @@ export function LibraryPanel({
                 <span className="library-meta">
                   {video.duration ? formatDuration(video.duration) : formatBytes(video.size_bytes)}
                   <i aria-hidden="true" />
-                  <em className={`status-text status-${video.status}`}>{statusLabels[video.status]}</em>
+                  <em className={`status-text status-${statusClass}`}>{statusLabel}</em>
                 </span>
-                {(video.status === 'processing' || video.status === 'queued') && (
-                  <span className="mini-progress" aria-label={`${Math.round(video.progress * 100)}%`}>
-                    <span style={{ width: `${Math.max(3, video.progress * 100)}%` }} />
+                {showsProgress && (
+                  <span className="mini-progress" aria-label={`${Math.round(progress * 100)}%`}>
+                    <span style={{ width: `${Math.max(3, progress * 100)}%` }} />
                   </span>
                 )}
               </span>
             </button>
             )}
-            {editingId !== video.id && video.status !== 'processing' && video.status !== 'queued' && (
+            {editingId !== video.id && !legacyWork && (
               <span className="library-actions">
-                {!collapsed && (
+                {!collapsed && !activeJob && (
                   <button
                     className="icon-button library-rename"
                     type="button"
@@ -193,19 +211,47 @@ export function LibraryPanel({
                     <Pencil size={14} />
                   </button>
                 )}
-                <button
-                  className="icon-button library-reindex"
-                  type="button"
-                  onClick={() => onReindex(video)}
-                  title="Переиндексировать"
-                  aria-label={`Переиндексировать ${videoName(video)}`}
-                >
-                  <RefreshCw size={15} />
-                </button>
+                {activeJob && (
+                  <button
+                    className="icon-button library-cancel-job"
+                    type="button"
+                    onClick={() => onCancelJob(video)}
+                    disabled={activeJob.cancel_requested_at !== null}
+                    title={activeJob.cancel_requested_at ? 'Отмена запрошена' : 'Отменить индексацию'}
+                    aria-label={activeJob.cancel_requested_at
+                      ? `Отмена индексации ${videoName(video)} запрошена`
+                      : `Отменить индексацию ${videoName(video)}`}
+                  >
+                    <X size={15} />
+                  </button>
+                )}
+                {retryableJob && (
+                  <button
+                    className="icon-button library-retry-job"
+                    type="button"
+                    onClick={() => onRetryJob(video)}
+                    title="Повторить индексацию"
+                    aria-label={`Повторить индексацию ${videoName(video)}`}
+                  >
+                    <RefreshCw size={15} />
+                  </button>
+                )}
+                {!activeJob && !retryableJob && video.status === 'ready' && (
+                  <button
+                    className="icon-button library-reindex"
+                    type="button"
+                    onClick={() => onReindex(video)}
+                    title="Переиндексировать"
+                    aria-label={`Переиндексировать ${videoName(video)}`}
+                  >
+                    <RefreshCw size={15} />
+                  </button>
+                )}
               </span>
             )}
           </div>
-        ))}
+          )
+        })}
         {videos.length === 0 && (
           <button className="library-empty" type="button" onClick={onUpload}>
             <Video size={22} />

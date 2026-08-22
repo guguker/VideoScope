@@ -1,5 +1,28 @@
 export type VideoStatus = 'queued' | 'processing' | 'ready' | 'failed'
 
+export type JobIntent = 'ingest' | 'reindex'
+export type JobState = 'queued' | 'running' | 'complete' | 'failed' | 'cancelled'
+
+export interface JobSummary {
+  job_id: string
+  intent: JobIntent
+  state: JobState
+  progress: number
+  stage: string
+  attempt: number
+  cancel_requested_at: string | null
+  error_code: string | null
+  created_at: string
+  started_at: string | null
+  finished_at: string | null
+  updated_at: string
+}
+
+export interface JobResponse extends JobSummary {
+  video_id: string
+  retry_of_job_id: string | null
+}
+
 export interface VideoItem {
   id: string
   original_name: string
@@ -17,6 +40,7 @@ export interface VideoItem {
   updated_at: string
   media_url: string
   thumbnail_url: string | null
+  latest_job: JobSummary | null
 }
 
 export type ProviderState = 'ready' | 'needs_configuration' | 'unavailable' | 'loading'

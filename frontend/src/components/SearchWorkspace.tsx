@@ -12,6 +12,7 @@ import {
 } from 'lucide-react'
 import { FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from 'react'
 import type { SearchMode, SearchResult, VideoItem } from '../types'
+import { isActiveJob, jobStatusLabel } from '../lib/jobs'
 import { formatDuration, formatMomentRange } from '../lib/time'
 import { timelineMarker } from '../lib/timeline'
 import {
@@ -390,6 +391,8 @@ function ResultRow({
 export function SearchWorkspace(props: SearchWorkspaceProps) {
   const readyVideos = props.videos.filter((video) => video.status === 'ready')
   const tracedResult = props.selectedResult || props.results[0] || null
+  const selectedJob = props.selectedVideo?.latest_job || null
+  const activeSelectedJob = isActiveJob(selectedJob) ? selectedJob : null
   const [currentTime, setCurrentTime] = useState(0)
   useEffect(() => setCurrentTime(0), [props.selectedVideo?.id])
   const submit = (event: FormEvent) => {
@@ -490,6 +493,14 @@ export function SearchWorkspace(props: SearchWorkspaceProps) {
                 </button>
               )}
             </div>
+            {activeSelectedJob && (
+              <div className="active-job-banner" role="status">
+                <LoaderCircle className="spin" size={16} />
+                <span>{jobStatusLabel(activeSelectedJob)}</span>
+                <strong>{Math.round(activeSelectedJob.progress * 100)}%</strong>
+                <i aria-hidden="true"><b style={{ width: `${activeSelectedJob.progress * 100}%` }} /></i>
+              </div>
+            )}
             <VideoPlayer
               video={props.selectedVideo}
               seekTo={props.selectedResult?.start ?? null}
@@ -510,9 +521,9 @@ export function SearchWorkspace(props: SearchWorkspaceProps) {
             {props.selectedVideo.status === 'failed' ? <Film size={28} /> : <LoaderCircle className="spin" size={28} />}
             <div>
               <h1>{displayVideoName(props.selectedVideo)}</h1>
-              <p>{props.selectedVideo.error || `Этап: ${props.selectedVideo.stage}`}</p>
+              <p>{selectedJob ? jobStatusLabel(selectedJob) : props.selectedVideo.status === 'failed' ? 'Ошибка индексации' : 'Индексация'}</p>
               {props.selectedVideo.status !== 'failed' && (
-                <span className="large-progress"><i style={{ width: `${props.selectedVideo.progress * 100}%` }} /></span>
+                <span className="large-progress"><i style={{ width: `${(activeSelectedJob?.progress ?? props.selectedVideo.progress) * 100}%` }} /></span>
               )}
             </div>
           </section>

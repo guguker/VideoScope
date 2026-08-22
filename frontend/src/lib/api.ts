@@ -4,6 +4,7 @@ import type {
   EvaluationReport,
   EvaluationVariantName,
   ExportResult,
+  JobResponse,
   ProviderStatus,
   SearchMode,
   SearchResult,
@@ -74,7 +75,15 @@ export const api = {
       body: JSON.stringify({ entries }),
     }),
   reindex: (videoId: string) =>
-    request<{ status: string; video_id: string }>(`/api/videos/${videoId}/reindex`, {
+    request<VideoItem>(`/api/videos/${encodeURIComponent(videoId)}/reindex`, {
+      method: 'POST',
+    }),
+  cancelJob: (jobId: string) =>
+    request<JobResponse>(`/api/jobs/${encodeURIComponent(jobId)}/cancel`, {
+      method: 'POST',
+    }),
+  retryJob: (jobId: string) =>
+    request<JobResponse>(`/api/jobs/${encodeURIComponent(jobId)}/retry`, {
       method: 'POST',
     }),
   renameVideo: (videoId: string, name: string) =>

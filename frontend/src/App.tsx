@@ -7,6 +7,7 @@ import { SearchWorkspace } from './components/SearchWorkspace'
 import { TopBar } from './components/TopBar'
 import { api, uploadVideo } from './lib/api'
 import { addClip, updateClip } from './lib/clipQueue'
+import { isActiveJob, mergeJobResponse, mergeVideoResponse } from './lib/jobs'
 import type {
   ClipDraft,
   ExportResult,
@@ -67,7 +68,7 @@ export default function App() {
   }, [loadVideos])
 
   useEffect(() => {
-    const hasWork = videos.some((video) => video.status === 'queued' || video.status === 'processing')
+    const hasWork = videos.some((video) => isActiveJob(video.latest_job))
     if (!hasWork) return
     const timer = window.setInterval(() => void loadVideos(true), 1500)
     return () => window.clearInterval(timer)
@@ -83,7 +84,7 @@ export default function App() {
     setUploadProgress(0)
     try {
       const video = await uploadVideo(file, setUploadProgress)
-      setVideos((current) => [video, ...current])
+      setVideos((current) => mergeVideoResponse(current, video))
       setSelectedVideoId(video.id)
       setSelectedResult(null)
       setUploadOpen(false)
@@ -151,6 +152,30 @@ export default function App() {
     }
   }
 
+  const handleCancelJob = async (video: VideoItem) => {
+    const job = video.latest_job
+    if (!isActiveJob(job) || job.cancel_requested_at) return
+    try {
+      const updated = await api.cancelJob(job.job_id)
+      setVideos((current) => mergeJobResponse(current, updated))
+      setToast(updated.state === 'cancelled' ? 'Индексация отменена' : 'Запрошена отмена индексации')
+    } catch (error) {
+      setToast(errorMessage(error))
+    }
+  }
+
+  const handleRetryJob = async (video: VideoItem) => {
+    const job = video.latest_job
+    if (job?.state !== 'failed' && job?.state !== 'cancelled') return
+    try {
+      const updated = await api.retryJob(job.job_id)
+      setVideos((current) => mergeJobResponse(current, updated))
+      setToast('Повторная индексация поставлена в очередь')
+    } catch (error) {
+      setToast(errorMessage(error))
+    }
+  }
+
   const toggleLibrary = () => {
     setLibraryCollapsed((current) => {
       const next = !current
@@ -200,13 +225,15 @@ export default function App() {
           }}
           onReindex={async (video) => {
             try {
-              await api.reindex(video.id)
-              await loadVideos(true)
+              const updated = await api.reindex(video.id)
+              setVideos((current) => mergeVideoResponse(current, updated))
               setToast('Повторная индексация запущена')
             } catch (error) {
               setToast(errorMessage(error))
             }
           }}
+          onCancelJob={(video) => void handleCancelJob(video)}
+          onRetryJob={(video) => void handleRetryJob(video)}
           onRename={handleRenameVideo}
           onUpload={() => setUploadOpen(true)}
         />

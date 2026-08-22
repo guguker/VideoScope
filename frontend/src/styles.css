@@ -219,6 +219,11 @@ a:focus-visible {
   background: var(--surface-soft);
 }
 
+.icon-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .app-grid {
   display: grid;
   grid-template-columns: 286px minmax(560px, 1fr) 360px;
@@ -493,8 +498,18 @@ a:focus-visible {
 }
 
 .library-row:hover .library-actions,
-.library-row:focus-within .library-actions {
+.library-row:focus-within .library-actions,
+.library-row.has-active-job .library-actions,
+.library-row.has-retryable-job .library-actions {
   opacity: 1;
+}
+
+.library-cancel-job {
+  color: var(--red);
+}
+
+.library-retry-job {
+  color: var(--blue);
 }
 
 .library-rename-form {
@@ -816,6 +831,44 @@ a:focus-visible {
 
 .player-section {
   align-self: start;
+}
+
+.active-job-banner {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  margin-bottom: 9px;
+  padding: 7px 9px;
+  color: var(--blue);
+  border: 1px solid #c8d9e8;
+  border-radius: 5px;
+  background: var(--blue-soft);
+  font-size: 11px;
+}
+
+.active-job-banner span {
+  overflow: hidden;
+  color: var(--ink);
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.active-job-banner > i {
+  grid-column: 1 / -1;
+  height: 3px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: #cbd8e3;
+}
+
+.active-job-banner > i > b {
+  display: block;
+  height: 100%;
+  background: var(--blue);
+  transition: width 250ms ease;
 }
 
 .section-heading {
