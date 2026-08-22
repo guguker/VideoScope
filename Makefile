@@ -42,8 +42,8 @@ whisper-worker:
 install-ocr:
 	./scripts/install-ocr.sh
 
-install-video:
-	UV_PROJECT_ENVIRONMENT="$(CURDIR)/.venv-qwen" .venv/bin/uv sync --project backend --locked --extra video
+install-video: worker-platform-check
+	UV_PROJECT_ENVIRONMENT="$(CURDIR)/.venv-qwen" .venv/bin/uv sync --project backend --locked --extra video --python .venv/bin/python --no-python-downloads
 
 qwen-worker:
 	.venv-qwen/bin/python -m videoscope.providers.qwen_worker
