@@ -30,7 +30,7 @@ def worker_platform_is_supported(
 def main() -> None:
     if not worker_platform_is_supported():
         raise SystemExit(
-            "Vision/Whisper locks must be built with Python 3.12.13 "
+            "Isolated worker locks and runtimes require Python 3.12.13 "
             "on Apple Silicon with macOS 14 or newer"
         )
 
