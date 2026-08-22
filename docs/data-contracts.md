@@ -36,27 +36,41 @@ directory before they are served.
 | `evaluation/latest-report.json` | latest generated evaluation result | derived |
 | `.videoscope-runtime.lock` | persistent process-ownership inode guarded by `flock` | coordination state; never delete as cleanup |
 
-SQLite schema v8 stores derived evidence and its recovery state. Migration v5
+SQLite schema v9 stores derived evidence, durable video-index jobs and recovery
+state. Migration v5
 introduced source/specification-linked scene, speech, OCR and object generations;
 migration v6 added verified per-video text-vector generations; v7 introduced
 global generation tombstones and leased crash-safe GC jobs; v8 adds indefinitely
 recoverable transient retries with capped backoff, a monotonic total-attempt fence,
 a bounded window of 256 immutable recent audit rows, and quarantine for corrupt
-build/job metadata. A stage run, source SHA-256 and
+build/job metadata. Migration v9 adds canonical `VideoIndexPlanSnapshot` JSON,
+source/plan/idempotency identities, queued/running/terminal states, retry
+lineage, cancellation timestamps, secret execution-token fences, job-linked
+StageRuns and immutable external-index descriptors. A stage run, source SHA-256 and
 canonical specification hash identify each generation; separate SQLite pointers
-select the active segment and vector generations atomically.
-Reindexing never deletes the previous active generation. Scene images follow the
+select the active segment, vector, SigLIP and Lighthouse generations atomically.
+Job-owned segment/vector/external outputs are staged without changing those
+pointers. One successful job-completion transaction selects a coherent release;
+cancel/fail/recovery never publishes a partial release. Reindexing never deletes
+the previous active generation. That transaction requires an exact terminal
+`StageRun` receipt for all seven entries of the persisted plan; missing,
+duplicate, extra, cancelled or still-running receipts fail closed. Optional
+stages may finish as `failed` or `not_configured` without being mistaken for an
+unexecuted stage. Scene images follow the
 same rule under `thumbnails/<video-id>/generations/<generation-id>/` and are
 published before the database pointer changes.
 
 Rows migrated from older databases retain `generation_id = NULL`. They remain
 stored for recovery but are not trusted by lexical search, semantic indexing or
 thumbnail fallback. The application does not silently rebuild a ready library at
-startup: each legacy video needs an explicit Reindex action before its evidence
-becomes searchable again. Text-vector points are written into a new immutable
+startup: each legacy ready video needs an explicit Reindex action before its
+evidence becomes searchable again. Pre-v9 queued/processing rows are adopted only
+under the exclusive data lock after their current Asset and a newly persisted
+plan have been verified. Text-vector points are written into a new immutable
 Qdrant generation, followed by a manifest sentinel and an exact read-back
 validation. Only then may one SQLite transaction activate that generation and
-complete its stage run. A failed build preserves the previous active generation.
+complete an unowned legacy stage, or stage it for a durable job's final release.
+A failed build preserves the previous active generation.
 Legacy unversioned Qdrant points and markers remain inert and untrusted until an
 explicit reindex publishes a verified generation.
 

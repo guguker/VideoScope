@@ -3,8 +3,8 @@
 VideoScope разделяет базовое приложение и ресурсоёмкие ML-провайдеры. Backend
 использует `.venv`, SigLIP/RF-DETR — `.venv-vision`, Whisper —
 `.venv-whisper`, OCR — `.venv-ocr`, Qwen — `.venv-qwen`, а Lighthouse —
-`.venv-lighthouse`. Основному приложению нужен Python 3.12, а Vision/Whisper
-workers воспроизводимо поддерживаются на Apple Silicon с macOS 14+ и ровно
+`.venv-lighthouse`. Основному приложению нужен Python 3.12, а Vision, Whisper и
+OCR workers воспроизводимо поддерживаются на Apple Silicon с macOS 14+ и ровно
 Python 3.12.13. Lighthouse отдельно закреплён на Python 3.11.14. Также нужны
 Node.js 22, pnpm 11, FFmpeg и FFprobe. Intel Mac и Linux не входят в заявленный
 контракт локальных Apple-ML workers.
@@ -16,7 +16,7 @@ Node.js 22, pnpm 11, FFmpeg и FFprobe. Intel Mac и Linux не входят в 
 | base + dev | `make install` | FastAPI, SQLite/Qdrant, PySceneDetect, тесты (включая Torch-boundary regressions) и frontend-зависимости |
 | Vision worker | `make install-vision` | Изолированный SigLIP 2 + RF-DETR runtime из хэшированного lock |
 | Whisper worker | `make install-whisper` | Изолированный MLX Whisper runtime из хэшированного lock |
-| OCR worker | `make install-ocr` | PaddleOCR в изолированном `.venv-ocr`, связь по локальному JSONL stdio |
+| OCR worker | `make install-ocr` | PaddleOCR в изолированном `.venv-ocr`, аттестованный локальный JSONL stdio; точные model bytes предоставляются заранее |
 | Qwen worker | `make install-video` | Изолированные `.venv-qwen`, MLX-VLM и loopback HTTP worker |
 | Lighthouse worker | `make install-lighthouse` | Отдельный Python 3.11 lock с закреплёнными Lighthouse/OpenAI CLIP; модели ставятся только `make models-lighthouse` |
 
@@ -25,6 +25,13 @@ Node.js 22, pnpm 11, FFmpeg и FFprobe. Intel Mac и Linux не входят в 
 FastEmbed закреплён на `0.8.0`: для MPNet это фиксирует mean-pooling семантику.
 Версия runtime и pooling входят в identity Qdrant collection, поэтому их осознанное
 обновление автоматически требует полной перестройки текстового индекса.
+
+OCR worker не загружает модели самостоятельно. Репозиторий проверяет размеры и
+SHA-256 файлов из `workers/ocr/model-artifacts.lock.json`, но пока не содержит
+reviewed source/revision/downloader, способного получить именно эти bytes с
+чистого checkout. Перед `make install-ocr` оператор должен независимо
+предоставить проверенный набор; точная граница и оставшийся packaging blocker
+описаны в `workers/ocr/README.md`.
 
 `make models-base`, `make models-vision`, `make models-whisper` и
 `make models-video` запускаются только после установки соответствующего
@@ -116,6 +123,17 @@ Bootstrap устанавливает `uv==0.12.3` и всегда
 проекте (включая прежние in-process Whisper/Roboflow/SigLIP стеки). После такого
 базового reset нужные workers устанавливаются отдельно; ни один ML target больше
 не использует `--inexact` для изменения основного окружения.
+
+Durable indexing дополнительно аттестует исполняемый base toolchain перед
+созданием плана и непосредственно перед публикацией job release. В identity
+входят SHA-256 reviewed `backend/uv.lock`, точные версии обязательных
+распределений, реализация/patch-версия/платформа Python, а также содержимое и
+bounded `-version` output разрешённых FFmpeg/FFprobe. Абсолютные пути в identity
+не попадают. Аттестованный FFmpeg запускается с фиксированным пустым окружением,
+поэтому ambient `PATH`, `DYLD_*`, `LD_*` и proxy-переменные не меняют уже
+зафиксированный executor. Если локальная `.venv` расходится с lock-файлом,
+durable indexing fail closed; штатное восстановление — `make install`
+(`uv sync --locked`), а не ослабление проверки.
 
 Обновление Python-зависимостей выполняется явно:
 
