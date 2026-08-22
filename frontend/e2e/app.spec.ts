@@ -26,6 +26,7 @@ const video = {
   updated_at: '2026-07-20T10:10:00Z',
   media_url: '/api/videos/video-1/media',
   thumbnail_url: null,
+  latest_job: null,
 } satisfies VideoItem
 
 const providers = [
