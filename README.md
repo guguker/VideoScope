@@ -254,6 +254,8 @@ make demo
 Контракты HTTP и локального хранения — в [docs/data-contracts.md](docs/data-contracts.md).
 Правила Git, evidence и очистки истории — в [docs/repository-maintenance.md](docs/repository-maintenance.md).
 Эксперименты и ограничения спортивного профиля — в [docs/basketball-model-upgrade.md](docs/basketball-model-upgrade.md).
+
+Актуальный выбор локальных моделей, A/B на M4 Pro и условия fine-tune — в [docs/local-model-strategy.md](docs/local-model-strategy.md).
 Утверждённая системная переработка артефактов, индексов, benchmark и jobs — в
 [docs/system-rebuild.md](docs/system-rebuild.md).
 
