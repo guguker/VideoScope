@@ -1,0 +1,157 @@
+{
+  "code_context": {
+    "repository_revision": "e226168d91e7c98ac5b3ccdcf0a148a4ebbd5fac",
+    "runner_committed": false,
+    "runner_sha256": "7acbddbd868126135b9102e85ebee68243c9bfa775546ce2f454f44c13eb1511"
+  },
+  "evidence_id": "local-vlm-ab-2026-08-23",
+  "hardware": {
+    "accelerator": "Apple M4 Pro 16-core GPU",
+    "computer": "MacBook Pro with Apple M4 Pro",
+    "operating_system": "macOS 26.6.2 (build 25G83)",
+    "unified_memory": "24 GB"
+  },
+  "inputs": [
+    {
+      "alias": "sports-made-three-blue-15",
+      "byte_size": 6882258,
+      "input_kind": "native_video",
+      "sha256": "884d52b34becf01adf940c2b979a67651e436f6deda03bf001f3b0973c9aa31b"
+    },
+    {
+      "alias": "sports-made-three-blue-15-storyboard",
+      "byte_size": 258371,
+      "dimensions": "1280x684",
+      "frame_count": 12,
+      "input_kind": "storyboard",
+      "sha256": "185ea48a6fb0aed4721a4a15301cfc78269fb8c67910fce77aa1cfc02fb212ce"
+    },
+    {
+      "alias": "sports-made-three-white-9",
+      "byte_size": 5345772,
+      "input_kind": "native_video",
+      "sha256": "aa203e4639b33bceb61c31fc96da56cb96a20df1d133ea777e2a7cfea6aeeb49"
+    }
+  ],
+  "observed_at_utc_date": "2026-08-22",
+  "protocol": {
+    "enable_thinking": false,
+    "execution": "one loaded model process with sequential inputs",
+    "fps_for_native_video": 2.0,
+    "latency_scope": "inference only; model load excluded",
+    "max_tokens": 128,
+    "prompt_identity": "made-basket-facts-v3 at repository_revision",
+    "temperature": 0.0
+  },
+  "results": [
+    {
+      "active_metal_bytes_after_load": 5950729192,
+      "cases": [
+        {
+          "facts_subset": {
+            "ball_through_hoop": true,
+            "shooter_outside_arc": true,
+            "three_point_signal": true
+          },
+          "inference_seconds": 61.04734,
+          "input_alias": "sports-made-three-blue-15",
+          "peak_metal_bytes": 8603741252,
+          "predicted_jersey": "4",
+          "status": "completed"
+        },
+        {
+          "facts_subset": {
+            "ball_through_hoop": true,
+            "shooter_outside_arc": true,
+            "three_point_signal": true
+          },
+          "inference_seconds": 36.32406,
+          "input_alias": "sports-made-three-white-9",
+          "peak_metal_bytes": 9261984836,
+          "predicted_jersey": "17",
+          "status": "completed"
+        }
+      ],
+      "model_id": "mlx-community/Qwen3.5-9B-MLX-4bit",
+      "model_revision": "938d8919941c6e7efd3c7150eff7fe9d12afa631",
+      "quantization": "4-bit"
+    },
+    {
+      "active_metal_bytes_after_load": 1781947400,
+      "cases": [
+        {
+          "facts_subset": {
+            "ball_through_hoop": false,
+            "shooter_outside_arc": true,
+            "three_point_signal": false
+          },
+          "inference_seconds": 17.12117,
+          "input_alias": "sports-made-three-blue-15",
+          "peak_metal_bytes": 4166046620,
+          "predicted_jersey": "15",
+          "status": "completed"
+        },
+        {
+          "facts_subset": {
+            "ball_through_hoop": true,
+            "shooter_outside_arc": true,
+            "three_point_signal": false
+          },
+          "inference_seconds": 14.7162,
+          "input_alias": "sports-made-three-white-9",
+          "peak_metal_bytes": 4165897380,
+          "predicted_jersey": "17",
+          "status": "completed",
+          "warning": "evidence text incorrectly described the known three-point event as a free throw"
+        }
+      ],
+      "model_id": "mlx-community/Qwen3-VL-2B-Instruct-4bit",
+      "model_revision": "9c4f5209e57b31f4b9dfba735de3fb983739c9cc",
+      "quantization": "4-bit"
+    },
+    {
+      "attempts": [
+        {
+          "error": "kIOGPUCommandBufferCallbackErrorOutOfMemory",
+          "input_alias": "sports-made-three-blue-15",
+          "status": "metal_oom"
+        },
+        {
+          "error": "kIOGPUCommandBufferCallbackErrorOutOfMemory",
+          "input_alias": "sports-made-three-blue-15-storyboard",
+          "status": "metal_oom"
+        }
+      ],
+      "local_artifact_sha256": {
+        "config": "f238d3a11e8d96b4f688fd09c627879b9b87a067835c83cb7c1c102df7aa4fb0",
+        "weight_index": "13b840162b4cb35c66fef7df072f7dbb4717908204364f5e5d9f9655a2758fa8",
+        "weight_shard_1": "014e69ab23abb0ec453346930260b2f78785c36e23b1922c6992ec6ec9732b37",
+        "weight_shard_2": "3f275e43480498e0d1d113a726c746066dfab73927a22873c45a238be55cee13",
+        "weight_shard_3": "ef97c143824615510df09938a188bbdf475f9e41a9475113b3fb07090c842137"
+      },
+      "model_id": "orcarouter/Qwen3.8-27B-Uncensored-MLX",
+      "model_revision": "401c79c2232c841da0cf3755e9a0ce3228d9cfc9",
+      "quantization": "4-bit",
+      "swap_mib": {
+        "after_native_attempt": 2401.81,
+        "after_storyboard_attempt": 2614.44,
+        "before_attempts": 541.25
+      }
+    }
+  ],
+  "runtime": {
+    "jinja2": "3.1.6",
+    "mlx": "0.32.1",
+    "mlx_vlm": "0.6.15",
+    "python": "3.12.13",
+    "transformers": "5.15.1"
+  },
+  "schema_version": 1,
+  "status": "exploratory_confounded_not_for_promotion",
+  "warnings": [
+    "The runner was content-addressed but was not committed at execution time.",
+    "Completed-case facts are a normalized subset transcribed from the retained summary; shot_attempt and other omitted judgement fields were not preserved and must not be interpreted as null.",
+    "Only two previously seen positive basketball cases were scored; no FPR or generalization claim is supported.",
+    "The third-party 27B checkpoint is abliterated, lacks meaningful guardrails according to its card, and is not a production candidate independent of memory limits."
+  ]
+}

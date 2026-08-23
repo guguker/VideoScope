@@ -1,0 +1,362 @@
+{
+  "assets": [
+    {
+      "asset_id": "panel_a",
+      "byte_size": 164587560,
+      "duration_seconds": 431.233333,
+      "provenance": {
+        "attribution": null,
+        "license_id": "LicenseRef-All-Rights-Reserved",
+        "license_uri": null,
+        "source": "Private user-provided regression fixture; metadata publication authorized by the workspace owner",
+        "source_uri": null
+      },
+      "sha256": "2d513952ddfcb2b9d98eb287ac698532195c8fa181477e831cc6b52b6c5e8598"
+    },
+    {
+      "asset_id": "sports_game_a",
+      "byte_size": 1738113172,
+      "duration_seconds": 6992.921542,
+      "provenance": {
+        "attribution": null,
+        "license_id": "LicenseRef-All-Rights-Reserved",
+        "license_uri": null,
+        "source": "Private user-provided regression fixture; metadata publication authorized by the workspace owner",
+        "source_uri": null
+      },
+      "sha256": "fa63155b818f0c227d42189d8e4366a02f87a1843a47d78f416326fecdb84206"
+    }
+  ],
+  "cases": [
+    {
+      "case_id": "panel-light-top-gesture-negative",
+      "expected_facts": [
+        {
+          "expected": false,
+          "fact_id": "matches_query"
+        }
+      ],
+      "expected_jersey": null,
+      "input_kind": "native_video",
+      "label_quality": "gold",
+      "notes": "Close visual negative immediately after the independently reviewed gesture.",
+      "prepared_input_byte_size": 782967,
+      "prepared_input_protocol_id": "ffmpeg-native-mp4-v1",
+      "prepared_input_sha256": "3939304753591a688247c6ef42bcba85b55b0fabbb2bd2c107f7bd6287324883",
+      "query": "a seated participant in a light-colored top visibly points or gestures with one hand",
+      "source_interval": {
+        "asset_id": "panel_a",
+        "end_seconds": 273.0,
+        "start_seconds": 268.0
+      },
+      "split": "regression_seen",
+      "split_group": "panel-a",
+      "stratum": "generic_visual"
+    },
+    {
+      "case_id": "panel-light-top-gesture-positive",
+      "expected_facts": [
+        {
+          "expected": true,
+          "fact_id": "matches_query"
+        }
+      ],
+      "expected_jersey": null,
+      "input_kind": "native_video",
+      "label_quality": "gold",
+      "notes": "Visual action independently confirmed from a deterministic contact sheet.",
+      "prepared_input_byte_size": 945255,
+      "prepared_input_protocol_id": "ffmpeg-native-mp4-v1",
+      "prepared_input_sha256": "7fefaa3adc740a8e764b188188ba787651d512cf7d7f28dabf995dc4fb6aeb26",
+      "query": "a seated participant in a light-colored top visibly points or gestures with one hand",
+      "source_interval": {
+        "asset_id": "panel_a",
+        "end_seconds": 267.0,
+        "start_seconds": 262.0
+      },
+      "split": "regression_seen",
+      "split_group": "panel-a",
+      "stratum": "generic_visual"
+    },
+    {
+      "case_id": "panel-roundtable-negative",
+      "expected_facts": [
+        {
+          "expected": false,
+          "fact_id": "matches_query"
+        }
+      ],
+      "expected_jersey": null,
+      "input_kind": "native_video",
+      "label_quality": "gold",
+      "notes": "Close visual negative immediately before the reviewed roundtable interval.",
+      "prepared_input_byte_size": 866950,
+      "prepared_input_protocol_id": "ffmpeg-native-mp4-v1",
+      "prepared_input_sha256": "b3731b367380115bc40202e7b1d298bd58fa9192b4ef70403e88aa480159fb47",
+      "query": "several people are visibly seated together in a roundtable discussion",
+      "source_interval": {
+        "asset_id": "panel_a",
+        "end_seconds": 184.9,
+        "start_seconds": 178.18
+      },
+      "split": "regression_seen",
+      "split_group": "panel-a",
+      "stratum": "generic_visual"
+    },
+    {
+      "case_id": "panel-roundtable-positive",
+      "expected_facts": [
+        {
+          "expected": true,
+          "fact_id": "matches_query"
+        }
+      ],
+      "expected_jersey": null,
+      "input_kind": "native_video",
+      "label_quality": "gold",
+      "notes": "Only the visible multi-person roundtable is labelled; no transcript-derived claim is included.",
+      "prepared_input_byte_size": 4915894,
+      "prepared_input_protocol_id": "ffmpeg-native-mp4-v1",
+      "prepared_input_sha256": "6b8d2e1b103660ddd1caf7f8404d7a36bdc5db087414487f96178b1a97c568bf",
+      "query": "several people are visibly seated together in a roundtable discussion",
+      "source_interval": {
+        "asset_id": "panel_a",
+        "end_seconds": 225.46,
+        "start_seconds": 186.9
+      },
+      "split": "regression_seen",
+      "split_group": "panel-a",
+      "stratum": "generic_visual"
+    },
+    {
+      "case_id": "sports-abstain",
+      "expected_facts": [
+        {
+          "expected": null,
+          "fact_id": "ball_through_hoop"
+        },
+        {
+          "expected": null,
+          "fact_id": "shooter_outside_arc"
+        },
+        {
+          "expected": null,
+          "fact_id": "shot_attempt"
+        },
+        {
+          "expected": null,
+          "fact_id": "three_point_signal"
+        }
+      ],
+      "expected_jersey": null,
+      "input_kind": "native_video",
+      "label_quality": "gold",
+      "notes": "Manual review found insufficient visual evidence; the expected behavior is abstention.",
+      "prepared_input_byte_size": 2981704,
+      "prepared_input_protocol_id": "ffmpeg-native-mp4-v1",
+      "prepared_input_sha256": "b82bac93bb0aa1af32ed5624cbf986bb577e9c7a635d774c57a2f3ed5a3a954b",
+      "query": null,
+      "source_interval": {
+        "asset_id": "sports_game_a",
+        "end_seconds": 1645.0,
+        "start_seconds": 1640.0
+      },
+      "split": "regression_seen",
+      "split_group": "sports-game-a",
+      "stratum": "basketball_facts"
+    },
+    {
+      "case_id": "sports-commercial-positive",
+      "expected_facts": [
+        {
+          "expected": true,
+          "fact_id": "matches_query"
+        }
+      ],
+      "expected_jersey": null,
+      "input_kind": "native_video",
+      "label_quality": "gold",
+      "notes": "The interval is an independently reviewed full-screen commercial.",
+      "prepared_input_byte_size": 4020157,
+      "prepared_input_protocol_id": "ffmpeg-native-mp4-v1",
+      "prepared_input_sha256": "30217cc33264b685f4ebc9bc39cd0d2083e84805e9936946c6d04b429f6d0902",
+      "query": "a full-screen commercial is visibly playing",
+      "source_interval": {
+        "asset_id": "sports_game_a",
+        "end_seconds": 1803.5,
+        "start_seconds": 1792.5
+      },
+      "split": "regression_seen",
+      "split_group": "sports-game-a",
+      "stratum": "generic_visual"
+    },
+    {
+      "case_id": "sports-commercial-slate-negative",
+      "expected_facts": [
+        {
+          "expected": false,
+          "fact_id": "matches_query"
+        }
+      ],
+      "expected_jersey": null,
+      "input_kind": "native_video",
+      "label_quality": "gold",
+      "notes": "Hard negative: a full-screen matchup slate adjacent to the commercial.",
+      "prepared_input_byte_size": 1027665,
+      "prepared_input_protocol_id": "ffmpeg-native-mp4-v1",
+      "prepared_input_sha256": "43a1fec52a5d8e88e0743ac524f3a8746867108d2a0709a3bfeebadb80e8dd23",
+      "query": "a full-screen commercial is visibly playing",
+      "source_interval": {
+        "asset_id": "sports_game_a",
+        "end_seconds": 1791.5,
+        "start_seconds": 1788.0
+      },
+      "split": "regression_seen",
+      "split_group": "sports-game-a",
+      "stratum": "generic_visual"
+    },
+    {
+      "case_id": "sports-made-free-throw",
+      "expected_facts": [
+        {
+          "expected": true,
+          "fact_id": "ball_through_hoop"
+        },
+        {
+          "expected": false,
+          "fact_id": "shooter_outside_arc"
+        },
+        {
+          "expected": true,
+          "fact_id": "shot_attempt"
+        },
+        {
+          "expected": false,
+          "fact_id": "three_point_signal"
+        }
+      ],
+      "expected_jersey": null,
+      "input_kind": "native_video",
+      "label_quality": "gold",
+      "notes": "Release, made basket, plus-one overlay and score change are visible in the reviewed interval.",
+      "prepared_input_byte_size": 4987913,
+      "prepared_input_protocol_id": "ffmpeg-native-mp4-v1",
+      "prepared_input_sha256": "4f6ea5056153761d7d05737c315c797615d135f99092fc1d46f05bb8a3566588",
+      "query": null,
+      "source_interval": {
+        "asset_id": "sports_game_a",
+        "end_seconds": 6411.5,
+        "start_seconds": 6397.5
+      },
+      "split": "regression_seen",
+      "split_group": "sports-game-a",
+      "stratum": "basketball_facts"
+    },
+    {
+      "case_id": "sports-made-three-blue-15",
+      "expected_facts": [
+        {
+          "expected": true,
+          "fact_id": "ball_through_hoop"
+        },
+        {
+          "expected": true,
+          "fact_id": "shooter_outside_arc"
+        },
+        {
+          "expected": true,
+          "fact_id": "shot_attempt"
+        },
+        {
+          "expected": true,
+          "fact_id": "three_point_signal"
+        }
+      ],
+      "expected_jersey": "15",
+      "input_kind": "native_video",
+      "label_quality": "gold",
+      "notes": "Known made three-point regression event, manually reviewed before this benchmark.",
+      "prepared_input_byte_size": 6882258,
+      "prepared_input_protocol_id": "ffmpeg-native-mp4-v1",
+      "prepared_input_sha256": "884d52b34becf01adf940c2b979a67651e436f6deda03bf001f3b0973c9aa31b",
+      "query": null,
+      "source_interval": {
+        "asset_id": "sports_game_a",
+        "end_seconds": 1869.438,
+        "start_seconds": 1857.438
+      },
+      "split": "regression_seen",
+      "split_group": "sports-game-a",
+      "stratum": "basketball_facts"
+    },
+    {
+      "case_id": "sports-made-three-white-9",
+      "expected_facts": [
+        {
+          "expected": true,
+          "fact_id": "ball_through_hoop"
+        },
+        {
+          "expected": true,
+          "fact_id": "shooter_outside_arc"
+        },
+        {
+          "expected": true,
+          "fact_id": "shot_attempt"
+        },
+        {
+          "expected": true,
+          "fact_id": "three_point_signal"
+        }
+      ],
+      "expected_jersey": "9",
+      "input_kind": "native_video",
+      "label_quality": "gold",
+      "notes": "Known made three-point regression event, manually reviewed before this benchmark.",
+      "prepared_input_byte_size": 5345772,
+      "prepared_input_protocol_id": "ffmpeg-native-mp4-v1",
+      "prepared_input_sha256": "aa203e4639b33bceb61c31fc96da56cb96a20df1d133ea777e2a7cfea6aeeb49",
+      "query": null,
+      "source_interval": {
+        "asset_id": "sports_game_a",
+        "end_seconds": 6870.625,
+        "start_seconds": 6860.0
+      },
+      "split": "regression_seen",
+      "split_group": "sports-game-a",
+      "stratum": "basketball_facts"
+    }
+  ],
+  "dataset_id": "video-verifier-private-regression",
+  "dataset_version": "1.0.0",
+  "description": "Content-addressed private regression seed; never a promotion holdout or generalization claim.",
+  "preparation_protocols": [
+    {
+      "input_kind": "native_video",
+      "parameters": [
+        {
+          "component_id": "attestation-limit",
+          "identity": "ffmpeg executable only; dynamic codec dependency closure, CPU dispatch and thread scheduling are not attested"
+        },
+        {
+          "component_id": "command-template",
+          "identity": "ffmpeg -hide_banner -loglevel error -y -ss {start:.3f} -i <content-addressed-source> -t {duration:.3f} -map 0:v:0 -map 0:a? -c:v libx264 -preset veryfast -crf 20 -c:a aac -movflags +faststart <prepared-input>"
+        },
+        {
+          "component_id": "ffmpeg-binary",
+          "identity": "ffmpeg=8.1.2;homebrew-revision=1;sha256=1332dc2de372bade9a8a63da0d6cdfab9de97fcefbae707bcc0b0506e1203327"
+        },
+        {
+          "component_id": "timestamp-policy",
+          "identity": "source start and requested duration formatted to exactly three decimal places"
+        }
+      ],
+      "preparer": {
+        "component_id": "clip-preparer",
+        "identity": "videoscope.media.ffmpeg.FFmpeg.build_clip_command@1"
+      },
+      "protocol_id": "ffmpeg-native-mp4-v1"
+    }
+  ],
+  "schema_version": 1
+}
