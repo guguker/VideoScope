@@ -951,6 +951,70 @@ def test_client_exposes_provider_registry_status(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
+    ("inference_timeout", "health_timeout", "expected_health_timeout"),
+    [(120.0, None, 5.0), (120.0, 30.0, 30.0), (12.0, 4.0, 4.0)],
+)
+def test_client_health_uses_a_bounded_timeout_independent_of_slow_inference(
+    tmp_path: Path,
+    inference_timeout: float,
+    health_timeout: float | None,
+    expected_health_timeout: float,
+) -> None:
+    runtime = FakeVisionRuntime()
+    observed_timeouts: list[float] = []
+
+    class RecordingHealthClient(FakeHTTPClient):
+        def get(self, url: str, **kwargs: object) -> FakeHTTPResponse:
+            timeout = kwargs.get("timeout")
+            assert isinstance(timeout, float)
+            observed_timeouts.append(timeout)
+            return super().get(url, **kwargs)
+
+    transport = RecordingHealthClient(runtime, tmp_path)
+    client_options: dict[str, object] = {}
+    if health_timeout is not None:
+        client_options["health_timeout"] = health_timeout
+    adapter = VisionWorkerClient(
+        endpoint="http://127.0.0.1:8093",
+        api_key=TOKEN,
+        input_root=tmp_path,
+        specification=runtime.specification,
+        timeout=inference_timeout,
+        client=transport,
+        **client_options,
+    )
+
+    assert adapter.capability().ready is True
+    assert observed_timeouts == [expected_health_timeout]
+
+
+def test_client_stalled_health_is_promptly_reported_unavailable(
+    tmp_path: Path,
+) -> None:
+    runtime = FakeVisionRuntime()
+    observed_timeouts: list[float] = []
+
+    class StalledHealthClient(FakeHTTPClient):
+        def get(self, _url: str, **kwargs: object) -> FakeHTTPResponse:
+            timeout = kwargs.get("timeout")
+            assert isinstance(timeout, float)
+            observed_timeouts.append(timeout)
+            raise TimeoutError("health endpoint stalled")
+
+    adapter = VisionWorkerClient(
+        endpoint="http://127.0.0.1:8093",
+        api_key=TOKEN,
+        input_root=tmp_path,
+        specification=runtime.specification,
+        timeout=600.0,
+        client=StalledHealthClient(runtime, tmp_path),
+    )
+
+    assert adapter.capability().ready is False
+    assert observed_timeouts == [5.0]
+
+
+@pytest.mark.parametrize(
     "endpoint",
     [
         "https://127.0.0.1:8093",

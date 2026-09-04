@@ -4,8 +4,11 @@ from dataclasses import dataclass
 from typing import Literal, Protocol
 
 from videoscope.search.service import (
+    EvidenceView,
     EvaluationSearchConfiguration,
     PinnedProductSearchSession,
+    PRODUCT_SEARCH_EXECUTION_COUNT_MAX,
+    ProductSearchExecutionTrace,
     ProductSearchIdentities,
     SearchAssetBinding,
     SearchResultView,
@@ -25,6 +28,50 @@ from .schema import ComponentIdentity
 _LIFECYCLE_SETUP_CLEANUP_ATTEMPTS = 3
 _RETAINED_SESSION_CLEANUP_ATTEMPTS = 4
 BENCHMARK_PRODUCT_ENVIRONMENT_COMPONENT_ID = "benchmark_product_environment"
+
+
+@dataclass(frozen=True, slots=True)
+class ProductSearchExecutionReceipt:
+    """Profile-bound wrapper around an identity-owned product search trace."""
+
+    schema_version: int
+    profile_id: str
+    profile_identity: str
+    search_configuration_identity: str
+    total_evidence_count: int
+    invoked_component_ids: tuple[str, ...]
+    component_input_counts: tuple[tuple[str, int], ...]
+    component_output_counts: tuple[tuple[str, int], ...]
+    component_evidence_counts: tuple[tuple[str, int], ...]
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.profile_id) is not str
+            or not self.profile_id
+            or type(self.profile_identity) is not str
+            or not self.profile_identity.startswith(f"{self.profile_id}@")
+            or type(self.total_evidence_count) is not int
+            or self.total_evidence_count < 0
+            or self.total_evidence_count > PRODUCT_SEARCH_EXECUTION_COUNT_MAX
+        ):
+            raise ValueError("product search execution receipt identity is invalid")
+        ProductSearchExecutionTrace(
+            schema_version=self.schema_version,
+            configuration_identity=self.search_configuration_identity,
+            invoked_component_ids=self.invoked_component_ids,
+            component_input_counts=self.component_input_counts,
+            component_output_counts=self.component_output_counts,
+            component_evidence_counts=self.component_evidence_counts,
+        )
+
+    def component_input_count(self, component_id: str) -> int:
+        return dict(self.component_input_counts).get(component_id, 0)
+
+    def component_output_count(self, component_id: str) -> int:
+        return dict(self.component_output_counts).get(component_id, 0)
+
+    def component_evidence_count(self, component_id: str) -> int:
+        return dict(self.component_evidence_counts).get(component_id, 0)
 
 
 class ProductBenchmarkLifecycleHandle(Protocol):
@@ -180,6 +227,7 @@ class ProductBenchmarkSearchAdapter:
             )
             session = ProductBenchmarkSearchSession(
                 profile=profile,
+                configuration=configuration,
                 assets=assets,
                 product_session=product_session,
                 lifecycle=lifecycle,
@@ -304,12 +352,14 @@ class ProductBenchmarkSearchSession:
         self,
         *,
         profile: BenchmarkProfile,
+        configuration: EvaluationSearchConfiguration,
         assets: tuple[ResolvedAsset, ...],
         product_session: PinnedProductSearchSession,
         lifecycle: ProductBenchmarkLifecycleHandle,
         environment_identity: ComponentIdentity | None,
     ) -> None:
         self._profile = profile
+        self._configuration_identity = configuration.identity
         self._assets = tuple(assets)
         self._assets_by_alias = {asset.asset_id: asset for asset in assets}
         self._aliases_by_video = {asset.video_id: asset.asset_id for asset in assets}
@@ -317,6 +367,7 @@ class ProductBenchmarkSearchSession:
         self._lifecycle = lifecycle
         self._environment_identity = environment_identity
         self._closed = False
+        self._last_search_execution: ProductSearchExecutionReceipt | None = None
         self._product_closed = False
         self._lifecycle_closed = False
         self._product_close_error: BaseException | None = None
@@ -388,6 +439,7 @@ class ProductBenchmarkSearchSession:
         limit: int,
     ) -> tuple[BenchmarkSearchHit, ...]:
         self._ensure_open()
+        self._last_search_execution = None
         if (
             type(assets) is not tuple
             or not assets
@@ -405,11 +457,24 @@ class ProductBenchmarkSearchSession:
         if len(results) > limit:
             raise RuntimeError("product search exceeded the frozen result limit")
         hits: list[BenchmarkSearchHit] = []
+        total_evidence_count = 0
         selected_aliases = {asset.asset_id for asset in pinned_assets}
         for result in results:
+            if not isinstance(result, SearchResultView):
+                raise RuntimeError("product search result contract is invalid")
             alias = self._aliases_by_video.get(result.video_id)
             if alias is None or alias not in selected_aliases:
                 raise RuntimeError("product search returned an unpinned video")
+            if (
+                type(result.evidence) is not list
+                or not result.evidence
+                or any(
+                    not isinstance(item, EvidenceView)
+                    for item in result.evidence
+                )
+            ):
+                raise RuntimeError("product search evidence contract is invalid")
+            total_evidence_count += len(result.evidence)
             hits.append(
                 BenchmarkSearchHit(
                     asset_id=alias,
@@ -418,7 +483,47 @@ class ProductBenchmarkSearchSession:
                     score=result.score,
                 )
             )
+        trace_reader = getattr(
+            self._product_session,
+            "last_search_execution_trace",
+            None,
+        )
+        if not callable(trace_reader):
+            raise RuntimeError("product search execution trace is unavailable")
+        trace = trace_reader()
+        if (
+            not isinstance(trace, ProductSearchExecutionTrace)
+            or trace.configuration_identity != self._configuration_identity
+        ):
+            raise RuntimeError("product search execution trace identity is invalid")
+        self._last_search_execution = ProductSearchExecutionReceipt(
+            schema_version=trace.schema_version,
+            profile_id=self._profile.profile_id,
+            profile_identity=self._profile.identity,
+            search_configuration_identity=trace.configuration_identity,
+            total_evidence_count=total_evidence_count,
+            invoked_component_ids=trace.invoked_component_ids,
+            component_input_counts=trace.component_input_counts,
+            component_output_counts=trace.component_output_counts,
+            component_evidence_counts=trace.component_evidence_counts,
+        )
         return tuple(hits)
+
+    def last_search_execution_receipt(self) -> ProductSearchExecutionReceipt:
+        """Return observed component contributions from the last search."""
+
+        self._ensure_open()
+        if self._last_search_execution is None:
+            raise RuntimeError("benchmark search execution receipt is unavailable")
+        return self._last_search_execution
+
+    def last_search_evidence_count(self) -> int:
+        """Return the inspectable source-evidence count from the last search."""
+
+        try:
+            return self.last_search_execution_receipt().total_evidence_count
+        except RuntimeError as error:
+            raise RuntimeError("benchmark source evidence count is unavailable") from error
 
     def close(self) -> None:
         if self._closed:

@@ -85,7 +85,7 @@ from videoscope.providers.vision_worker_contract import (
 )
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 EXIT_SUCCESS = 0
 EXIT_CONFIGURATION = 2
 EXIT_INFRASTRUCTURE = 3
@@ -129,6 +129,14 @@ _EXECUTED_FROZEN_PROFILE_IDS = (
     "qwen_verification",
 )
 _ALL_FROZEN_PROFILE_IDS = (*_EXECUTED_FROZEN_PROFILE_IDS, "internvideo")
+_PRODUCT_SEARCH_COMPONENT_IDS = (
+    "text_vectors",
+    "lexical_text",
+    "visual_dense",
+    "temporal_refinement",
+    "lighthouse",
+    "qwen_verification",
+)
 _MANAGED_WORKER_ROLES = ("vision", "whisper", "lighthouse", "qwen")
 _REQUIRED_WORKER_PYTHON_ROLES = (*_MANAGED_WORKER_ROLES, "ocr")
 _MANAGED_OCR_ENVIRONMENT_FIELDS = frozenset(
@@ -149,6 +157,7 @@ _ML_ENVIRONMENT_ROLE_BINDINGS = {
 }
 _WORKER_START_TIMEOUT_SECONDS = 300.0
 _WORKER_BINDING_TIMEOUT_SECONDS = 5.0
+_PRODUCT_SNAPSHOT_CLOSE_ATTEMPTS = 16
 
 
 class SmokeError(RuntimeError):
@@ -243,6 +252,8 @@ class _DisposableProductSettings(AppSettings):
     """Production settings with read-only model roots split from mutable state."""
 
     smoke_immutable_models_dir: Path
+    ffmpeg_binary: Path = Field(exclude=True)
+    ffprobe_binary: Path = Field(exclude=True)
     smoke_ocr_client_environment: dict[str, str] = Field(
         default_factory=dict,
         exclude=True,
@@ -827,9 +838,9 @@ def _validate_offline_environment(
     if any(environ.get(name) != value for name, value in _OFFLINE_ENVIRONMENT.items()):
         raise SmokeConfigurationError("offline_environment_required")
     expected_roots = {
-        "VIDEOSCOPE_DATA_DIR": root,
+        "VIDEOSCOPE_DATA_DIR": root / "product",
         "VIDEOSCOPE_VISION_WORKER_INPUT_ROOT": root,
-        "VIDEOSCOPE_WHISPER_WORKER_INPUT_ROOT": root / "media",
+        "VIDEOSCOPE_WHISPER_WORKER_INPUT_ROOT": root / "product" / "media",
         "VIDEOSCOPE_WHISPER_WORKER_WORK_ROOT": root / "tmp" / "whisper-worker",
     }
     if any(
@@ -1205,7 +1216,9 @@ def _worker_environments(
             **base("whisper"),
             "VIDEOSCOPE_WHISPER_WORKER_API_KEY": tokens["whisper"],
             "VIDEOSCOPE_WHISPER_WORKER_HOST": "127.0.0.1",
-            "VIDEOSCOPE_WHISPER_WORKER_INPUT_ROOT": str(root / "media"),
+            "VIDEOSCOPE_WHISPER_WORKER_INPUT_ROOT": str(
+                root / "product" / "media"
+            ),
             "VIDEOSCOPE_WHISPER_WORKER_LOG_LEVEL": "warning",
             "VIDEOSCOPE_WHISPER_WORKER_MODEL_NAME": WHISPER_MODEL,
             "VIDEOSCOPE_WHISPER_WORKER_MODEL_REVISION": whisper_revision,
@@ -1216,7 +1229,7 @@ def _worker_environments(
         },
         "lighthouse": {
             **base("lighthouse"),
-            "VIDEOSCOPE_DATA_DIR": str(root),
+            "VIDEOSCOPE_DATA_DIR": str(root / "product"),
             "VIDEOSCOPE_LIGHTHOUSE_API_KEY": tokens["lighthouse"],
             "VIDEOSCOPE_LIGHTHOUSE_CHECKPOINT": str(
                 models_root
@@ -1234,8 +1247,8 @@ def _worker_environments(
             "QWEN_VIDEO_MODEL": QWEN_VIDEO_MODEL,
             "QWEN_WORKER_MAX_CONCURRENCY": "1",
             "QWEN_WORKER_PORT": str(ports["qwen"]),
-            "VIDEOSCOPE_DATA_DIR": str(root),
-            "VIDEOSCOPE_QWEN_WORKER_INPUT_ROOT": str(root / "tmp"),
+            "VIDEOSCOPE_DATA_DIR": str(root / "product"),
+            "VIDEOSCOPE_QWEN_WORKER_INPUT_ROOT": str(root),
             "VIDEOSCOPE_QWEN_VIDEO_MODEL_REVISION": qwen_revision,
         },
     }
@@ -1469,7 +1482,7 @@ def _load_settings(
 ) -> AppSettings:
     try:
         return _DisposableProductSettings(
-            data_dir=root,
+            data_dir=root / "product",
             internvideo_api_key=None,
             internvideo_endpoint=None,
             lighthouse_checkpoint=(
@@ -1513,9 +1526,10 @@ def _ensure_workspace_directory(root: Path, name: str) -> Path:
 
 
 def _allocate_workspace(root: Path) -> SmokeWorkspace:
-    media = _ensure_workspace_directory(root, "media")
-    temporary = _ensure_workspace_directory(root, "tmp")
-    cache = _ensure_workspace_directory(root, "cache")
+    product = _ensure_workspace_directory(root, "product")
+    media = _ensure_workspace_directory(product, "media")
+    temporary = _ensure_workspace_directory(product, "tmp")
+    cache = _ensure_workspace_directory(product, "cache")
     lighthouse_cache = cache / "lighthouse"
     for _attempt in range(64):
         suffix = secrets.token_hex(12)
@@ -1691,6 +1705,7 @@ def build_real_clients(settings: object, root: Path) -> SmokeClients:
             input_root=root,
             specification=create_vision_worker_specification(settings),
             timeout=settings.vision_worker_timeout,
+            health_timeout=_WORKER_START_TIMEOUT_SECONDS,
         )
     except Exception as error:
         raise SmokeInfrastructureError(
@@ -1703,7 +1718,7 @@ def build_real_clients(settings: object, root: Path) -> SmokeClients:
         whisper = WhisperWorkerClient(
             endpoint=settings.whisper_worker_endpoint or "",
             api_key=settings.whisper_worker_api_key or "",
-            input_root=root / "media",
+            input_root=settings.media_dir,
             expected_model_identity=model_identity(
                 settings.whisper_model,
                 whisper_revision,
@@ -1736,8 +1751,8 @@ def build_real_clients(settings: object, root: Path) -> SmokeClients:
         lighthouse = LighthouseWorkerClient(
             endpoint=settings.lighthouse_endpoint or "",
             api_key=settings.lighthouse_api_key or "",
-            input_root=root / "media",
-            cache_dir=root / "cache",
+            input_root=settings.media_dir,
+            cache_dir=settings.cache_dir,
             timeout=settings.lighthouse_timeout,
         )
     except Exception as error:
@@ -1753,7 +1768,7 @@ def build_real_clients(settings: object, root: Path) -> SmokeClients:
         qwen = QwenWorkerClient(
             endpoint=settings.qwen_video_endpoint or "",
             api_key=settings.qwen_video_api_key or "",
-            input_root=root / "tmp",
+            input_root=root,
             expected_model_identity=model_identity(qwen_model, qwen_revision),
             timeout=settings.qwen_video_timeout,
         )
@@ -1889,36 +1904,156 @@ def _close_product_runtime(runtime: object) -> None:
     )
 
 
-def _evaluation_configuration(profile: object) -> object:
-    from videoscope.search.service import EvaluationSearchConfiguration
+def _close_product_snapshot_environment(environment: object) -> None:
+    close = getattr(environment, "close", None)
+    if not callable(close):
+        raise SmokeContractError(
+            "product_snapshot_contract_invalid",
+            component="product",
+        )
+    last_error: BaseException | None = None
+    cancellation: BaseException | None = None
+    for _attempt in range(_PRODUCT_SNAPSHOT_CLOSE_ATTEMPTS):
+        try:
+            close()
+        except (KeyboardInterrupt, SystemExit) as interrupted:
+            cancellation = cancellation or interrupted
+            last_error = interrupted
+            if getattr(environment, "is_closed", None) is True:
+                raise cancellation
+            continue
+        except BaseException as error:
+            last_error = error
+            if getattr(environment, "is_closed", None) is True:
+                raise SmokeInfrastructureError(
+                    "product_snapshot_final_attestation_failed",
+                    component="product",
+                ) from error
+            continue
+        if getattr(environment, "is_closed", None) is True:
+            if cancellation is not None:
+                raise cancellation
+            return
+        last_error = SmokeContractError(
+            "product_snapshot_close_contract_incomplete",
+            component="product",
+        )
+    raise SmokeInfrastructureError(
+        "product_snapshot_cleanup_failed",
+        component="product",
+    ) from last_error
 
-    plan = getattr(profile, "search_plan", None)
-    if plan is None:
+
+def _retry_product_snapshot_cleanup(error: object) -> None:
+    retry_cleanup = getattr(error, "retry_cleanup", None)
+    if not callable(retry_cleanup):
         raise SmokeContractError(
-            "product_search_profile_invalid",
+            "product_snapshot_cleanup_contract_invalid",
             component="product",
         )
-    configuration = EvaluationSearchConfiguration(
-        modalities=plan.modalities,
-        modality_weights=tuple(
-            (item.modality, item.weight) for item in plan.modality_weights
-        ),
-        text_search=plan.text_search,
-        visual_search=plan.visual_search,
-        temporal_refinement=plan.temporal_refinement,
-        lighthouse=plan.lighthouse,
-        reranker=plan.reranker,
-        reranker_trigger=plan.reranker_trigger,
-        reranker_candidate_limit=plan.reranker_candidate_limit,
-        result_limit=plan.result_limit,
-        schema_version=plan.schema_version,
+    last_error: BaseException | None = None
+    cancellation: BaseException | None = None
+    for _attempt in range(_PRODUCT_SNAPSHOT_CLOSE_ATTEMPTS):
+        try:
+            retry_cleanup()
+        except (KeyboardInterrupt, SystemExit) as interrupted:
+            cancellation = cancellation or interrupted
+            last_error = interrupted
+        except BaseException as cleanup_error:
+            last_error = cleanup_error
+        cleanup_pending = getattr(error, "cleanup_pending", None)
+        if cleanup_pending is False:
+            if cancellation is not None:
+                raise cancellation
+            return
+        if cleanup_pending is not True:
+            raise SmokeContractError(
+                "product_snapshot_cleanup_contract_invalid",
+                component="product",
+            )
+    raise SmokeInfrastructureError(
+        "product_snapshot_cleanup_failed",
+        component="product",
+    ) from last_error
+
+
+def _validate_product_search_execution_receipt(
+    profile: object,
+    value: object,
+) -> object:
+    from videoscope.benchmark.adapter import (
+        ProductBenchmarkSearchAdapter,
+        ProductSearchExecutionReceipt,
     )
-    if configuration.canonical_json != plan.canonical_json:
+    from videoscope.benchmark.profiles import BenchmarkProfile
+
+    if isinstance(profile, BenchmarkProfile):
+        plan = profile.search_plan
+        selected_components: list[str] = []
+        if plan.text_search != "disabled":
+            selected_components.extend(("text_vectors", "lexical_text"))
+        if plan.visual_search != "disabled":
+            selected_components.append("visual_dense")
+        if plan.temporal_refinement:
+            selected_components.append("temporal_refinement")
+        if plan.lighthouse:
+            selected_components.append("lighthouse")
+        if plan.reranker == "qwen":
+            selected_components.append("qwen_verification")
+        expected_configuration_identity = (
+            ProductBenchmarkSearchAdapter._configuration(profile).identity
+        )
+    else:
+        selected_components = []
+        expected_configuration_identity = ""
+    if (
+        not isinstance(profile, BenchmarkProfile)
+        or not isinstance(value, ProductSearchExecutionReceipt)
+        or value.profile_id != profile.profile_id
+        or value.profile_identity != profile.identity
+        or value.search_configuration_identity
+        != expected_configuration_identity
+        or value.total_evidence_count <= 0
+    ):
         raise SmokeContractError(
-            "product_search_profile_invalid",
+            "product_search_execution_receipt_invalid",
             component="product",
         )
-    return configuration
+    if value.invoked_component_ids != tuple(selected_components):
+        raise SmokeContractError(
+            "product_search_component_execution_unproven",
+            component="product",
+        )
+    if any(
+        value.component_input_count(component_id) <= 0
+        or value.component_output_count(component_id) <= 0
+        or value.component_evidence_count(component_id) <= 0
+        for component_id in selected_components
+    ):
+        raise SmokeContractError(
+            "product_search_component_execution_unproven",
+            component="product",
+        )
+    return value
+
+
+def _product_search_execution_payload(value: object) -> dict[str, object]:
+    from videoscope.benchmark.adapter import ProductSearchExecutionReceipt
+
+    if not isinstance(value, ProductSearchExecutionReceipt):
+        raise SmokeContractError(
+            "product_search_execution_receipt_invalid",
+            component="product",
+        )
+    return {
+        "schema_version": value.schema_version,
+        "profile_identity": value.profile_identity,
+        "search_configuration_identity": value.search_configuration_identity,
+        "invoked_component_ids": list(value.invoked_component_ids),
+        "component_input_counts": dict(value.component_input_counts),
+        "component_output_counts": dict(value.component_output_counts),
+        "component_evidence_counts": dict(value.component_evidence_counts),
+    }
 
 
 def run_disposable_product_integration(
@@ -1930,13 +2065,20 @@ def run_disposable_product_integration(
 ) -> Mapping[str, object]:
     """Exercise production durable ingest and frozen generation-pinned search."""
 
+    from videoscope.benchmark import (
+        AssetProvenance,
+        BenchmarkAsset,
+        BenchmarkEnvironmentCleanupError,
+        open_product_benchmark_environment,
+    )
+    from videoscope.benchmark.product_runtime import ProductSnapshotCleanupError
     from videoscope.benchmark.profiles import get_profile
     from videoscope.clips import ClipSelection
     from videoscope.processing.coordinator import VideoIndexCoordinator
     from videoscope.repository import Repository
     from videoscope.runtime import build_runtime
-    from videoscope.search.service import SearchAssetBinding
     from videoscope.media.uploads import validate_upload
+    from videoscope.runtime_lifecycle import ExclusiveRuntimeLock
 
     if not isinstance(settings, _DisposableProductSettings):
         raise SmokeConfigurationError(
@@ -1964,12 +2106,14 @@ def run_disposable_product_integration(
     evidence_count = 0
     profile_receipts: dict[str, dict[str, object]] = {}
     export_interval: tuple[float, float] | None = None
+    clip_service: object | None = None
     try:
         runtime = build_runtime(
             settings,
             repository,
             indexing_toolchain=toolchain,
             ocr_worker_environment=settings.ocr_worker_environment,
+            vision_worker_input_root=root,
         )
         runtime.start()
         plan_factory = getattr(runtime, "video_index_plan_factory", None)
@@ -2022,28 +2166,92 @@ def run_disposable_product_integration(
                 component="product",
             )
         asset = asset_records[0]
-        binding = SearchAssetBinding(
-            external_id="synthetic-smoke-asset",
-            video_id=video_id,
-            source_sha256=asset.sha256,
+        portable_asset = BenchmarkAsset(
+            asset_id="synthetic-smoke-asset",
+            sha256=asset.sha256,
             byte_size=asset.byte_size,
             duration_seconds=asset.duration_seconds,
+            provenance=AssetProvenance(
+                source="Phase 0 generated synthetic fixture",
+                license_id="project-generated-test-fixture",
+            ),
         )
+        clip_service = getattr(runtime, "clips", None)
+        _close_product_runtime(runtime)
+        runtime = None
         for profile_id in _EXECUTED_FROZEN_PROFILE_IDS:
             profile = get_profile(profile_id)
-            configuration = _evaluation_configuration(profile)
+            environment: object | None = None
             session: object | None = None
             profile_error: BaseException | None = None
             profile_evidence_count = 0
+            profile_execution_receipt: object | None = None
             try:
-                session = runtime.search.open_pinned_evaluation(
-                    configuration,
-                    (binding,),
+                try:
+                    environment = open_product_benchmark_environment(
+                        settings,
+                        root,
+                        profile_id=profile_id,
+                        execution_mode="warm",
+                    )
+                except BenchmarkEnvironmentCleanupError as error:
+                    try:
+                        _close_product_snapshot_environment(error.environment)
+                    except Exception as cleanup_error:
+                        raise SmokeInfrastructureError(
+                            "product_snapshot_cleanup_failed",
+                            component="product",
+                        ) from cleanup_error
+                    raise SmokeInfrastructureError(
+                        "product_snapshot_open_failed",
+                        component="product",
+                    ) from error
+                except ProductSnapshotCleanupError as error:
+                    try:
+                        _retry_product_snapshot_cleanup(error)
+                    except Exception as cleanup_error:
+                        raise SmokeInfrastructureError(
+                            "product_snapshot_cleanup_failed",
+                            component="product",
+                        ) from cleanup_error
+                    raise SmokeInfrastructureError(
+                        "product_snapshot_open_failed",
+                        component="product",
+                    ) from error
+                probe_sources = getattr(environment, "probe_worker_sources", None)
+                if not callable(probe_sources):
+                    raise SmokeContractError(
+                        "product_worker_source_probe_unavailable",
+                        component="product",
+                    )
+                expected_probe_roles = {
+                    "dense_siglip": ("vision",),
+                    "temporal_refinement": ("vision",),
+                    "lighthouse": ("vision",),
+                    "qwen_verification": ("qwen", "vision"),
+                }.get(profile_id, ())
+                if probe_sources() != expected_probe_roles:
+                    raise SmokeContractError(
+                        "product_worker_source_probe_invalid",
+                        component="product",
+                    )
+                asset_resolver = getattr(environment, "asset_resolver", None)
+                resolve_asset = getattr(asset_resolver, "resolve", None)
+                search_adapter = getattr(environment, "search_adapter", None)
+                open_session = getattr(search_adapter, "open_session", None)
+                if not callable(resolve_asset) or not callable(open_session):
+                    raise SmokeContractError(
+                        "product_snapshot_contract_invalid",
+                        component="product",
+                    )
+                resolved_asset = resolve_asset(portable_asset)
+                session = open_session(
+                    profile,
+                    (resolved_asset,),
                     execution_mode="warm",
-                    lifecycle_identity="warm:full-ml-smoke@1",
                 )
                 if any(
-                    session.capability_state(video_id, capability) != "complete"
+                    session.capability_state(resolved_asset, capability) != "complete"
                     for capability in profile.required_capabilities
                 ):
                     raise SmokeContractError(
@@ -2052,21 +2260,27 @@ def run_disposable_product_integration(
                     )
                 identities = session.identities()
                 index_components = {
-                    identity.component_id for identity in identities.index
+                    identity.component_id for identity in identities.index_identities
+                }
+                config_components = {
+                    identity.component_id for identity in identities.config_identities
                 }
                 expected_index_components = {"text_vector_generations"}
                 if "visual_dense" in profile.required_capabilities:
                     expected_index_components.add("visual_generations")
                 if "lighthouse" in profile.required_capabilities:
                     expected_index_components.add("lighthouse_generations")
-                if not expected_index_components <= index_components:
+                if (
+                    not expected_index_components <= index_components
+                    or "benchmark_product_environment" not in config_components
+                ):
                     raise SmokeContractError(
                         "product_generation_identity_incomplete",
                         component="product",
                     )
                 results = session.search(
                     _QUERY,
-                    (video_id,),
+                    (resolved_asset,),
                     limit=profile.search_plan.result_limit,
                 )
                 if not results:
@@ -2076,43 +2290,79 @@ def run_disposable_product_integration(
                     )
                 for result in results:
                     if (
-                        result.video_id != video_id
-                        or not result.evidence
-                        or not math.isfinite(float(result.start))
-                        or not math.isfinite(float(result.end))
-                        or result.start < 0
-                        or result.end <= result.start
-                        or result.end > asset.duration_seconds + 0.05
+                        result.asset_id != portable_asset.asset_id
+                        or not math.isfinite(float(result.start_seconds))
+                        or not math.isfinite(float(result.end_seconds))
+                        or result.start_seconds < 0
+                        or result.end_seconds <= result.start_seconds
+                        or result.end_seconds > asset.duration_seconds + 0.05
                     ):
                         raise SmokeContractError(
                             "product_search_evidence_invalid",
                             component="product",
                         )
-                    profile_evidence_count += len(result.evidence)
+                execution_receipt_reader = getattr(
+                    session,
+                    "last_search_execution_receipt",
+                    None,
+                )
+                if not callable(execution_receipt_reader):
+                    raise SmokeContractError(
+                        "product_search_execution_receipt_invalid",
+                        component="product",
+                    )
+                profile_execution_receipt = (
+                    _validate_product_search_execution_receipt(
+                        profile,
+                        execution_receipt_reader(),
+                    )
+                )
+                profile_evidence_count = int(
+                    getattr(profile_execution_receipt, "total_evidence_count")
+                )
                 if profile_id == "lexical_qdrant":
                     first = results[0]
-                    if first.end - first.start < 0.2:
+                    if first.end_seconds - first.start_seconds < 0.2:
                         raise SmokeContractError(
                             "product_export_interval_invalid",
                             component="product",
                         )
-                    export_interval = (float(first.start), float(first.end))
+                    export_interval = (
+                        float(first.start_seconds),
+                        float(first.end_seconds),
+                    )
             except BaseException as error:
                 profile_error = error
                 raise
             finally:
+                cleanup_failure: BaseException | None = None
                 if session is not None:
                     try:
                         session.close()
-                    except Exception as error:
-                        if profile_error is None:
-                            raise SmokeInfrastructureError(
+                    except BaseException as error:
+                        if isinstance(error, (KeyboardInterrupt, SystemExit)):
+                            cleanup_failure = error
+                        else:
+                            cleanup_failure = SmokeInfrastructureError(
                                 "product_search_cleanup_failed",
                                 component="product",
-                            ) from error
+                            )
+                            cleanup_failure.__cause__ = error
+                if environment is not None:
+                    try:
+                        _close_product_snapshot_environment(environment)
+                    except BaseException as error:
+                        cleanup_failure = cleanup_failure or error
+                if cleanup_failure is not None:
+                    raise cleanup_failure from profile_error
             if profile_evidence_count <= 0:
                 raise SmokeContractError(
                     "product_search_returned_no_evidence",
+                    component="product",
+                )
+            if profile_execution_receipt is None:
+                raise SmokeContractError(
+                    "product_search_execution_receipt_invalid",
                     component="product",
                 )
             evidence_count += profile_evidence_count
@@ -2121,6 +2371,9 @@ def run_disposable_product_integration(
                 "status": "complete",
                 "generation_bound": True,
                 "evidence_count": profile_evidence_count,
+                "component_execution": _product_search_execution_payload(
+                    profile_execution_receipt
+                ),
                 "open": "complete",
                 "search": "complete",
             }
@@ -2138,23 +2391,40 @@ def run_disposable_product_integration(
                 "product_export_interval_unavailable",
                 component="product",
             )
-        clips = getattr(runtime, "clips", None)
-        export = getattr(clips, "export", None)
+        export = getattr(clip_service, "export", None)
         if not callable(export):
             raise SmokeContractError(
                 "product_clip_export_unavailable",
                 component="product",
             )
-        exported = export(
-            "phase0-full-path",
-            [
-                ClipSelection(
-                    video_id=video_id,
-                    start=export_interval[0],
-                    end=export_interval[1],
-                )
-            ],
-        )
+        export_lock = ExclusiveRuntimeLock(settings.data_dir)
+        try:
+            export_lock.acquire_existing()
+            exported = export(
+                "phase0-full-path",
+                [
+                    ClipSelection(
+                        video_id=video_id,
+                        start=export_interval[0],
+                        end=export_interval[1],
+                    )
+                ],
+            )
+        except SmokeError:
+            raise
+        except Exception as error:
+            raise SmokeInfrastructureError(
+                "product_clip_export_failed",
+                component="product",
+            ) from error
+        finally:
+            try:
+                export_lock.close()
+            except Exception as error:
+                raise SmokeInfrastructureError(
+                    "product_export_lock_cleanup_failed",
+                    component="product",
+                ) from error
         exported_path = getattr(exported, "path", None)
         exported_duration = getattr(exported, "duration", None)
         if not isinstance(exported_path, Path):
@@ -2610,6 +2880,82 @@ def _run_components(
     return steps
 
 
+def _validate_serialized_product_search_execution(
+    profile_id: str,
+    evidence_count: int,
+    value: object,
+) -> dict[str, object]:
+    from videoscope.benchmark.adapter import ProductSearchExecutionReceipt
+    from videoscope.benchmark.profiles import get_profile
+
+    if not isinstance(value, Mapping):
+        raise SmokeContractError(
+            "product_integration_receipt_invalid",
+            component="product",
+        )
+    payload = dict(value)
+    invoked = payload.get("invoked_component_ids")
+    input_counts = payload.get("component_input_counts")
+    output_counts = payload.get("component_output_counts")
+    component_evidence_counts = payload.get("component_evidence_counts")
+    if (
+        set(payload)
+        != {
+            "schema_version",
+            "profile_identity",
+            "search_configuration_identity",
+            "invoked_component_ids",
+            "component_input_counts",
+            "component_output_counts",
+            "component_evidence_counts",
+        }
+        or not isinstance(invoked, list)
+        or not isinstance(input_counts, Mapping)
+        or not isinstance(output_counts, Mapping)
+        or not isinstance(component_evidence_counts, Mapping)
+        or set(input_counts) != set(_PRODUCT_SEARCH_COMPONENT_IDS)
+        or set(output_counts) != set(_PRODUCT_SEARCH_COMPONENT_IDS)
+        or set(component_evidence_counts) != set(_PRODUCT_SEARCH_COMPONENT_IDS)
+    ):
+        raise SmokeContractError(
+            "product_integration_receipt_invalid",
+            component="product",
+        )
+    try:
+        receipt = ProductSearchExecutionReceipt(
+            schema_version=payload["schema_version"],
+            profile_id=profile_id,
+            profile_identity=payload["profile_identity"],
+            search_configuration_identity=payload[
+                "search_configuration_identity"
+            ],
+            total_evidence_count=evidence_count,
+            invoked_component_ids=tuple(invoked),
+            component_input_counts=tuple(
+                (component_id, input_counts[component_id])
+                for component_id in _PRODUCT_SEARCH_COMPONENT_IDS
+            ),
+            component_output_counts=tuple(
+                (component_id, output_counts[component_id])
+                for component_id in _PRODUCT_SEARCH_COMPONENT_IDS
+            ),
+            component_evidence_counts=tuple(
+                (component_id, component_evidence_counts[component_id])
+                for component_id in _PRODUCT_SEARCH_COMPONENT_IDS
+            ),
+        )
+        _validate_product_search_execution_receipt(
+            get_profile(profile_id),
+            receipt,
+        )
+    except (KeyError, TypeError, ValueError, SmokeContractError) as error:
+        raise SmokeContractError(
+            "product_integration_receipt_invalid",
+            component="product",
+        ) from error
+    return _product_search_execution_payload(receipt)
+
+
 def _validate_product_receipt(value: object) -> dict[str, object]:
     if not isinstance(value, Mapping):
         raise SmokeContractError(
@@ -2677,6 +3023,16 @@ def _validate_product_receipt(value: object) -> dict[str, object]:
         profile_receipt = profiles.get(profile_id)
         if (
             not isinstance(profile_receipt, Mapping)
+            or set(profile_receipt)
+            != {
+                "close",
+                "status",
+                "generation_bound",
+                "evidence_count",
+                "component_execution",
+                "open",
+                "search",
+            }
             or profile_receipt.get("status") != "complete"
             or profile_receipt.get("open") != "complete"
             or profile_receipt.get("search") != "complete"
@@ -2690,12 +3046,18 @@ def _validate_product_receipt(value: object) -> dict[str, object]:
                 component="product",
             )
         count = int(profile_receipt["evidence_count"])
+        component_execution = _validate_serialized_product_search_execution(
+            profile_id,
+            count,
+            profile_receipt.get("component_execution"),
+        )
         observed_evidence_count += count
         normalized_profiles[profile_id] = {
             "close": "complete",
             "status": "complete",
             "generation_bound": True,
             "evidence_count": count,
+            "component_execution": component_execution,
             "open": "complete",
             "search": "complete",
         }
@@ -3205,10 +3567,23 @@ def execute(
             ) from error
 
         try:
+            settings_overrides = dict(
+                worker_cluster.settings_overrides  # type: ignore[attr-defined]
+            )
+            if production_run:
+                ffmpeg_binary, ffprobe_binary = _validated_media_executables(
+                    execution_environment
+                )
+                settings_overrides.update(
+                    {
+                        "ffmpeg_binary": ffmpeg_binary,
+                        "ffprobe_binary": ffprobe_binary,
+                    }
+                )
             settings = selected.load_settings(
                 resolved_root,
                 resolved_models_root,
-                worker_cluster.settings_overrides,  # type: ignore[attr-defined]
+                settings_overrides,
             )
         except SmokeError:
             raise

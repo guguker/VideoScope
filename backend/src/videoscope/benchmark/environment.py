@@ -751,6 +751,7 @@ class ProductBenchmarkEnvironment:
         self._scratch = scratch
         self._data_root: RetainedDirectory | None = None
         self._media_root: RetainedDirectory | None = None
+        self._fastembed_source_root: RetainedDirectory | None = None
         self._scratch_root: RetainedDirectory | None = None
         self._borrowed_descriptors: list[int] = []
         self._fastembed_snapshot: object | None = None
@@ -764,6 +765,7 @@ class ProductBenchmarkEnvironment:
         self._adapter_closed = False
         self._vector_index_closed = False
         self._scratch_root_closed = True
+        self._fastembed_source_root_closed = True
         self._media_root_closed = True
         self._data_root_closed = True
         self._scratch_removed = scratch is None
@@ -887,6 +889,42 @@ class ProductBenchmarkEnvironment:
         self._scratch_root = capability
         self._scratch_root_closed = False
 
+    def _retain_external_fastembed_source(self, path: Path) -> RetainedDirectory:
+        source_path, descriptor = _open_directory_path(
+            path,
+            label="FastEmbed model source",
+        )
+        self._borrowed_descriptors.append(descriptor)
+        try:
+            capability = RetainedDirectory.retain(source_path, descriptor)
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except BaseException as error:
+            raise BenchmarkEnvironmentError(
+                "FastEmbed model source could not be retained"
+            ) from error
+        if (
+            self._fastembed_source_root is not None
+            or not self._fastembed_source_root_closed
+        ):
+            capability.close()
+            raise BenchmarkEnvironmentError(
+                "FastEmbed model source is already retained"
+            )
+        self._fastembed_source_root = capability
+        self._fastembed_source_root_closed = False
+        self._close_borrowed_descriptors()
+        return capability
+
+    def _release_external_fastembed_source(self) -> None:
+        if self._fastembed_source_root_closed:
+            return
+        self._close_retained_directory(
+            self._fastembed_source_root,
+            label="FastEmbed model source",
+        )
+        self._fastembed_source_root_closed = True
+
     def _close_borrowed_descriptors(self) -> None:
         while self._borrowed_descriptors:
             descriptor = self._borrowed_descriptors[0]
@@ -994,6 +1032,7 @@ class ProductBenchmarkEnvironment:
                             ) from error
                     self._vector_index_closed = True
                 self._close_borrowed_descriptors()
+                self._release_external_fastembed_source()
                 if not self._scratch_root_closed:
                     self._close_retained_directory(
                         self._scratch_root,
@@ -1265,6 +1304,11 @@ def open_product_benchmark_environment(
         execution_mode,
     )
     data_dir = _absolute_path(settings.data_dir, label="product data")
+    models_dir = _absolute_path(settings.models_dir, label="product models")
+    fastembed_source_path = _absolute_path(
+        models_dir / "fastembed",
+        label="FastEmbed model source",
+    )
     # Freeze every derived product path against one canonical data root. This
     # keeps validated relative settings independent from later cwd changes.
     resolved_settings = settings.model_copy(update={"data_dir": data_dir})
@@ -1335,11 +1379,20 @@ def open_product_benchmark_environment(
             raise BenchmarkEnvironmentError(
                 "reviewed FastEmbed manifest differs from validated settings"
             )
+        try:
+            fastembed_relative = fastembed_source_path.relative_to(data_dir)
+        except ValueError:
+            fastembed_source = environment._retain_external_fastembed_source(
+                fastembed_source_path
+            )
+        else:
+            fastembed_source = data_root.child(fastembed_relative.as_posix())
         fastembed_snapshot = materialize_fastembed_snapshot(
-            data_root.child("models/fastembed"),
+            fastembed_source,
             scratch_root,
             manifest,
         )
+        environment._release_external_fastembed_source()
         environment._fastembed_snapshot = fastembed_snapshot
         embedding = fastembed_snapshot.create_embedding()
         ensure_embedding_ready = getattr(embedding, "ensure_ready", None)

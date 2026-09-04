@@ -4,7 +4,10 @@ from dataclasses import replace
 
 import pytest
 
-from videoscope.benchmark.adapter import ProductBenchmarkSearchAdapter
+from videoscope.benchmark.adapter import (
+    ProductBenchmarkSearchAdapter,
+    ProductSearchExecutionReceipt,
+)
 from videoscope.benchmark.catalog import ResolvedAsset
 from videoscope.benchmark.profiles import FROZEN_PROFILES
 from videoscope.benchmark.runner import BenchmarkSearchHit
@@ -14,6 +17,7 @@ from videoscope.search.service import (
     EvaluationSearchConfiguration,
     EvidenceView,
     ProductSearchComponentIdentity,
+    ProductSearchExecutionTrace,
     ProductSearchIdentities,
     SearchAssetBinding,
     SearchResultView,
@@ -43,6 +47,7 @@ class _RecordingProductSession:
         self.search_calls: list[tuple[str, tuple[str, ...], int]] = []
         self.states: dict[tuple[str, str], str] = {}
         self.results: list[SearchResultView] = []
+        self.execution_trace: ProductSearchExecutionTrace | None = None
 
     def identities(self) -> ProductSearchIdentities:
         return ProductSearchIdentities(
@@ -66,6 +71,11 @@ class _RecordingProductSession:
     ) -> list[SearchResultView]:
         self.search_calls.append((query, video_ids, limit))
         return self.results
+
+    def last_search_execution_trace(self) -> ProductSearchExecutionTrace:
+        if self.execution_trace is None:
+            raise RuntimeError("synthetic execution trace is unavailable")
+        return self.execution_trace
 
     def close(self) -> None:
         self.close_calls += 1
@@ -112,6 +122,37 @@ class _RecordingSearchService:
         assert execution_mode == "warm"
         assert lifecycle_identity.startswith("warm:")
         self.opened.append((configuration, assets))
+        invoked_component_ids: list[str] = []
+        if configuration.text_search != "disabled":
+            invoked_component_ids.extend(("text_vectors", "lexical_text"))
+        if configuration.visual_search != "disabled":
+            invoked_component_ids.append("visual_dense")
+        if configuration.temporal_refinement:
+            invoked_component_ids.append("temporal_refinement")
+        if configuration.lighthouse:
+            invoked_component_ids.append("lighthouse")
+        if configuration.reranker == "qwen":
+            invoked_component_ids.append("qwen_verification")
+        component_ids = (
+            "text_vectors",
+            "lexical_text",
+            "visual_dense",
+            "temporal_refinement",
+            "lighthouse",
+            "qwen_verification",
+        )
+        counts = tuple(
+            (component_id, int(component_id in invoked_component_ids))
+            for component_id in component_ids
+        )
+        self.session.execution_trace = ProductSearchExecutionTrace(
+            schema_version=1,
+            configuration_identity=configuration.identity,
+            invoked_component_ids=tuple(invoked_component_ids),
+            component_input_counts=counts,
+            component_output_counts=counts,
+            component_evidence_counts=counts,
+        )
         return self.session
 
 
@@ -192,9 +233,278 @@ def test_adapter_maps_local_video_ids_back_to_portable_asset_aliases() -> None:
     hits = tuple(session.search("spoken phrase", (asset,), limit=50))
 
     assert hits == (BenchmarkSearchHit("asset-a", 2.0, 4.0, 0.75),)
+    assert session.last_search_evidence_count() == 1
     assert service.session.search_calls == [
         ("spoken phrase", ("local-video-a",), 50)
     ]
+
+
+def test_adapter_wraps_pinned_execution_trace_without_top_five_count_bounds() -> None:
+    service = _RecordingSearchService()
+    evidence = [
+        EvidenceView(
+            modality="speech",
+            score=0.8,
+            text="semantic evidence",
+            source="semantic-generation",
+            confidence=0.9,
+            start=2.0,
+            end=4.0,
+            raw_score=0.8,
+            matched_terms=[],
+            details={},
+        ),
+        EvidenceView(
+            modality="ocr",
+            score=0.7,
+            text="lexical evidence",
+            source="lexical-stem",
+            confidence=0.8,
+            start=2.0,
+            end=4.0,
+            raw_score=0.7,
+            matched_terms=[],
+            details={},
+        ),
+        EvidenceView(
+            modality="visual",
+            score=0.9,
+            text="visual evidence",
+            source="siglip2",
+            confidence=None,
+            start=2.0,
+            end=4.0,
+            raw_score=0.9,
+            matched_terms=[],
+            details={},
+        ),
+        EvidenceView(
+            modality="lighthouse",
+            score=0.75,
+            text="lighthouse evidence",
+            source="lighthouse-corroborated",
+            confidence=None,
+            start=2.0,
+            end=4.0,
+            raw_score=0.75,
+            matched_terms=[],
+            details={},
+        ),
+        EvidenceView(
+            modality="qwen_video",
+            score=0.95,
+            text="qwen evidence",
+            source="qwen-video-verifier",
+            confidence=None,
+            start=2.0,
+            end=4.0,
+            raw_score=0.95,
+            matched_terms=[],
+            details={"model_evidence": "observed judgement"},
+        ),
+    ]
+    service.session.results = [
+        SearchResultView(
+            id="observed-result",
+            video_id="local-video-a",
+            video_name="private-name.mp4",
+            start=2.0,
+            end=4.0,
+            score=0.95,
+            modalities=["speech", "ocr", "visual", "lighthouse", "qwen_video"],
+            evidence=evidence,
+            thumbnail_url=None,
+            intent="evaluation",
+            explanation="frozen evaluation search plan",
+            refined=True,
+        )
+    ]
+    profile = FROZEN_PROFILES["qwen_verification"]
+    adapter = ProductBenchmarkSearchAdapter(service)  # type: ignore[arg-type]
+    asset = _asset()
+    session = adapter.open_session(profile, (asset,), execution_mode="warm")
+    configuration = service.opened[0][0]
+    component_ids = (
+        "text_vectors",
+        "lexical_text",
+        "visual_dense",
+        "temporal_refinement",
+        "lighthouse",
+        "qwen_verification",
+    )
+    trace = ProductSearchExecutionTrace(
+        schema_version=1,
+        configuration_identity=configuration.identity,
+        invoked_component_ids=component_ids,
+        component_input_counts=tuple((component_id, 2) for component_id in component_ids),
+        component_output_counts=tuple((component_id, 7) for component_id in component_ids),
+        component_evidence_counts=tuple((component_id, 6) for component_id in component_ids),
+    )
+    service.session.execution_trace = trace
+
+    session.search("query", (asset,), limit=50)
+
+    assert session.last_search_execution_receipt() == ProductSearchExecutionReceipt(
+        schema_version=1,
+        profile_id=profile.profile_id,
+        profile_identity=profile.identity,
+        search_configuration_identity=configuration.identity,
+        total_evidence_count=5,
+        invoked_component_ids=trace.invoked_component_ids,
+        component_input_counts=trace.component_input_counts,
+        component_output_counts=trace.component_output_counts,
+        component_evidence_counts=trace.component_evidence_counts,
+    )
+
+
+def test_execution_receipt_rejects_evidence_count_above_signed_64_bit() -> None:
+    profile = FROZEN_PROFILES["lexical_qdrant"]
+    component_ids = (
+        "text_vectors",
+        "lexical_text",
+        "visual_dense",
+        "temporal_refinement",
+        "lighthouse",
+        "qwen_verification",
+    )
+    zero_counts = tuple((component_id, 0) for component_id in component_ids)
+
+    with pytest.raises(ValueError, match="receipt identity is invalid"):
+        ProductSearchExecutionReceipt(
+            schema_version=1,
+            profile_id=profile.profile_id,
+            profile_identity=profile.identity,
+            search_configuration_identity=(
+                ProductBenchmarkSearchAdapter._configuration(profile).identity
+            ),
+            total_evidence_count=1 << 63,
+            invoked_component_ids=(),
+            component_input_counts=zero_counts,
+            component_output_counts=zero_counts,
+            component_evidence_counts=zero_counts,
+        )
+
+
+def test_invalid_search_attempt_clears_previous_execution_receipt() -> None:
+    service = _RecordingSearchService()
+    adapter = ProductBenchmarkSearchAdapter(service)  # type: ignore[arg-type]
+    asset = _asset()
+    session = adapter.open_session(
+        FROZEN_PROFILES["lexical_qdrant"],
+        (asset,),
+        execution_mode="warm",
+    )
+    assert session.search("query", (asset,), limit=50) == ()
+    assert session.last_search_execution_receipt().total_evidence_count == 0
+
+    with pytest.raises(ValueError, match="limit differs"):
+        session.search("query", (asset,), limit=49)
+    with pytest.raises(RuntimeError, match="execution receipt is unavailable"):
+        session.last_search_execution_receipt()
+
+
+def test_adapter_does_not_reconstruct_component_counts_from_final_views() -> None:
+    service = _RecordingSearchService()
+    service.session.results = [
+        SearchResultView(
+            id="generic-result",
+            video_id="local-video-a",
+            video_name="private-name.mp4",
+            start=2.0,
+            end=4.0,
+            score=0.75,
+            modalities=["speech", "qwen_video"],
+            evidence=[
+                EvidenceView(
+                    modality="speech",
+                    score=0.75,
+                    text="generic evidence remains",
+                    source="semantic-generation",
+                    confidence=0.9,
+                    start=2.0,
+                    end=4.0,
+                    raw_score=0.7,
+                    matched_terms=[],
+                    details={},
+                ),
+                EvidenceView(
+                    modality="qwen_video",
+                    score=0.5,
+                    text="unattested qwen-like evidence",
+                    source="qwen-video-verifier",
+                    confidence=None,
+                    start=2.0,
+                    end=4.0,
+                    raw_score=0.5,
+                    matched_terms=[],
+                    details={"matches_query": True},
+                ),
+            ],
+            thumbnail_url=None,
+            intent="evaluation",
+            explanation="frozen evaluation search plan",
+            refined=False,
+        )
+    ]
+    profile = FROZEN_PROFILES["qwen_verification"]
+    adapter = ProductBenchmarkSearchAdapter(service)  # type: ignore[arg-type]
+    asset = _asset()
+    session = adapter.open_session(profile, (asset,), execution_mode="warm")
+    trace = service.session.execution_trace
+    assert trace is not None
+    service.session.execution_trace = replace(
+        trace,
+        component_output_counts=tuple(
+            (component_id, 0 if component_id == "qwen_verification" else count)
+            for component_id, count in trace.component_output_counts
+        ),
+        component_evidence_counts=tuple(
+            (component_id, 0 if component_id == "qwen_verification" else count)
+            for component_id, count in trace.component_evidence_counts
+        ),
+    )
+
+    session.search("query", (asset,), limit=50)
+    receipt = session.last_search_execution_receipt()
+
+    assert receipt.total_evidence_count == 2
+    assert "qwen_verification" in receipt.invoked_component_ids
+    assert receipt.component_output_count("qwen_verification") == 0
+    assert receipt.component_evidence_count("qwen_verification") == 0
+
+
+def test_adapter_rejects_a_ranked_product_hit_without_inspectable_evidence() -> None:
+    service = _RecordingSearchService()
+    service.session.results = [
+        SearchResultView(
+            id="evidence-free-result",
+            video_id="local-video-a",
+            video_name="private-name.mp4",
+            start=2.0,
+            end=4.0,
+            score=0.75,
+            modalities=["speech"],
+            evidence=[],
+            thumbnail_url=None,
+            intent="evaluation",
+            explanation="frozen evaluation search plan",
+            refined=False,
+        )
+    ]
+    adapter = ProductBenchmarkSearchAdapter(service)  # type: ignore[arg-type]
+    asset = _asset()
+    session = adapter.open_session(
+        FROZEN_PROFILES["lexical_qdrant"],
+        (asset,),
+        execution_mode="warm",
+    )
+
+    with pytest.raises(RuntimeError, match="evidence contract"):
+        session.search("spoken phrase", (asset,), limit=50)
+    with pytest.raises(RuntimeError, match="evidence count is unavailable"):
+        session.last_search_evidence_count()
+    with pytest.raises(RuntimeError, match="execution receipt is unavailable"):
+        session.last_search_execution_receipt()
 
 
 def test_adapter_rejects_results_outside_the_pinned_portable_asset_set() -> None:

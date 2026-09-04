@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import importlib.util
 import json
 import os
@@ -9,12 +10,17 @@ from types import ModuleType, SimpleNamespace
 import numpy as np
 import pytest
 
+from videoscope.benchmark.adapter import (
+    ProductBenchmarkSearchAdapter,
+    ProductSearchExecutionReceipt,
+)
 from videoscope.benchmark.host_resources import (
     HOST_RESOURCE_IDENTITY,
     HostResourceRawSample,
     HostResourceSampler,
     HostResourceSnapshot,
 )
+from videoscope.benchmark.profiles import FROZEN_PROFILES
 from videoscope.providers.base import ProviderState
 from videoscope.providers.qwen_video import QwenVideoJudgement
 
@@ -40,9 +46,11 @@ def _offline_environment(root: Path, models_root: Path) -> dict[str, str]:
         "HF_HUB_OFFLINE": "1",
         "PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK": "True",
         "TRANSFORMERS_OFFLINE": "1",
-        "VIDEOSCOPE_DATA_DIR": str(root),
+        "VIDEOSCOPE_DATA_DIR": str(root / "product"),
         "VIDEOSCOPE_VISION_WORKER_INPUT_ROOT": str(root),
-        "VIDEOSCOPE_WHISPER_WORKER_INPUT_ROOT": str(root / "media"),
+        "VIDEOSCOPE_WHISPER_WORKER_INPUT_ROOT": str(
+            root / "product" / "media"
+        ),
         "VIDEOSCOPE_WHISPER_WORKER_WORK_ROOT": str(
             root / "tmp" / "whisper-worker"
         ),
@@ -309,24 +317,103 @@ def _host_resource_receipt() -> object:
     )
 
 
+_EXECUTION_COMPONENT_IDS = (
+    "text_vectors",
+    "lexical_text",
+    "visual_dense",
+    "temporal_refinement",
+    "lighthouse",
+    "qwen_verification",
+)
+
+
+def _execution_receipt(
+    profile_id: str,
+    *,
+    missing_component: str | None = None,
+    zero_component: str | None = None,
+    include_generic_lexical: bool = False,
+) -> ProductSearchExecutionReceipt:
+    profile = FROZEN_PROFILES[profile_id]
+    observed = set(profile.required_capabilities)
+    if profile.search_plan.text_search != "disabled":
+        observed.add("lexical_text")
+    if missing_component is not None:
+        observed.remove(missing_component)
+    if include_generic_lexical:
+        observed.add("lexical_text")
+    output_counts = tuple(
+        (
+            component_id,
+            int(component_id in observed and component_id != zero_component),
+        )
+        for component_id in _EXECUTION_COMPONENT_IDS
+    )
+    evidence_counts = tuple(
+        (
+            component_id,
+            int(component_id in observed and component_id != zero_component),
+        )
+        for component_id in _EXECUTION_COMPONENT_IDS
+    )
+    input_counts = tuple(
+        (component_id, int(component_id in observed))
+        for component_id in _EXECUTION_COMPONENT_IDS
+    )
+    return ProductSearchExecutionReceipt(
+        schema_version=1,
+        profile_id=profile.profile_id,
+        profile_identity=profile.identity,
+        search_configuration_identity=(
+            ProductBenchmarkSearchAdapter._configuration(profile).identity
+        ),
+        total_evidence_count=max(1, sum(count for _, count in evidence_counts)),
+        invoked_component_ids=tuple(
+            component_id
+            for component_id in _EXECUTION_COMPONENT_IDS
+            if component_id in observed
+        ),
+        component_input_counts=input_counts,
+        component_output_counts=output_counts,
+        component_evidence_counts=evidence_counts,
+    )
+
+
+def _serialized_execution_receipt(
+    receipt: ProductSearchExecutionReceipt,
+) -> dict[str, object]:
+    return {
+        "schema_version": receipt.schema_version,
+        "profile_identity": receipt.profile_identity,
+        "search_configuration_identity": receipt.search_configuration_identity,
+        "invoked_component_ids": list(receipt.invoked_component_ids),
+        "component_input_counts": dict(receipt.component_input_counts),
+        "component_output_counts": dict(receipt.component_output_counts),
+        "component_evidence_counts": dict(receipt.component_evidence_counts),
+    }
+
+
 def _complete_product_receipt() -> dict[str, object]:
-    profiles: dict[str, object] = {
-        profile_id: {
+    profiles: dict[str, object] = {}
+    evidence_count = 0
+    for profile_id in (
+        "lexical_qdrant",
+        "dense_siglip",
+        "temporal_refinement",
+        "lighthouse",
+        "qwen_verification",
+    ):
+        execution = _execution_receipt(profile_id)
+        evidence_count += execution.total_evidence_count
+        profiles[profile_id] = {
             "close": "complete",
             "status": "complete",
             "generation_bound": True,
-            "evidence_count": 1,
+            "evidence_count": execution.total_evidence_count,
+            "component_execution": _serialized_execution_receipt(execution),
             "open": "complete",
             "search": "complete",
         }
-        for profile_id in (
-            "lexical_qdrant",
-            "dense_siglip",
-            "temporal_refinement",
-            "lighthouse",
-            "qwen_verification",
-        )
-    }
     profiles["internvideo"] = {
         "status": "not_configured",
         "reason_code": "provider_not_configured",
@@ -344,7 +431,7 @@ def _complete_product_receipt() -> dict[str, object]:
             "status": "complete",
         },
         "generation_bound": True,
-        "evidence_count": 5,
+        "evidence_count": evidence_count,
         "profiles": profiles,
         "runtime_cleanup": "complete",
     }
@@ -514,9 +601,18 @@ def test_settings_use_validated_models_root_without_project_data_coupling(
     root.mkdir(mode=0o700)
     models_root = _models_root(tmp_path)
 
-    settings = script._load_settings(root, models_root, {})
+    settings = script._load_settings(
+        root,
+        models_root,
+        {
+            "ffmpeg_binary": Path("/attested/ffmpeg"),
+            "ffprobe_binary": Path("/attested/ffprobe"),
+        },
+    )
 
-    assert settings.data_dir == root
+    assert settings.data_dir == root / "product"
+    assert settings.ffmpeg_binary == Path("/attested/ffmpeg")
+    assert settings.ffprobe_binary == Path("/attested/ffprobe")
     assert settings.models_dir == models_root
     assert settings.models_dir != PROJECT_ROOT / "data" / "models"
 
@@ -676,6 +772,8 @@ def test_product_settings_ignore_hostile_ambient_environment(
     monkeypatch.setenv("INTERNVIDEO_ENDPOINT", "https://attacker.invalid")
     monkeypatch.setenv("ROBOFLOW_API_KEY", "ambient-secret")
     overrides = {
+        "ffmpeg_binary": Path("/attested/ffmpeg"),
+        "ffprobe_binary": Path("/attested/ffprobe"),
         "vision_worker_endpoint": "http://127.0.0.1:8783",
         "vision_worker_api_key": "v" * 32,
         "whisper_worker_endpoint": "http://127.0.0.1:8784",
@@ -873,8 +971,8 @@ def test_component_smoke_is_sequential_pathless_and_completes_product_path(
     assert str(root) not in encoded
     assert str(models_root) not in encoded
     assert "vvvvvvvv" not in encoded
-    assert list((root / "media").glob("full-ml-smoke-*")) == []
-    assert list((root / "tmp").glob("full-ml-smoke-*")) == []
+    assert list((root / "product" / "media").glob("full-ml-smoke-*")) == []
+    assert list((root / "product" / "tmp").glob("full-ml-smoke-*")) == []
 
 
 def test_production_fixture_contains_searchable_text_and_uses_attested_ffmpeg(
@@ -983,7 +1081,7 @@ def test_infrastructure_failure_is_typed_and_cli_output_is_sanitized(
             "reason_code": "worker_failure_contract_missing_oom_code",
             "status": "unknown",
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "status": "failed",
     }
     assert "secret-token" not in captured.err
@@ -1063,7 +1161,9 @@ def test_production_product_integration_uses_durable_generation_pinned_path(
         video_id="smoke_fixture",
     )
     settings = script._DisposableProductSettings(
-        data_dir=root,
+        data_dir=root / "product",
+        ffmpeg_binary=Path("/attested/ffmpeg"),
+        ffprobe_binary=Path("/attested/ffprobe"),
         smoke_immutable_models_dir=models,
         ocr_worker_environment={
             "HOME": str(root / "tmp" / "worker-ocr-product"),
@@ -1073,7 +1173,7 @@ def test_production_product_integration_uses_durable_generation_pinned_path(
 
     class Repository:
         def __init__(self, path: Path) -> None:
-            assert path == root / "videoscope.sqlite3"
+            assert path == root / "product" / "videoscope.sqlite3"
 
         def initialize(self) -> None:
             events.append("repository.initialize")
@@ -1106,72 +1206,113 @@ def test_production_product_integration_uses_durable_generation_pinned_path(
         def wake(self) -> None:
             events.append("queue.wake")
 
+    from videoscope.benchmark.catalog import ResolvedAsset
+    from videoscope.benchmark.runner import BenchmarkSearchHit
+
+    expected_probes = {
+        "lexical_qdrant": (),
+        "dense_siglip": ("vision",),
+        "temporal_refinement": ("vision",),
+        "lighthouse": ("vision",),
+        "qwen_verification": ("qwen", "vision"),
+    }
+
     class Session:
         def __init__(self, profile_id: str) -> None:
             self.profile_id = profile_id
 
-        def capability_state(self, _video_id: str, _capability: str) -> str:
+        def capability_state(self, _asset: object, _capability: str) -> str:
             return "complete"
 
         def identities(self) -> SimpleNamespace:
             return SimpleNamespace(
-                index=tuple(
+                index_identities=tuple(
                     SimpleNamespace(component_id=value)
                     for value in (
                         "text_vector_generations",
                         "visual_generations",
                         "lighthouse_generations",
                     )
-                )
+                ),
+                config_identities=(
+                    SimpleNamespace(component_id="benchmark_product_environment"),
+                ),
             )
 
         def search(
             self,
             _query: str,
-            video_ids: tuple[str, ...],
+            assets: tuple[ResolvedAsset, ...],
             *,
             limit: int,
-        ) -> list[SimpleNamespace]:
+        ) -> tuple[BenchmarkSearchHit, ...]:
             events.append(f"search.{self.profile_id}")
             assert limit == 50
-            return [
-                SimpleNamespace(
-                    video_id=video_ids[0],
-                    evidence=[SimpleNamespace()],
-                    start=0.0,
-                    end=1.0,
-                )
-            ]
+            return (
+                BenchmarkSearchHit(
+                    asset_id=assets[0].asset_id,
+                    start_seconds=0.0,
+                    end_seconds=1.0,
+                    score=0.75,
+                ),
+            )
+
+        def last_search_execution_receipt(self) -> ProductSearchExecutionReceipt:
+            return _execution_receipt(self.profile_id)
 
         def close(self) -> None:
             events.append(f"session.close.{self.profile_id}")
 
-    class Search:
-        def open_pinned_evaluation(
-            self,
-            configuration: object,
-            *_args: object,
-            **_kwargs: object,
-        ) -> Session:
-            profile_id = (
-                "qwen_verification"
-                if configuration.reranker == "qwen"
-                else "internvideo"
-                if configuration.reranker == "internvideo"
-                else "lighthouse"
-                if configuration.lighthouse
-                else "temporal_refinement"
-                if configuration.temporal_refinement
-                else "dense_siglip"
-                if configuration.visual_search == "dense_siglip"
-                else "lexical_qdrant"
+    class AssetResolver:
+        def __init__(self, profile_id: str) -> None:
+            self.profile_id = profile_id
+
+        def resolve(self, portable: object) -> ResolvedAsset:
+            events.append(f"asset.resolve.{self.profile_id}")
+            return ResolvedAsset(
+                asset_id=portable.asset_id,
+                repository_asset_id="sha256:" + portable.sha256,
+                video_id="local-video-a",
+                sha256=portable.sha256,
+                byte_size=portable.byte_size,
+                duration_seconds=portable.duration_seconds,
             )
-            events.append(f"search.open_pinned.{profile_id}")
-            return Session(profile_id)
+
+    class SearchAdapter:
+        def __init__(self, profile_id: str) -> None:
+            self.profile_id = profile_id
+
+        def open_session(
+            self,
+            profile: object,
+            _assets: tuple[ResolvedAsset, ...],
+            *,
+            execution_mode: str,
+        ) -> Session:
+            assert profile.profile_id == self.profile_id
+            assert execution_mode == "warm"
+            events.append(f"search.open_pinned.{self.profile_id}")
+            return Session(self.profile_id)
+
+    class Environment:
+        def __init__(self, profile_id: str) -> None:
+            self.profile_id = profile_id
+            self.asset_resolver = AssetResolver(profile_id)
+            self.search_adapter = SearchAdapter(profile_id)
+            self.is_closed = False
+
+        def probe_worker_sources(self) -> tuple[str, ...]:
+            events.append(f"environment.probe.{self.profile_id}")
+            return expected_probes[self.profile_id]
+
+        def close(self) -> None:
+            events.append(f"environment.close.{self.profile_id}")
+            self.is_closed = True
 
     class Runtime:
         queue = Queue()
-        search = Search()
+        closed = False
+
         class Clips:
             @staticmethod
             def export(name: str, selections: list[object]) -> SimpleNamespace:
@@ -1180,7 +1321,7 @@ def test_production_product_integration_uses_durable_generation_pinned_path(
                 assert len(selections) == 1
                 selection = selections[0]
                 assert selection.start == 0.0 and selection.end == 1.0
-                destination = root / "clips" / "phase0-full-path.mp4"
+                destination = settings.clips_dir / "phase0-full-path.mp4"
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 destination.write_bytes(b"synthetic-clip")
                 return SimpleNamespace(
@@ -1196,6 +1337,7 @@ def test_production_product_integration_uses_durable_generation_pinned_path(
 
         def close(self) -> bool:
             events.append("runtime.close")
+            self.closed = True
             return True
 
     class Coordinator:
@@ -1208,14 +1350,55 @@ def test_production_product_integration_uses_durable_generation_pinned_path(
             return object(), SimpleNamespace(job_id="job-1")
 
     monkeypatch.setattr("videoscope.repository.Repository", Repository)
+    product_runtime = Runtime()
+
     def build_runtime(*_args: object, **kwargs: object) -> Runtime:
         assert kwargs["ocr_worker_environment"] == settings.ocr_worker_environment
-        return Runtime()
+        assert kwargs["vision_worker_input_root"] == root
+        return product_runtime
 
     monkeypatch.setattr("videoscope.runtime.build_runtime", build_runtime)
     monkeypatch.setattr(
         "videoscope.processing.coordinator.VideoIndexCoordinator",
         Coordinator,
+    )
+
+    def open_environment(
+        candidate_settings: object,
+        scratch_parent: Path,
+        *,
+        profile_id: str,
+        execution_mode: str,
+    ) -> Environment:
+        assert candidate_settings is settings
+        assert scratch_parent == root
+        assert execution_mode == "warm"
+        assert product_runtime.closed is True
+        events.append(f"environment.open.{profile_id}")
+        return Environment(profile_id)
+
+    monkeypatch.setattr(
+        "videoscope.benchmark.open_product_benchmark_environment",
+        open_environment,
+    )
+
+    class ExportLock:
+        def __init__(self, data_dir: Path) -> None:
+            assert data_dir == settings.data_dir
+
+        def acquire_existing(self) -> None:
+            assert all(
+                f"environment.close.{profile_id}" in events
+                for profile_id in expected_probes
+            )
+            events.append("export-lock.acquire")
+
+        def close(self) -> None:
+            events.append("export-lock.close")
+
+    monkeypatch.setattr(
+        "videoscope.runtime_lifecycle.ExclusiveRuntimeLock",
+        ExportLock,
     )
 
     class Toolchain:
@@ -1241,25 +1424,203 @@ def test_production_product_integration_uses_durable_generation_pinned_path(
         "repository.initialize",
         "runtime.start",
         "coordinator.create_ingest",
+        "runtime.close",
+        "environment.open.lexical_qdrant",
+        "environment.probe.lexical_qdrant",
+        "asset.resolve.lexical_qdrant",
         "search.open_pinned.lexical_qdrant",
         "search.lexical_qdrant",
         "session.close.lexical_qdrant",
+        "environment.close.lexical_qdrant",
+        "environment.open.dense_siglip",
+        "environment.probe.dense_siglip",
+        "asset.resolve.dense_siglip",
         "search.open_pinned.dense_siglip",
         "search.dense_siglip",
         "session.close.dense_siglip",
+        "environment.close.dense_siglip",
+        "environment.open.temporal_refinement",
+        "environment.probe.temporal_refinement",
+        "asset.resolve.temporal_refinement",
         "search.open_pinned.temporal_refinement",
         "search.temporal_refinement",
         "session.close.temporal_refinement",
+        "environment.close.temporal_refinement",
+        "environment.open.lighthouse",
+        "environment.probe.lighthouse",
+        "asset.resolve.lighthouse",
         "search.open_pinned.lighthouse",
         "search.lighthouse",
         "session.close.lighthouse",
+        "environment.close.lighthouse",
+        "environment.open.qwen_verification",
+        "environment.probe.qwen_verification",
+        "asset.resolve.qwen_verification",
         "search.open_pinned.qwen_verification",
         "search.qwen_verification",
         "session.close.qwen_verification",
+        "environment.close.qwen_verification",
+        "export-lock.acquire",
         "clips.export",
+        "export-lock.close",
         "clip.probe",
-        "runtime.close",
     ]
+
+
+@pytest.mark.parametrize(
+    ("profile_id", "missing_component"),
+    (
+        ("lexical_qdrant", "text_vectors"),
+        ("dense_siglip", "visual_dense"),
+        ("temporal_refinement", "temporal_refinement"),
+        ("lighthouse", "lighthouse"),
+        ("qwen_verification", "qwen_verification"),
+    ),
+)
+def test_product_profile_rejects_generic_evidence_substitution(
+    profile_id: str,
+    missing_component: str,
+) -> None:
+    script = _load_script()
+    profile = FROZEN_PROFILES[profile_id]
+    receipt = _execution_receipt(
+        profile_id,
+        zero_component=missing_component,
+        include_generic_lexical=True,
+    )
+
+    assert receipt.total_evidence_count > 0
+    assert receipt.component_evidence_count("lexical_text") == 1
+    with pytest.raises(script.SmokeContractError) as captured:
+        script._validate_product_search_execution_receipt(profile, receipt)
+
+    assert captured.value.code == "product_search_component_execution_unproven"
+
+
+@pytest.mark.parametrize("component_id", _EXECUTION_COMPONENT_IDS)
+@pytest.mark.parametrize("count_kind", ("output", "evidence"))
+def test_cumulative_profile_rejects_each_zero_selected_component_count(
+    component_id: str,
+    count_kind: str,
+) -> None:
+    script = _load_script()
+    profile = FROZEN_PROFILES["qwen_verification"]
+    receipt = _execution_receipt("qwen_verification")
+    field_name = f"component_{count_kind}_counts"
+    receipt = replace(
+        receipt,
+        **{
+            field_name: tuple(
+                (observed_id, 0 if observed_id == component_id else count)
+                for observed_id, count in getattr(receipt, field_name)
+            )
+        },
+    )
+
+    assert receipt.total_evidence_count > 0
+    assert sum(count for _, count in receipt.component_evidence_counts) > 0
+    with pytest.raises(script.SmokeContractError) as captured:
+        script._validate_product_search_execution_receipt(profile, receipt)
+
+    assert captured.value.code == "product_search_component_execution_unproven"
+
+
+def test_product_profile_rejects_execution_receipt_from_another_frozen_profile() -> None:
+    script = _load_script()
+
+    with pytest.raises(script.SmokeContractError) as captured:
+        script._validate_product_search_execution_receipt(
+            FROZEN_PROFILES["temporal_refinement"],
+            _execution_receipt("dense_siglip"),
+        )
+
+    assert captured.value.code == "product_search_execution_receipt_invalid"
+
+
+def test_serialized_component_execution_rejects_nested_profile_id() -> None:
+    script = _load_script()
+    receipt = _complete_product_receipt()
+    profiles = receipt["profiles"]
+    assert isinstance(profiles, dict)
+    profile_receipt = profiles["lexical_qdrant"]
+    assert isinstance(profile_receipt, dict)
+    component_execution = profile_receipt["component_execution"]
+    assert isinstance(component_execution, dict)
+    component_execution["profile_id"] = "lexical_qdrant"
+
+    with pytest.raises(script.SmokeContractError) as captured:
+        script._validate_product_receipt(receipt)
+
+    assert captured.value.code == "product_integration_receipt_invalid"
+
+
+def test_product_profile_rejects_zero_input_qwen_invocation_with_generic_evidence() -> None:
+    script = _load_script()
+    profile = FROZEN_PROFILES["qwen_verification"]
+    receipt = _execution_receipt("qwen_verification")
+    receipt = replace(
+        receipt,
+        component_input_counts=tuple(
+            (component_id, 0 if component_id == "qwen_verification" else count)
+            for component_id, count in receipt.component_input_counts
+        ),
+    )
+
+    assert receipt.total_evidence_count > 0
+    with pytest.raises(script.SmokeContractError) as captured:
+        script._validate_product_search_execution_receipt(profile, receipt)
+
+    assert captured.value.code == "product_search_component_execution_unproven"
+
+
+def test_product_snapshot_cleanup_retries_and_preserves_cancellation() -> None:
+    script = _load_script()
+
+    class RecoverableEnvironment:
+        is_closed = False
+        close_calls = 0
+
+        def close(self) -> None:
+            self.close_calls += 1
+            if self.close_calls == 1:
+                raise RuntimeError("retry cleanup")
+            self.is_closed = True
+
+    recovered = RecoverableEnvironment()
+    script._close_product_snapshot_environment(recovered)
+    assert recovered.close_calls == 2
+    assert recovered.is_closed is True
+
+    class InterruptedEnvironment:
+        is_closed = False
+        close_calls = 0
+
+        def close(self) -> None:
+            self.close_calls += 1
+            if self.close_calls == 1:
+                raise KeyboardInterrupt
+            self.is_closed = True
+
+    interrupted = InterruptedEnvironment()
+    with pytest.raises(KeyboardInterrupt):
+        script._close_product_snapshot_environment(interrupted)
+    assert interrupted.close_calls == 2
+    assert interrupted.is_closed is True
+
+    class ProductCleanup:
+        cleanup_pending = True
+        retry_calls = 0
+
+        def retry_cleanup(self) -> None:
+            self.retry_calls += 1
+            if self.retry_calls == 1:
+                raise RuntimeError("retry product snapshot cleanup")
+            self.cleanup_pending = False
+
+    product_cleanup = ProductCleanup()
+    script._retry_product_snapshot_cleanup(product_cleanup)
+    assert product_cleanup.retry_calls == 2
+    assert product_cleanup.cleanup_pending is False
 
 
 def test_out_of_memory_is_not_collapsed_into_infrastructure_failure(
@@ -1303,7 +1664,7 @@ def test_out_of_memory_is_not_collapsed_into_infrastructure_failure(
             "kind": "out_of_memory",
         },
         "oom": {"status": "observed"},
-        "schema_version": 1,
+        "schema_version": 2,
         "status": "failed",
     }
     assert "private allocator diagnostics" not in captured.err
@@ -1324,6 +1685,48 @@ def test_production_dependencies_are_real_client_only() -> None:
     assert dependencies.build_resource_monitor is script.build_resource_monitor
     assert dependencies.code_identity_resolver is script.resolve_clean_code_sha
     assert dependencies.start_workers is script.start_managed_workers
+
+
+def test_real_vision_client_uses_full_cold_start_health_timeout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script = _load_script()
+    captured: dict[str, object] = {}
+    dummy = SimpleNamespace(close=lambda: None)
+
+    def build_vision(**kwargs: object) -> object:
+        captured.update(kwargs)
+        return dummy
+
+    monkeypatch.setattr(script, "VisionWorkerClient", build_vision)
+    monkeypatch.setattr(script, "WhisperWorkerClient", lambda **_kwargs: dummy)
+    monkeypatch.setattr(script, "PaddleOCRReader", lambda **_kwargs: dummy)
+    monkeypatch.setattr(script, "LighthouseWorkerClient", lambda **_kwargs: dummy)
+    monkeypatch.setattr(script, "QwenWorkerClient", lambda **_kwargs: dummy)
+    monkeypatch.setattr(script, "_reviewed_ocr_script_sha256", lambda _path: _SHA)
+    models_root = tmp_path / "models"
+    models_root.mkdir()
+    settings = script._DisposableProductSettings(
+        data_dir=tmp_path,
+        ffmpeg_binary=Path("/attested/ffmpeg"),
+        ffprobe_binary=Path("/attested/ffprobe"),
+        smoke_immutable_models_dir=models_root,
+        vision_worker_endpoint="http://127.0.0.1:8783",
+        vision_worker_api_key="v" * 32,
+        whisper_worker_endpoint="http://127.0.0.1:8784",
+        whisper_worker_api_key="w" * 32,
+        lighthouse_endpoint="http://127.0.0.1:8782",
+        lighthouse_api_key="l" * 32,
+        qwen_video_endpoint="http://127.0.0.1:8781",
+        qwen_video_api_key="q" * 32,
+        qwen_video_model=script.QWEN_VIDEO_MODEL,
+    )
+
+    script.build_real_clients(settings, tmp_path)
+
+    assert captured["timeout"] == settings.vision_worker_timeout
+    assert captured["health_timeout"] == script._WORKER_START_TIMEOUT_SECONDS
 
 
 def test_managed_workers_use_explicit_isolated_pythons_and_native_pid_bindings(
@@ -1444,8 +1847,14 @@ def test_managed_workers_use_explicit_isolated_pythons_and_native_pid_bindings(
         assert child_environment["TMPDIR"] == str(root / "tmp" / f"worker-{role}")
         assert child_environment["HF_HOME"] == str(hf_home)
     assert launches[0][1]["env"]["VIDEOSCOPE_VISION_WORKER_INPUT_ROOT"] == str(root)
+    assert launches[1][1]["env"]["VIDEOSCOPE_WHISPER_WORKER_INPUT_ROOT"] == str(
+        root / "product" / "media"
+    )
+    assert launches[2][1]["env"]["VIDEOSCOPE_DATA_DIR"] == str(
+        root / "product"
+    )
     assert launches[3][1]["env"]["VIDEOSCOPE_QWEN_WORKER_INPUT_ROOT"] == str(
-        root / "tmp"
+        root
     )
     for setting, role in (
         ("smoke_ocr_client_environment", "ocr-client"),

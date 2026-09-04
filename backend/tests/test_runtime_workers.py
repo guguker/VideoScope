@@ -108,6 +108,54 @@ def test_runtime_attaches_one_shared_vision_client_and_isolated_whisper(
     )
 
 
+def test_runtime_allows_only_the_exact_parent_as_explicit_vision_worker_root(
+    tmp_path: Path,
+) -> None:
+    shared_root = tmp_path / "smoke"
+    settings = AppSettings(
+        _env_file=None,
+        data_dir=shared_root / "product",
+        vision_worker_endpoint="http://127.0.0.1:8783",
+        vision_worker_api_key="v" * 32,
+    )
+    settings.ensure_directories()
+
+    client = runtime_module.create_vision_worker_client(
+        settings,
+        input_root=shared_root,
+    )
+
+    assert client is not None
+    assert client.input_root == shared_root.resolve()
+    invalid_roots = (
+        settings.data_dir,
+        tmp_path,
+        Path(shared_root.anchor),
+        Path.home(),
+    )
+    for invalid_root in invalid_roots:
+        with pytest.raises(ValueError, match="exact parent"):
+            runtime_module.create_vision_worker_client(
+                settings,
+                input_root=invalid_root,
+            )
+
+    unrelated = tmp_path / "unrelated"
+    unrelated.mkdir()
+    with pytest.raises(ValueError, match="exact parent"):
+        runtime_module.create_vision_worker_client(
+            settings,
+            input_root=unrelated,
+        )
+    linked = tmp_path / "linked-smoke"
+    linked.symlink_to(shared_root, target_is_directory=True)
+    with pytest.raises(ValueError, match="no-symlink"):
+        runtime_module.create_vision_worker_client(
+            settings,
+            input_root=linked,
+        )
+
+
 def test_temporal_refiner_identity_projection_is_path_free_and_exact(
     tmp_path: Path,
 ) -> None:

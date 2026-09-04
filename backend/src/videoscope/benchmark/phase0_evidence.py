@@ -44,6 +44,7 @@ from .metric_policy import (
     validate_frozen_metric_policy_product_dataset,
 )
 from .host_resources import HOST_RESOURCE_IDENTITY
+from .profiles import get_profile
 from .runner import (
     BenchmarkExecutionError,
     _validate_persisted_profile_identity_contract,
@@ -87,12 +88,14 @@ from .video_verifier_schema import (
 
 
 PHASE0_EVIDENCE_SCHEMA_VERSION: Final = 1
-PHASE0_BASELINE_SNAPSHOT_SCHEMA_VERSION: Final = 1
+PHASE0_BASELINE_SNAPSHOT_SCHEMA_VERSION: Final = 2
 PHASE0_RAW_MEASUREMENTS_SCHEMA_VERSION: Final = 1
-PHASE0_SANITIZED_REPORT_SCHEMA_VERSION: Final = 1
+PHASE0_SANITIZED_REPORT_SCHEMA_VERSION: Final = 2
 PHASE0_ERROR_LEDGER_SCHEMA_VERSION: Final = 1
 PHASE0_ROLLBACK_PROOF_SCHEMA_VERSION: Final = 1
 PHASE0_BASELINE_BATCH_SCHEMA_VERSION: Final = 1
+FULL_ML_SMOKE_SCHEMA_VERSION: Final = 2
+COMPONENT_EXECUTION_SCHEMA_VERSION: Final = 1
 
 MAX_PHASE0_EVIDENCE_BYTES: Final = 64 * 1024**2
 MAX_PHASE0_OUTPUT_BYTES: Final = 64 * 1024**2
@@ -109,6 +112,14 @@ REQUIRED_EXECUTED_PROFILE_IDS: Final = (
     "qwen_verification",
 )
 ALL_PHASE0_PROFILE_IDS: Final = (*REQUIRED_EXECUTED_PROFILE_IDS, "internvideo")
+COMPONENT_EXECUTION_IDS: Final = (
+    "text_vectors",
+    "lexical_text",
+    "visual_dense",
+    "temporal_refinement",
+    "lighthouse",
+    "qwen_verification",
+)
 REQUIRED_ENVIRONMENT_IDS: Final = frozenset(
     {"base", "vision", "whisper", "ocr", "lighthouse", "qwen"}
 )
@@ -853,6 +864,108 @@ def _validate_smoke_steps(value: object) -> None:
         raise ValueError("vision embedding dimensions disagree")
 
 
+def _selected_component_execution_ids(profile_id: str) -> tuple[str, ...]:
+    profile = get_profile(profile_id)
+    plan = profile.search_plan
+    selected: list[str] = []
+    if plan.text_search != "disabled":
+        selected.extend(("text_vectors", "lexical_text"))
+    if plan.visual_search != "disabled":
+        selected.append("visual_dense")
+    if plan.temporal_refinement:
+        selected.append("temporal_refinement")
+    if plan.lighthouse:
+        selected.append("lighthouse")
+    if plan.reranker == "qwen":
+        selected.append("qwen_verification")
+    if any(component_id not in COMPONENT_EXECUTION_IDS for component_id in selected):
+        raise ValueError("frozen profile selects an unsupported execution component")
+    return tuple(selected)
+
+
+def _search_configuration_identity(profile_id: str) -> str:
+    plan = get_profile(profile_id).search_plan
+    digest = sha256(plan.canonical_json.encode("utf-8")).hexdigest()
+    return f"evaluation-search-configuration@{plan.schema_version}:{digest}"
+
+
+def _component_execution_counts(value: object, *, context: str) -> dict[str, int]:
+    counts = expect_object(value, context)
+    expect_fields(counts, set(COMPONENT_EXECUTION_IDS), context)
+    return {
+        component_id: _integer(counts[component_id])
+        for component_id in COMPONENT_EXECUTION_IDS
+    }
+
+
+def _validate_component_execution(profile_id: str, value: object) -> JsonObject:
+    trace = expect_object(value, f"profile {profile_id} component execution")
+    expect_fields(
+        trace,
+        {
+            "schema_version",
+            "profile_identity",
+            "search_configuration_identity",
+            "invoked_component_ids",
+            "component_input_counts",
+            "component_output_counts",
+            "component_evidence_counts",
+        },
+        f"profile {profile_id} component execution",
+    )
+    profile = get_profile(profile_id)
+    if (
+        type(trace["schema_version"]) is not int
+        or trace["schema_version"] != COMPONENT_EXECUTION_SCHEMA_VERSION
+        or _identity(trace["profile_identity"]) != profile.identity
+        or _identity(trace["search_configuration_identity"])
+        != _search_configuration_identity(profile_id)
+    ):
+        raise ValueError("component execution identity mismatch")
+    invoked = tuple(
+        _require_id(item, "component execution component id")
+        for item in expect_list(
+            trace["invoked_component_ids"],
+            "component execution invoked components",
+        )
+    )
+    expected_invoked = _selected_component_execution_ids(profile_id)
+    if invoked != expected_invoked:
+        raise ValueError("component execution invocation set mismatch")
+    normalized_counts = {
+        field: _component_execution_counts(
+            trace[field],
+            context=f"profile {profile_id} {field}",
+        )
+        for field in (
+            "component_input_counts",
+            "component_output_counts",
+            "component_evidence_counts",
+        )
+    }
+    selected = set(expected_invoked)
+    for component_id in COMPONENT_EXECUTION_IDS:
+        observed = tuple(
+            counts[component_id] for counts in normalized_counts.values()
+        )
+        if component_id in selected:
+            if any(count <= 0 for count in observed):
+                raise ValueError("selected component execution is not substantive")
+        elif any(count != 0 for count in observed):
+            raise ValueError("unselected component execution leaked into profile")
+    return {
+        "component_evidence_counts": normalized_counts[
+            "component_evidence_counts"
+        ],
+        "component_input_counts": normalized_counts["component_input_counts"],
+        "component_output_counts": normalized_counts["component_output_counts"],
+        "invoked_component_ids": list(expected_invoked),
+        "profile_identity": profile.identity,
+        "schema_version": COMPONENT_EXECUTION_SCHEMA_VERSION,
+        "search_configuration_identity": _search_configuration_identity(profile_id),
+    }
+
+
 def validate_full_ml_smoke(
     value: object,
     *,
@@ -888,7 +1001,7 @@ def validate_full_ml_smoke(
         )
         if (
             type(report["schema_version"]) is not int
-            or report["schema_version"] != 1
+            or report["schema_version"] != FULL_ML_SMOKE_SCHEMA_VERSION
             or report["code_sha_before"] != code_sha
             or report["code_sha_after"] != code_sha
             or report["status"] != "ready"
@@ -941,6 +1054,7 @@ def validate_full_ml_smoke(
                 profile,
                 {
                     "close",
+                    "component_execution",
                     "evidence_count",
                     "generation_bound",
                     "open",
@@ -948,6 +1062,10 @@ def validate_full_ml_smoke(
                     "status",
                 },
                 f"profile {profile_id}",
+            )
+            component_execution = _validate_component_execution(
+                profile_id,
+                profile["component_execution"],
             )
             count = _integer(profile["evidence_count"], minimum=1)
             if (
@@ -960,6 +1078,7 @@ def validate_full_ml_smoke(
                 raise ValueError("profile smoke is incomplete")
             total_evidence += count
             normalized_profiles[profile_id] = {
+                "component_execution": component_execution,
                 "evidence_count": count,
                 "generation_bound": True,
                 "status": "complete",
@@ -1140,6 +1259,7 @@ def validate_full_ml_smoke(
             "scope": "smoke_process_and_descendants",
         },
         "profiles": normalized_profiles,
+        "schema_version": FULL_ML_SMOKE_SCHEMA_VERSION,
         "status": "ready",
         "toolchain_identity": report["toolchain_identity"],
     }
@@ -1873,6 +1993,10 @@ def build_phase0_evidence(
         != environment["attestation_id"]
     ):
         _fail("full_ml_smoke_invalid")
+    retained_component_execution = {
+        profile_id: smoke["profiles"][profile_id]["component_execution"]  # type: ignore[index]
+        for profile_id in REQUIRED_EXECUTED_PROFILE_IDS
+    }
     qwen_capabilities = [
         item
         for item in environment["capabilities"]  # type: ignore[union-attr]
@@ -1965,6 +2089,8 @@ def build_phase0_evidence(
         "evidence_index": evidence_index,
         "evidence_status": "valid",
         "full_ml_smoke": {
+            "component_execution": retained_component_execution,
+            "schema_version": smoke["schema_version"],
             "status": "ready",
             "toolchain_identity": smoke["toolchain_identity"],
         },
@@ -2035,6 +2161,11 @@ def build_phase0_evidence(
             policy,
             profile_summaries,
         ),
+        "full_ml_smoke": {
+            "component_execution": retained_component_execution,
+            "schema_version": smoke["schema_version"],
+            "status": "ready",
+        },
         "profiles": profile_summaries,
         "reliability": {
             "full_ml_smoke": "ready",
@@ -2380,7 +2511,10 @@ def main(argv: Sequence[str] | None = None) -> int:
 __all__ = [
     "ALL_PHASE0_PROFILE_IDS",
     "BASELINE_BATCH_ENVIRONMENT_BINDINGS",
+    "COMPONENT_EXECUTION_IDS",
+    "COMPONENT_EXECUTION_SCHEMA_VERSION",
     "FULL_ML_SMOKE_ENVIRONMENT_BINDINGS",
+    "FULL_ML_SMOKE_SCHEMA_VERSION",
     "PHASE0_BASELINE_BATCH_SCHEMA_VERSION",
     "PHASE0_BASELINE_SNAPSHOT_SCHEMA_VERSION",
     "PHASE0_ERROR_LEDGER_SCHEMA_VERSION",

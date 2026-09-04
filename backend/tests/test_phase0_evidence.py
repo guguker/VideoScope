@@ -86,6 +86,52 @@ _QWEN_MODEL_IDENTITY = (
     "mlx-community/Qwen3.5-9B-MLX-4bit@"
     "938d8919941c6e7efd3c7150eff7fe9d12afa631"
 )
+_COMPONENT_EXECUTION_IDS = (
+    "text_vectors",
+    "lexical_text",
+    "visual_dense",
+    "temporal_refinement",
+    "lighthouse",
+    "qwen_verification",
+)
+
+
+def _selected_component_ids(profile_id: str) -> tuple[str, ...]:
+    plan = get_profile(profile_id).search_plan
+    selected: list[str] = []
+    if plan.text_search != "disabled":
+        selected.extend(("text_vectors", "lexical_text"))
+    if plan.visual_search != "disabled":
+        selected.append("visual_dense")
+    if plan.temporal_refinement:
+        selected.append("temporal_refinement")
+    if plan.lighthouse:
+        selected.append("lighthouse")
+    if plan.reranker == "qwen":
+        selected.append("qwen_verification")
+    return tuple(selected)
+
+
+def _component_execution(profile_id: str) -> dict[str, object]:
+    profile = get_profile(profile_id)
+    selected = set(_selected_component_ids(profile_id))
+    counts = {
+        component_id: int(component_id in selected)
+        for component_id in _COMPONENT_EXECUTION_IDS
+    }
+    return {
+        "schema_version": 1,
+        "profile_identity": profile.identity,
+        "search_configuration_identity": profile.search_plan.identity.replace(
+            "evaluation-search-plan",
+            "evaluation-search-configuration",
+            1,
+        ),
+        "invoked_component_ids": list(_selected_component_ids(profile_id)),
+        "component_input_counts": dict(counts),
+        "component_output_counts": dict(counts),
+        "component_evidence_counts": dict(counts),
+    }
 
 
 def _environment_report() -> dict[str, object]:
@@ -182,6 +228,7 @@ def _full_ml_smoke() -> dict[str, object]:
     executed = {
         profile: {
             "close": "complete",
+            "component_execution": _component_execution(profile),
             "evidence_count": 1,
             "generation_bound": True,
             "open": "complete",
@@ -268,7 +315,7 @@ def _full_ml_smoke() -> dict[str, object]:
                 "swapouts_pages": 0,
             },
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "status": "ready",
         "steps": [
             {
@@ -739,8 +786,12 @@ def test_full_ml_smoke_requires_raw_native_measurements_and_exact_profiles() -> 
     )
 
     assert summary["status"] == "ready"
+    assert summary["schema_version"] == 2
     assert summary["profiles"]["internvideo"]["status"] == "not_configured"  # type: ignore[index]
     assert summary["process_tree"]["peak_bytes"] == 1_500  # type: ignore[index]
+    assert summary["profiles"]["qwen_verification"][  # type: ignore[index]
+        "component_execution"
+    ] == _component_execution("qwen_verification")
 
     missing = _full_ml_smoke()
     del missing["product_integration"]["profiles"]["qwen_verification"]  # type: ignore[index]
@@ -756,6 +807,157 @@ def test_full_ml_smoke_requires_raw_native_measurements_and_exact_profiles() -> 
     with pytest.raises(Phase0EvidenceError, match="full_ml_smoke_invalid"):
         validate_full_ml_smoke(
             no_raw,
+            code_sha=_CODE_SHA,
+            memory_limit_bytes=16 * 1024**3,
+        )
+
+
+def test_full_ml_smoke_rejects_legacy_v1_receipt() -> None:
+    report = _full_ml_smoke()
+    report["schema_version"] = 1
+
+    with pytest.raises(Phase0EvidenceError, match="full_ml_smoke_invalid"):
+        validate_full_ml_smoke(
+            report,
+            code_sha=_CODE_SHA,
+            memory_limit_bytes=16 * 1024**3,
+        )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "trace_schema_bool",
+        "foreign_profile_identity",
+        "path_profile_identity",
+        "foreign_search_configuration_identity",
+        "missing_field",
+        "extra_field",
+        "invoked_out_of_order",
+        "invoked_duplicate",
+        "invoked_foreign",
+        "missing_count_key",
+        "extra_count_key",
+        "bool_count",
+        "negative_count",
+        "foreign_count",
+    ),
+)
+def test_full_ml_smoke_component_execution_trace_is_exact_and_path_free(
+    mutation: str,
+) -> None:
+    report = _full_ml_smoke()
+    trace = report["product_integration"]["profiles"]["qwen_verification"][  # type: ignore[index]
+        "component_execution"
+    ]
+    if mutation == "trace_schema_bool":
+        trace["schema_version"] = True
+    elif mutation == "foreign_profile_identity":
+        trace["profile_identity"] = get_profile("lighthouse").identity
+    elif mutation == "path_profile_identity":
+        trace["profile_identity"] = "/Users/private/profile"
+    elif mutation == "foreign_search_configuration_identity":
+        trace["search_configuration_identity"] = (
+            "evaluation-search-configuration@1:" + "f" * 64
+        )
+    elif mutation == "missing_field":
+        del trace["component_input_counts"]
+    elif mutation == "extra_field":
+        trace["profile_id"] = "qwen_verification"
+    elif mutation == "invoked_out_of_order":
+        trace["invoked_component_ids"] = [
+            "lexical_text",
+            "text_vectors",
+            "visual_dense",
+            "temporal_refinement",
+            "lighthouse",
+            "qwen_verification",
+        ]
+    elif mutation == "invoked_duplicate":
+        trace["invoked_component_ids"].append("text_vectors")  # type: ignore[union-attr]
+    elif mutation == "invoked_foreign":
+        trace["invoked_component_ids"][-1] = "internvideo"  # type: ignore[index]
+    elif mutation == "missing_count_key":
+        del trace["component_input_counts"]["text_vectors"]  # type: ignore[index]
+    elif mutation == "extra_count_key":
+        trace["component_output_counts"]["internvideo"] = 1  # type: ignore[index]
+    elif mutation == "bool_count":
+        trace["component_evidence_counts"]["text_vectors"] = True  # type: ignore[index]
+    elif mutation == "negative_count":
+        trace["component_input_counts"]["text_vectors"] = -1  # type: ignore[index]
+    else:
+        trace["component_output_counts"]["text_vectors"] = "1"  # type: ignore[index]
+
+    with pytest.raises(Phase0EvidenceError, match="full_ml_smoke_invalid"):
+        validate_full_ml_smoke(
+            report,
+            code_sha=_CODE_SHA,
+            memory_limit_bytes=16 * 1024**3,
+        )
+
+
+@pytest.mark.parametrize(
+    "field",
+    (
+        "invoked_component_ids",
+        "component_input_counts",
+        "component_output_counts",
+        "component_evidence_counts",
+    ),
+)
+def test_full_ml_smoke_rejects_unselected_component_execution_leakage(
+    field: str,
+) -> None:
+    report = _full_ml_smoke()
+    trace = report["product_integration"]["profiles"]["lexical_qdrant"][  # type: ignore[index]
+        "component_execution"
+    ]
+    if field == "invoked_component_ids":
+        trace[field].append("visual_dense")  # type: ignore[union-attr]
+    else:
+        trace[field]["visual_dense"] = 1  # type: ignore[index]
+
+    with pytest.raises(Phase0EvidenceError, match="full_ml_smoke_invalid"):
+        validate_full_ml_smoke(
+            report,
+            code_sha=_CODE_SHA,
+            memory_limit_bytes=16 * 1024**3,
+        )
+
+
+@pytest.mark.parametrize(
+    ("profile_id", "component_id"),
+    (
+        ("lexical_qdrant", "text_vectors"),
+        ("lexical_qdrant", "lexical_text"),
+        ("dense_siglip", "visual_dense"),
+        ("temporal_refinement", "temporal_refinement"),
+        ("lighthouse", "lighthouse"),
+        ("qwen_verification", "qwen_verification"),
+    ),
+)
+@pytest.mark.parametrize(
+    "count_field",
+    (
+        "component_input_counts",
+        "component_output_counts",
+        "component_evidence_counts",
+    ),
+)
+def test_full_ml_smoke_requires_substantive_selected_component_execution(
+    profile_id: str,
+    component_id: str,
+    count_field: str,
+) -> None:
+    report = _full_ml_smoke()
+    trace = report["product_integration"]["profiles"][profile_id][  # type: ignore[index]
+        "component_execution"
+    ]
+    trace[count_field][component_id] = 0  # type: ignore[index]
+
+    with pytest.raises(Phase0EvidenceError, match="full_ml_smoke_invalid"):
+        validate_full_ml_smoke(
+            report,
             code_sha=_CODE_SHA,
             memory_limit_bytes=16 * 1024**3,
         )
@@ -965,6 +1167,8 @@ def test_builds_complete_path_free_bundle_from_five_auditable_runs() -> None:
         for _name, artifact in artifacts.files()
     }
     assert len(bundle_ids) == 1
+    assert artifacts.baseline_snapshot["schema_version"] == 2
+    assert artifacts.sanitized_report["schema_version"] == 2
     assert artifacts.baseline_snapshot["promotion_eligible"] is False
     assert [
         item["profile_id"]
@@ -972,6 +1176,17 @@ def test_builds_complete_path_free_bundle_from_five_auditable_runs() -> None:
     ] == [*REQUIRED_EXECUTED_PROFILE_IDS, "internvideo"]
     assert len(artifacts.raw_measurements["benchmark_runs"]) == 5  # type: ignore[arg-type]
     assert artifacts.error_ledger["infrastructure_error_count"] == 0
+    retained_execution = artifacts.sanitized_report["full_ml_smoke"][  # type: ignore[index]
+        "component_execution"
+    ]
+    assert retained_execution == {
+        profile_id: _component_execution(profile_id)
+        for profile_id in REQUIRED_EXECUTED_PROFILE_IDS
+    }
+    assert artifacts.baseline_snapshot["full_ml_smoke"][  # type: ignore[index]
+        "component_execution"
+    ] == retained_execution
+    assert artifacts.sanitized_report["full_ml_smoke"]["schema_version"] == 2  # type: ignore[index]
     for profile in artifacts.sanitized_report["profiles"]:  # type: ignore[index]
         metrics = profile["metrics"]
         assert metrics["infrastructure_error_count"] == {
