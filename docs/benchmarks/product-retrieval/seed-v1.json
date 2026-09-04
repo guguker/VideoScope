@@ -1,0 +1,364 @@
+{
+  "schema_version": 1,
+  "dataset_id": "video-verifier-product-regression",
+  "dataset_version": "1.0.0",
+  "description": "Portable product-retrieval projection of the ten already reviewed prepared clips in video-verifier seed-v1. Every case is regression_seen, for regression only, and is not promotion evidence.",
+  "assets": [
+    {
+      "asset_id": "panel-light-top-gesture-negative",
+      "sha256": "3939304753591a688247c6ef42bcba85b55b0fabbb2bd2c107f7bd6287324883",
+      "byte_size": 782967,
+      "duration_seconds": 5.0,
+      "provenance": {
+        "source": "Private prepared regression clip identified by video-verifier seed-v1; metadata publication is authorized but media redistribution is not",
+        "source_uri": null,
+        "license_id": "LicenseRef-All-Rights-Reserved",
+        "license_uri": null,
+        "attribution": null
+      }
+    },
+    {
+      "asset_id": "panel-light-top-gesture-positive",
+      "sha256": "7fefaa3adc740a8e764b188188ba787651d512cf7d7f28dabf995dc4fb6aeb26",
+      "byte_size": 945255,
+      "duration_seconds": 5.0,
+      "provenance": {
+        "source": "Private prepared regression clip identified by video-verifier seed-v1; metadata publication is authorized but media redistribution is not",
+        "source_uri": null,
+        "license_id": "LicenseRef-All-Rights-Reserved",
+        "license_uri": null,
+        "attribution": null
+      }
+    },
+    {
+      "asset_id": "panel-roundtable-negative",
+      "sha256": "b3731b367380115bc40202e7b1d298bd58fa9192b4ef70403e88aa480159fb47",
+      "byte_size": 866950,
+      "duration_seconds": 6.733008,
+      "provenance": {
+        "source": "Private prepared regression clip identified by video-verifier seed-v1; metadata publication is authorized but media redistribution is not",
+        "source_uri": null,
+        "license_id": "LicenseRef-All-Rights-Reserved",
+        "license_uri": null,
+        "attribution": null
+      }
+    },
+    {
+      "asset_id": "panel-roundtable-positive",
+      "sha256": "6b8d2e1b103660ddd1caf7f8404d7a36bdc5db087414487f96178b1a97c568bf",
+      "byte_size": 4915894,
+      "duration_seconds": 38.566667,
+      "provenance": {
+        "source": "Private prepared regression clip identified by video-verifier seed-v1; metadata publication is authorized but media redistribution is not",
+        "source_uri": null,
+        "license_id": "LicenseRef-All-Rights-Reserved",
+        "license_uri": null,
+        "attribution": null
+      }
+    },
+    {
+      "asset_id": "sports-abstain",
+      "sha256": "b82bac93bb0aa1af32ed5624cbf986bb577e9c7a635d774c57a2f3ed5a3a954b",
+      "byte_size": 2981704,
+      "duration_seconds": 5.0,
+      "provenance": {
+        "source": "Private prepared regression clip identified by video-verifier seed-v1; metadata publication is authorized but media redistribution is not",
+        "source_uri": null,
+        "license_id": "LicenseRef-All-Rights-Reserved",
+        "license_uri": null,
+        "attribution": null
+      }
+    },
+    {
+      "asset_id": "sports-commercial-positive",
+      "sha256": "30217cc33264b685f4ebc9bc39cd0d2083e84805e9936946c6d04b429f6d0902",
+      "byte_size": 4020157,
+      "duration_seconds": 11.0,
+      "provenance": {
+        "source": "Private prepared regression clip identified by video-verifier seed-v1; metadata publication is authorized but media redistribution is not",
+        "source_uri": null,
+        "license_id": "LicenseRef-All-Rights-Reserved",
+        "license_uri": null,
+        "attribution": null
+      }
+    },
+    {
+      "asset_id": "sports-commercial-slate-negative",
+      "sha256": "43a1fec52a5d8e88e0743ac524f3a8746867108d2a0709a3bfeebadb80e8dd23",
+      "byte_size": 1027665,
+      "duration_seconds": 3.5,
+      "provenance": {
+        "source": "Private prepared regression clip identified by video-verifier seed-v1; metadata publication is authorized but media redistribution is not",
+        "source_uri": null,
+        "license_id": "LicenseRef-All-Rights-Reserved",
+        "license_uri": null,
+        "attribution": null
+      }
+    },
+    {
+      "asset_id": "sports-made-free-throw",
+      "sha256": "4f6ea5056153761d7d05737c315c797615d135f99092fc1d46f05bb8a3566588",
+      "byte_size": 4987913,
+      "duration_seconds": 14.0,
+      "provenance": {
+        "source": "Private prepared regression clip identified by video-verifier seed-v1; metadata publication is authorized but media redistribution is not",
+        "source_uri": null,
+        "license_id": "LicenseRef-All-Rights-Reserved",
+        "license_uri": null,
+        "attribution": null
+      }
+    },
+    {
+      "asset_id": "sports-made-three-blue-15",
+      "sha256": "884d52b34becf01adf940c2b979a67651e436f6deda03bf001f3b0973c9aa31b",
+      "byte_size": 6882258,
+      "duration_seconds": 12.0,
+      "provenance": {
+        "source": "Private prepared regression clip identified by video-verifier seed-v1; metadata publication is authorized but media redistribution is not",
+        "source_uri": null,
+        "license_id": "LicenseRef-All-Rights-Reserved",
+        "license_uri": null,
+        "attribution": null
+      }
+    },
+    {
+      "asset_id": "sports-made-three-white-9",
+      "sha256": "aa203e4639b33bceb61c31fc96da56cb96a20df1d133ea777e2a7cfea6aeeb49",
+      "byte_size": 5345772,
+      "duration_seconds": 10.633333,
+      "provenance": {
+        "source": "Private prepared regression clip identified by video-verifier seed-v1; metadata publication is authorized but media redistribution is not",
+        "source_uri": null,
+        "license_id": "LicenseRef-All-Rights-Reserved",
+        "license_uri": null,
+        "attribution": null
+      }
+    }
+  ],
+  "cases": [
+    {
+      "case_id": "panel-light-top-gesture",
+      "query": "a seated participant in a light-colored top visibly points or gestures with one hand",
+      "asset_ids": [
+        "panel-light-top-gesture-negative",
+        "panel-light-top-gesture-positive"
+      ],
+      "domain": "universal_non_sports",
+      "modalities": [
+        "visual"
+      ],
+      "label_quality": "gold",
+      "split_group": "panel-a",
+      "relevant_intervals": [
+        {
+          "asset_id": "panel-light-top-gesture-positive",
+          "start_seconds": 0.0,
+          "end_seconds": 5.0
+        }
+      ],
+      "hard_negatives": [
+        {
+          "asset_id": "panel-light-top-gesture-negative",
+          "start_seconds": 0.0,
+          "end_seconds": 5.0,
+          "reason": "Adjacent independently reviewed interval where the queried gesture is absent"
+        }
+      ],
+      "notes": "The positive interval is the exact prepared-window boundary from the verifier fixture, not new promotion-grade event-boundary evidence.",
+      "critical_slices": {
+        "schema_version": 1,
+        "event_class": [
+          "gesture"
+        ],
+        "capture_condition": [
+          "panel_discussion"
+        ],
+        "distribution_shift": [
+          "regression_seen"
+        ]
+      }
+    },
+    {
+      "case_id": "panel-roundtable-discussion",
+      "query": "several people are visibly seated together in a roundtable discussion",
+      "asset_ids": [
+        "panel-roundtable-negative",
+        "panel-roundtable-positive"
+      ],
+      "domain": "universal_non_sports",
+      "modalities": [
+        "visual"
+      ],
+      "label_quality": "gold",
+      "split_group": "panel-a",
+      "relevant_intervals": [
+        {
+          "asset_id": "panel-roundtable-positive",
+          "start_seconds": 0.0,
+          "end_seconds": 38.566667
+        }
+      ],
+      "hard_negatives": [
+        {
+          "asset_id": "panel-roundtable-negative",
+          "start_seconds": 0.0,
+          "end_seconds": 6.733008,
+          "reason": "Adjacent independently reviewed interval before the visible multi-person roundtable"
+        }
+      ],
+      "notes": "The positive interval is the exact prepared-window boundary from the verifier fixture; no private speech text is included.",
+      "critical_slices": {
+        "schema_version": 1,
+        "event_class": [
+          "roundtable_discussion"
+        ],
+        "capture_condition": [
+          "panel_discussion"
+        ],
+        "distribution_shift": [
+          "regression_seen"
+        ]
+      }
+    },
+    {
+      "case_id": "sports-full-screen-commercial",
+      "query": "a full-screen commercial is visibly playing",
+      "asset_ids": [
+        "sports-commercial-positive",
+        "sports-commercial-slate-negative"
+      ],
+      "domain": "basketball",
+      "modalities": [
+        "visual"
+      ],
+      "label_quality": "gold",
+      "split_group": "sports-game-a",
+      "relevant_intervals": [
+        {
+          "asset_id": "sports-commercial-positive",
+          "start_seconds": 0.0,
+          "end_seconds": 11.0
+        }
+      ],
+      "hard_negatives": [
+        {
+          "asset_id": "sports-commercial-slate-negative",
+          "start_seconds": 0.0,
+          "end_seconds": 3.5,
+          "reason": "Adjacent full-screen matchup slate rather than a commercial"
+        }
+      ],
+      "notes": "The query and labels are a direct product-retrieval projection of the committed generic_visual verifier pair.",
+      "critical_slices": {
+        "schema_version": 1,
+        "event_class": [
+          "advertisement_non_game"
+        ],
+        "capture_condition": [
+          "full_screen_graphic"
+        ],
+        "distribution_shift": [
+          "regression_seen"
+        ]
+      }
+    },
+    {
+      "case_id": "sports-made-three-point",
+      "query": "a basketball player makes a three-point shot",
+      "asset_ids": [
+        "sports-abstain",
+        "sports-made-free-throw",
+        "sports-made-three-blue-15",
+        "sports-made-three-white-9"
+      ],
+      "domain": "basketball",
+      "modalities": [
+        "visual"
+      ],
+      "label_quality": "gold",
+      "split_group": "sports-game-a",
+      "relevant_intervals": [
+        {
+          "asset_id": "sports-made-three-blue-15",
+          "start_seconds": 0.0,
+          "end_seconds": 12.0
+        },
+        {
+          "asset_id": "sports-made-three-white-9",
+          "start_seconds": 0.0,
+          "end_seconds": 10.633333
+        }
+      ],
+      "hard_negatives": [
+        {
+          "asset_id": "sports-made-free-throw",
+          "start_seconds": 0.0,
+          "end_seconds": 14.0,
+          "reason": "Made free throw: ball-through-hoop is true but outside-arc and three-point-signal facts are false"
+        }
+      ],
+      "notes": "sports-abstain is scoped but deliberately not called a hard negative: its committed fact labels require abstention. Relevant intervals are prepared-window boundaries, not newly inferred shot boundaries.",
+      "critical_slices": {
+        "schema_version": 1,
+        "event_class": [
+          "made_3"
+        ],
+        "capture_condition": [
+          "broadcast_basketball"
+        ],
+        "distribution_shift": [
+          "regression_seen"
+        ]
+      }
+    },
+    {
+      "case_id": "sports-made-free-throw-query",
+      "query": "a basketball player makes a free throw",
+      "asset_ids": [
+        "sports-made-free-throw",
+        "sports-made-three-blue-15",
+        "sports-made-three-white-9"
+      ],
+      "domain": "basketball",
+      "modalities": [
+        "visual"
+      ],
+      "label_quality": "gold",
+      "split_group": "sports-game-a",
+      "relevant_intervals": [
+        {
+          "asset_id": "sports-made-free-throw",
+          "start_seconds": 0.0,
+          "end_seconds": 14.0
+        }
+      ],
+      "hard_negatives": [
+        {
+          "asset_id": "sports-made-three-blue-15",
+          "start_seconds": 0.0,
+          "end_seconds": 12.0,
+          "reason": "Made three-point event with outside-arc and three-point-signal facts true"
+        },
+        {
+          "asset_id": "sports-made-three-white-9",
+          "start_seconds": 0.0,
+          "end_seconds": 10.633333,
+          "reason": "Made three-point event with outside-arc and three-point-signal facts true"
+        }
+      ],
+      "notes": "This case preserves the within-source shot-type hard negative and does not infer a jersey label.",
+      "critical_slices": {
+        "schema_version": 1,
+        "event_class": [
+          "free_throw"
+        ],
+        "capture_condition": [
+          "broadcast_basketball"
+        ],
+        "distribution_shift": [
+          "regression_seen"
+        ]
+      }
+    }
+  ]
+}

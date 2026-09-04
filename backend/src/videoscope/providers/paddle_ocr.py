@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from hashlib import sha256
 import json
@@ -48,6 +49,18 @@ MAX_OCR_TEXT_CHARACTERS = 512
 MAX_OCR_TOTAL_TEXT_CHARACTERS = 64 * 1024
 
 _HEX_64_RE = re.compile(r"^[0-9a-f]{64}$")
+_WORKER_ENVIRONMENT_PASSTHROUGH = frozenset(
+    {
+        "HOME",
+        "HF_HOME",
+        "LANG",
+        "LC_ALL",
+        "PATH",
+        "SSL_CERT_FILE",
+        "TMPDIR",
+        "XDG_CACHE_HOME",
+    }
+)
 _DEPENDENCY_IDENTITY_RE = re.compile(r"^paddleocr-deps-v1:sha256:([0-9a-f]{64})$")
 _MODEL_IDENTITY_RE = re.compile(r"^paddleocr-models-v1:sha256:[0-9a-f]{64}$")
 _RUNTIME_IDENTITY_RE = re.compile(
@@ -560,6 +573,7 @@ class PaddleOCRReader:
         expected_runtime_identity: str = OCR_WORKER_RUNTIME_IDENTITY,
         expected_model_identity: str = OCR_MODEL_ARTIFACT_IDENTITY,
         expected_script_sha256: str | None = None,
+        worker_environment: Mapping[str, str] | None = None,
         worker_startup_timeout_seconds: float = 180.0,
         worker_response_timeout_seconds: float = 60.0,
     ) -> None:
@@ -596,6 +610,24 @@ class PaddleOCRReader:
         ) is None:
             raise ValueError("invalid reviewed OCR script identity")
         self._expected_script_sha256 = expected_script_sha256
+        if worker_environment is None:
+            self._explicit_worker_environment: dict[str, str] | None = None
+        else:
+            if not isinstance(worker_environment, Mapping):
+                raise ValueError("invalid PaddleOCR worker environment")
+            explicit_environment: dict[str, str] = {}
+            for name, value in worker_environment.items():
+                if (
+                    type(name) is not str
+                    or name not in _WORKER_ENVIRONMENT_PASSTHROUGH
+                    or type(value) is not str
+                    or not value
+                    or len(value) > 16_384
+                    or "\x00" in value
+                ):
+                    raise ValueError("invalid PaddleOCR worker environment")
+                explicit_environment[name] = value
+            self._explicit_worker_environment = explicit_environment
         self.worker_startup_timeout_seconds = worker_startup_timeout_seconds
         self.worker_response_timeout_seconds = worker_response_timeout_seconds
         self._model = None
@@ -778,9 +810,39 @@ class PaddleOCRReader:
     def _create_private_bundle(
         self, prepared: _PreparedOCRContract
     ) -> tuple[Path, Path, Path]:
-        directory = Path(tempfile.mkdtemp(prefix="videoscope-ocr-")).resolve(
-            strict=True
-        )
+        private_parent: Path | None = None
+        if self._explicit_worker_environment is not None:
+            raw_parent = self._explicit_worker_environment.get("TMPDIR")
+            try:
+                candidate = Path(raw_parent) if raw_parent is not None else None
+                if (
+                    candidate is None
+                    or not candidate.is_absolute()
+                    or Path(os.path.abspath(candidate)) != candidate
+                ):
+                    raise OSError
+                metadata = os.lstat(candidate)
+                resolved = candidate.resolve(strict=True)
+                if (
+                    not stat.S_ISDIR(metadata.st_mode)
+                    or stat.S_ISLNK(metadata.st_mode)
+                    or resolved != candidate
+                    or metadata.st_uid != os.geteuid()
+                    or stat.S_IMODE(metadata.st_mode) != 0o700
+                ):
+                    raise OSError
+            except (OSError, TypeError, ValueError) as error:
+                raise ValueError("invalid PaddleOCR worker scratch root") from error
+            private_parent = candidate
+        directory = Path(
+            tempfile.mkdtemp(
+                prefix="videoscope-ocr-",
+                dir=os.fspath(private_parent) if private_parent is not None else None,
+            )
+        ).resolve(strict=True)
+        if private_parent is not None and directory.parent != private_parent:
+            self._remove_private_bundle(directory)
+            raise ValueError("invalid PaddleOCR worker scratch root")
         os.chmod(directory, 0o700)
         try:
             script = self._write_private_file(
@@ -871,11 +933,15 @@ class PaddleOCRReader:
         model_manifest: Path,
     ) -> dict[str, str]:
         environment: dict[str, str] = {
+            "HF_DATASETS_OFFLINE": "1",
             "HF_HUB_OFFLINE": "1",
+            "HF_HUB_DISABLE_TELEMETRY": "1",
             "PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK": "True",
+            "PYTHONDONTWRITEBYTECODE": "1",
             "PYTHONNOUSERSITE": "1",
             "PYTHONUNBUFFERED": "1",
             "TRANSFORMERS_OFFLINE": "1",
+            "UV_OFFLINE": "1",
             "VIDEOSCOPE_OCR_DEPENDENCY_LOCK": str(dependency_lock),
             "VIDEOSCOPE_OCR_MODEL_MANIFEST": str(model_manifest),
             "VIDEOSCOPE_OCR_MODEL_ROOT": str(self.worker_model_root),
@@ -885,19 +951,19 @@ class PaddleOCRReader:
         environment["VIDEOSCOPE_OCR_FRAME_ROOT"] = str(
             self._worker_frame_directory
         )
-        for name in (
-            "HOME",
-            "HF_HOME",
-            "LANG",
-            "LC_ALL",
-            "PATH",
-            "SSL_CERT_FILE",
-            "TMPDIR",
-            "XDG_CACHE_HOME",
-        ):
-            value = os.environ.get(name)
-            if value:
-                environment[name] = value
+        inherited = self._explicit_worker_environment
+        if inherited is None:
+            inherited = {
+                name: value
+                for name in _WORKER_ENVIRONMENT_PASSTHROUGH
+                if (value := os.environ.get(name))
+            }
+        environment.update(inherited)
+        hf_home = environment.get("HF_HOME")
+        if hf_home:
+            hub = os.fspath(Path(hf_home) / "hub")
+            environment["HF_HUB_CACHE"] = hub
+            environment["TRANSFORMERS_CACHE"] = hub
         return environment
 
     @staticmethod

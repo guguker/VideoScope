@@ -376,10 +376,19 @@ class SiglipVisualIndex:
         self.batch_size = max(1, batch_size)
         self.inference_client = inference_client
         inference_identity = "not-configured"
+        worker_specification = getattr(inference_client, "specification", None)
         if inference_client is not None:
-            configured_identity = inference_client.identity.get(
-                "siglip_specification_hash"
+            configured_identity = getattr(
+                worker_specification,
+                "siglip_identity",
+                None,
             )
+            if configured_identity is None:
+                legacy_identity = getattr(inference_client, "identity", None)
+                if isinstance(legacy_identity, dict):
+                    configured_identity = legacy_identity.get(
+                        "siglip_specification_hash"
+                    )
             if type(configured_identity) is not str or not configured_identity.strip():
                 raise ValueError("visual inference client identity is invalid")
             inference_identity = configured_identity
@@ -394,7 +403,6 @@ class SiglipVisualIndex:
             extractor_identity=extractor_identity,
             inference_identity=inference_identity,
         )
-        worker_specification = getattr(inference_client, "specification", None)
         self._logit_scale = float(
             getattr(worker_specification, "siglip_logit_scale", 1.0)
         )

@@ -347,7 +347,7 @@ class VideoIndexPlanSnapshot:
 
 @dataclass(frozen=True, slots=True)
 class PriorVideoState:
-    """The bounded video state restored when a reindex is cancelled."""
+    """The bounded video state restored when a reindex ends without release."""
 
     status: str
     progress: float

@@ -20,14 +20,13 @@ recognition models. The worker never downloads a missing or changed model. By
 default it verifies the files below `~/.paddlex/official_models`; set
 `VIDEOSCOPE_OCR_MODEL_ROOT` when the reviewed files live elsewhere.
 
-Important: this repository currently has neither a `models-ocr` acquisition
-command nor a reviewed upstream source/revision record that can reproduce those
-exact bytes. Therefore a fresh checkout is **not** a complete clean-install
-path. Before `make install-ocr`, an operator must provision every path, size,
-and SHA-256 listed in `model-artifacts.lock.json` from an independently reviewed
-source. The installer then verifies those pre-provisioned bytes offline. Adding
-a downloader is blocked until that source/revision evidence is reviewed; the
-manifest hashes alone are verification identities, not acquisition provenance.
+`model-sources.lock.json` binds both model directories to immutable Hugging Face
+repository revisions, Apache-2.0 license evidence, and the exact runtime bytes in
+`model-artifacts.lock.json`. Run `make models-ocr` as the explicit networked
+acquisition step before `make install-ocr`. The downloader requests only reviewed
+filenames, validates every size and SHA-256 in private staging, and publishes a
+model directory only after verification. It accepts an already-correct directory
+but does not overwrite an existing invalid directory or other user state.
 
 Given those pre-provisioned model bytes, `make install-ocr` creates a fresh
 hash-locked dependency environment and runs the attestation-only startup path.

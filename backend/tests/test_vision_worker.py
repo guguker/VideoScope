@@ -33,6 +33,7 @@ from videoscope.providers.vision_worker_contract import (
     VISION_WORKER_SCHEMA_VERSION,
     VisionEmbedImagesRequest,
     VisionWorkerSpecification,
+    worker_input_root_identity,
 )
 
 
@@ -114,7 +115,10 @@ def _write_png(path: Path, *, width: int = 10, height: int = 10) -> bytes:
     return path.read_bytes()
 
 
-def _identity(runtime: FakeVisionRuntime) -> dict[str, str]:
+def _identity(
+    runtime: FakeVisionRuntime,
+    input_root: Path | None = None,
+) -> dict[str, str]:
     specification = runtime.specification
     return {
         "schema_version": VISION_WORKER_SCHEMA_VERSION,
@@ -124,6 +128,11 @@ def _identity(runtime: FakeVisionRuntime) -> dict[str, str]:
         "detector_specification_hash": specification.detector_identity,
         "siglip_model_identity": specification.siglip_model_identity,
         "detector_model_identity": specification.detector_model_identity,
+        "input_root_identity": (
+            worker_input_root_identity(input_root)
+            if input_root is not None
+            else "sha256:" + "f" * 64
+        ),
     }
 
 
@@ -137,9 +146,14 @@ def _image_item(path: Path, *, item_id: str = "frame-1") -> dict[str, object]:
     }
 
 
-def _images_request(runtime: FakeVisionRuntime, path: Path) -> dict[str, object]:
+def _images_request(
+    runtime: FakeVisionRuntime,
+    path: Path,
+    *,
+    input_root: Path | None = None,
+) -> dict[str, object]:
     return {
-        **_identity(runtime),
+        **_identity(runtime, input_root or path.parent),
         "request_id": "a" * 32,
         "items": [_image_item(path)],
     }
@@ -204,11 +218,11 @@ def test_health_exposes_exact_bounded_capabilities_without_loading(tmp_path: Pat
 
     assert response.status_code == 200
     assert response.json() == {
-        **_identity(runtime),
+        **_identity(runtime, tmp_path),
         "status": "ok",
         "siglip_loaded": False,
         "detector_loaded": False,
-        "operations": ["embed_images", "embed_texts", "detect"],
+        "operations": ["probe", "embed_images", "embed_texts", "detect"],
         "embedding_dimensions": 4,
         "max_images": 32,
         "max_texts": 64,
@@ -226,6 +240,72 @@ def test_health_exposes_exact_bounded_capabilities_without_loading(tmp_path: Pat
         "/v1/health", headers={"Authorization": f"Bearer {TOKEN}"}
     )
     assert unavailable.json()["status"] == "unavailable"
+
+
+def test_input_root_identity_is_path_free_and_changes_after_root_replacement(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "worker-input"
+    root.mkdir()
+    first = worker_input_root_identity(root)
+    retained = tmp_path / "retained-input"
+    root.rename(retained)
+    root.mkdir()
+
+    assert first.startswith("sha256:")
+    assert str(root) not in first
+    assert worker_input_root_identity(root) != first
+
+
+def test_worker_probe_reads_a_bounded_source_under_the_attested_root(
+    tmp_path: Path,
+) -> None:
+    runtime = FakeVisionRuntime()
+    marker = tmp_path / "probe.bin"
+    marker.write_bytes(b"videoscope-worker-root-probe-v1")
+    payload = marker.read_bytes()
+    response = _client(tmp_path, runtime).post(
+        "/v1/probe",
+        json={
+            **_identity(runtime, tmp_path),
+            "request_id": "e" * 32,
+            "relative_path": marker.name,
+            "expected_sha256": sha256(payload).hexdigest(),
+            "expected_size_bytes": len(payload),
+        },
+        headers={"Authorization": f"Bearer {TOKEN}"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        **_identity(runtime, tmp_path),
+        "request_id": "e" * 32,
+        "source_sha256": sha256(payload).hexdigest(),
+        "source_size_bytes": len(payload),
+    }
+
+
+def test_worker_probe_rejects_a_stale_input_root_identity(tmp_path: Path) -> None:
+    runtime = FakeVisionRuntime()
+    marker = tmp_path / "probe.bin"
+    marker.write_bytes(b"probe")
+    request = {
+        **_identity(runtime, tmp_path),
+        "request_id": "e" * 32,
+        "relative_path": marker.name,
+        "expected_sha256": sha256(marker.read_bytes()).hexdigest(),
+        "expected_size_bytes": marker.stat().st_size,
+    }
+    request["input_root_identity"] = "sha256:" + "0" * 64
+
+    response = _client(tmp_path, runtime).post(
+        "/v1/probe",
+        json=request,
+        headers={"Authorization": f"Bearer {TOKEN}"},
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "Vision worker identity does not match"}
 
 
 def test_contract_forbids_extra_fields_duplicates_and_non_finite_values(
@@ -450,10 +530,10 @@ def test_worker_enforces_explicit_top_level_input_allowlist(tmp_path: Path) -> N
 
     rejected = client.post(
         "/v1/embed/images",
-        json=_images_request(runtime, forbidden),
+        json=_images_request(runtime, forbidden, input_root=tmp_path),
         headers=headers,
     )
-    accepted_request = _images_request(runtime, allowed)
+    accepted_request = _images_request(runtime, allowed, input_root=tmp_path)
     accepted_request["items"][0]["relative_path"] = "visual-index/frame.png"
     accepted = client.post(
         "/v1/embed/images",
@@ -469,7 +549,7 @@ def test_worker_checks_identity_before_reading_sources(tmp_path: Path) -> None:
     runtime = FakeVisionRuntime()
     missing = tmp_path / "missing.png"
     request = {
-        **_identity(runtime),
+        **_identity(runtime, tmp_path),
         "request_id": "a" * 32,
         "items": [
             {
@@ -505,7 +585,7 @@ def test_image_and_text_embeddings_preserve_order_and_exact_shape(tmp_path: Path
 
     image_response = client.post("/v1/embed/images", json=images, headers=headers)
     texts = {
-        **_identity(runtime),
+        **_identity(runtime, tmp_path),
         "request_id": "b" * 32,
         "items": [
             {"item_id": "prompt-1", "text": "person"},
@@ -562,7 +642,7 @@ def test_detection_is_bounded_and_validated_against_image_dimensions(tmp_path: P
     path = tmp_path / "frame.png"
     _write_png(path, width=10, height=10)
     request = {
-        **_identity(runtime),
+        **_identity(runtime, tmp_path),
         "request_id": "c" * 32,
         "source": _image_item(path),
         "minimum_confidence": 0.25,
@@ -661,7 +741,7 @@ def test_global_capacity_rejects_cross_operation_contention(tmp_path: Path) -> N
     _write_png(path)
     image_request = _images_request(runtime, path)
     text_request = {
-        **_identity(runtime),
+        **_identity(runtime, tmp_path),
         "request_id": "d" * 32,
         "items": [{"item_id": "prompt", "text": "person"}],
     }
@@ -701,8 +781,9 @@ class FakeHTTPResponse:
 
 
 class FakeHTTPClient:
-    def __init__(self, runtime: FakeVisionRuntime) -> None:
+    def __init__(self, runtime: FakeVisionRuntime, input_root: Path) -> None:
         self.runtime = runtime
+        self.input_root = input_root
         self.posts: list[tuple[str, object]] = []
         self.payload_override: object | None = None
         self.health_payload_override: object | None = None
@@ -713,11 +794,11 @@ class FakeHTTPClient:
         specification = self.runtime.specification
         return FakeHTTPResponse(
             {
-                **_identity(self.runtime),
+                **_identity(self.runtime, self.input_root),
                 "status": "ok",
                 "siglip_loaded": False,
                 "detector_loaded": False,
-                "operations": ["embed_images", "embed_texts", "detect"],
+                "operations": ["probe", "embed_images", "embed_texts", "detect"],
                 "embedding_dimensions": specification.embedding_dimensions,
                 "max_images": 32,
                 "max_texts": 64,
@@ -738,9 +819,17 @@ class FakeHTTPClient:
         request = json
         assert isinstance(request, dict)
         base = {
-            **_identity(self.runtime),
+            **_identity(self.runtime, self.input_root),
             "request_id": request["request_id"],
         }
+        if url.endswith("/v1/probe"):
+            return FakeHTTPResponse(
+                {
+                    **base,
+                    "source_sha256": request["expected_sha256"],
+                    "source_size_bytes": request["expected_size_bytes"],
+                }
+            )
         if url.endswith("/v1/embed/images") or url.endswith("/v1/embed/texts"):
             return FakeHTTPResponse(
                 {
@@ -776,7 +865,7 @@ class FakeHTTPClient:
 
 
 def _worker_adapter(tmp_path: Path, runtime: FakeVisionRuntime) -> tuple[VisionWorkerClient, FakeHTTPClient]:
-    transport = FakeHTTPClient(runtime)
+    transport = FakeHTTPClient(runtime, tmp_path)
     adapter = VisionWorkerClient(
         endpoint="http://127.0.0.1:8093",
         api_key=TOKEN,
@@ -816,6 +905,21 @@ def test_client_preserves_visual_encoder_and_object_provider_shapes(tmp_path: Pa
     assert image_payload["items"][0]["expected_size_bytes"] == first.stat().st_size
 
 
+def test_client_source_probe_is_bound_to_the_same_input_root(tmp_path: Path) -> None:
+    runtime = FakeVisionRuntime()
+    marker = tmp_path / "probe.bin"
+    marker.write_bytes(b"videoscope-worker-root-probe-v1")
+    adapter, transport = _worker_adapter(tmp_path, runtime)
+
+    adapter.probe_source(marker)
+
+    url, payload = transport.posts[-1]
+    assert url.endswith("/v1/probe")
+    assert isinstance(payload, dict)
+    assert payload["input_root_identity"] == worker_input_root_identity(tmp_path)
+    assert payload["expected_sha256"] == sha256(marker.read_bytes()).hexdigest()
+
+
 def test_client_exposes_provider_registry_status(tmp_path: Path) -> None:
     runtime = FakeVisionRuntime()
     ready, _transport = _worker_adapter(tmp_path, runtime)
@@ -828,7 +932,7 @@ def test_client_exposes_provider_registry_status(tmp_path: Path) -> None:
         optional=True,
     )
 
-    incompatible_transport = FakeHTTPClient(runtime)
+    incompatible_transport = FakeHTTPClient(runtime, tmp_path)
     incompatible_transport.health_payload_override = {}
     unavailable = VisionWorkerClient(
         endpoint="http://127.0.0.1:8093",
@@ -879,7 +983,7 @@ def test_client_fails_closed_on_untrusted_embedding_response(
     _write_png(path)
     adapter, transport = _worker_adapter(tmp_path, runtime)
     base = {
-        **_identity(runtime),
+        **_identity(runtime, tmp_path),
         "request_id": "0" * 32,
         "embedding_dimensions": 4,
         "items": [{"item_id": "image-0000", "vector": [1.0, 0.0, 0.0, 0.0]}],

@@ -24,9 +24,70 @@ logger = logging.getLogger(__name__)
 
 MADE_BASKET_PROMPT_VERSION = "made-basket-facts-v3"
 LEGACY_MADE_THREE_PROMPT_VERSION = "made-three-facts-v2"
-GENERIC_PROMPT_VERSION = "generic-storyboard-v2"
-QWEN_INPUT_SCHEMA_VERSION = "qwen-video-input-v1"
-QWEN_INFERENCE_RUNTIME_IDENTITY = "mlx-vlm==0.6.7"
+GENERIC_PROMPT_VERSION = "generic-visual-v3"
+QWEN_INPUT_SCHEMA_VERSION = "qwen-video-input-v3"
+_BASKETBALL_FACTS_PROMPT = (
+    "Report only independently visible basketball facts. Return exactly one "
+    "compact JSON object with keys shot_attempt, ball_through_hoop, "
+    "shooter_outside_arc, three_point_signal, shooter_jersey, evidence. "
+    "Each fact must be true, false, or null independently; do not decide the "
+    "event class. Use null when the clip does not prove a fact. A shooting pose "
+    "does not prove a make. shooter_jersey is digits only or null. evidence is "
+    "one short factual sentence. No text outside JSON."
+)
+_GENERIC_QUERY_PROMPT_PREFIX = (
+    "You are a strict video judge. Inspect the supplied visual evidence in "
+    "chronological order. User query: "
+)
+_GENERIC_QUERY_PROMPT_SUFFIX = (
+    ". Return exactly one compact JSON object with keys matches_query, confidence, "
+    "event_start, event_end, shot_attempt, made, three_point, shooter_jersey, "
+    "evidence. Use null whenever the frames do not prove a fact. Never infer a "
+    "made basket from a shooting posture. A jersey number must be visible; "
+    "otherwise use null."
+)
+_QWEN_PROMPT_PROTOCOL = {
+    "basketball_prompt": _BASKETBALL_FACTS_PROMPT,
+    "basketball_prompt_version": MADE_BASKET_PROMPT_VERSION,
+    "generic_prompt_prefix": _GENERIC_QUERY_PROMPT_PREFIX,
+    "generic_prompt_suffix": _GENERIC_QUERY_PROMPT_SUFFIX,
+    "generic_prompt_version": GENERIC_PROMPT_VERSION,
+    "input_schema": QWEN_INPUT_SCHEMA_VERSION,
+    "input_content_binding": {
+        "materialization": "private-read-only-copy-v1",
+        "namespace_drift": "descriptor-fingerprint-v1",
+        "request_fields": ["expected_sha256", "expected_byte_size"],
+        "source_open": "descriptor-relative-o-nofollow-v1",
+    },
+    "query_interpolation": "python-repr",
+    "generation": {
+        "enable_thinking": False,
+        "temperature": 0.0,
+    },
+    "supported_prompt_inputs": {
+        "basketball_facts": ["video"],
+        "generic_query": ["storyboard", "video"],
+    },
+    "schema_version": 3,
+}
+QWEN_PROMPT_PROTOCOL_SHA256 = hashlib.sha256(
+    json.dumps(
+        _QWEN_PROMPT_PROTOCOL,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+).hexdigest()
+QWEN_INFERENCE_RUNTIME_IDENTITY = (
+    "videoscope-qwen-worker-v4|python==3.12.13|"
+    "platform==aarch64-apple-darwin-macos14plus|"
+    "runtime-manifest-sha256:"
+    "0481dda4b0aef9927d5f9adb1a5f7292f997cac39a6d59ecef0087913d80335f|"
+    "model-manifest-sha256:"
+    "abaeb6d14ccbdc1741cccea700edd3385eb7cb3d215796b465c4d5a1a0504fe0"
+)
+QWEN_IN_PROCESS_RUNTIME_IDENTITY = "unattested-in-process:mlx-vlm==0.6.7"
 
 
 class FrameExtractor(Protocol):
@@ -68,6 +129,19 @@ class QwenInferenceClient(Protocol):
         *,
         fps: float,
         max_tokens: int,
+        expected_sha256: str | None = None,
+        expected_byte_size: int | None = None,
+    ) -> QwenVideoJudgement: ...
+
+    def judge_video_query(
+        self,
+        source: Path,
+        query: str,
+        *,
+        fps: float,
+        max_tokens: int,
+        expected_sha256: str | None = None,
+        expected_byte_size: int | None = None,
     ) -> QwenVideoJudgement: ...
 
     def judge_storyboard(
@@ -76,6 +150,8 @@ class QwenInferenceClient(Protocol):
         query: str,
         *,
         max_tokens: int,
+        expected_sha256: str | None = None,
+        expected_byte_size: int | None = None,
     ) -> QwenVideoJudgement: ...
 
 
@@ -300,7 +376,7 @@ class QwenVideoReranker:
         elif self.allow_in_process:
             boundary = {
                 "mode": "deprecated-in-process",
-                "runtime_identity": QWEN_INFERENCE_RUNTIME_IDENTITY,
+                "runtime_identity": QWEN_IN_PROCESS_RUNTIME_IDENTITY,
             }
         else:
             boundary = {"mode": "disabled"}
@@ -311,6 +387,71 @@ class QwenVideoReranker:
             "boundary": boundary,
             "video_fps": self.video_fps,
             "max_tokens": self.max_tokens,
+        }
+
+    @property
+    def benchmark_attestation(self) -> dict[str, object] | None:
+        """Describe the exact strict worker boundary without host-local paths."""
+        if self.model_name is None or self.inference_client is None:
+            return None
+        try:
+            boundary = self.inference_client.identity
+        except Exception:
+            return None
+        if not isinstance(boundary, dict):
+            return None
+        contract = boundary.get("contract")
+        worker_model = boundary.get("model")
+        runtime_identity = boundary.get("runtime_identity")
+        source_bundle_sha256 = boundary.get("source_bundle_sha256")
+        prompt_protocol_sha256 = boundary.get("prompt_protocol_sha256")
+        input_root_sha256 = boundary.get("input_root_sha256")
+        if (
+            boundary.get("mode") != "isolated-worker"
+            or type(contract) is not str
+            or not contract
+            or worker_model != self.model_identity
+            or type(runtime_identity) is not str
+            or not runtime_identity
+            or type(source_bundle_sha256) is not str
+            or re.fullmatch(r"[0-9a-f]{64}", source_bundle_sha256) is None
+            or type(prompt_protocol_sha256) is not str
+            or re.fullmatch(r"[0-9a-f]{64}", prompt_protocol_sha256) is None
+            or type(input_root_sha256) is not str
+            or re.fullmatch(r"[0-9a-f]{64}", input_root_sha256) is None
+        ):
+            return None
+        protocol = {
+            "contract": contract,
+            "frame_count": self.frame_count,
+            "generic_prompt": GENERIC_PROMPT_VERSION,
+            "input_schema": QWEN_INPUT_SCHEMA_VERSION,
+            "made_basket_prompt": MADE_BASKET_PROMPT_VERSION,
+            "max_tokens": self.max_tokens,
+            "prompt_protocol_sha256": prompt_protocol_sha256,
+            "video_fps": self.video_fps,
+        }
+        try:
+            canonical = json.dumps(
+                protocol,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+        except (TypeError, ValueError):
+            return None
+        return {
+            "candidate_limit": self.top_candidates,
+            "model_identity": self.model_identity,
+            "protocol_identity": "sha256:"
+            + hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+            "provider": self.id,
+            "prompt_protocol_sha256": prompt_protocol_sha256,
+            "runtime_identity": runtime_identity,
+            "source_bundle_sha256": source_bundle_sha256,
+            "input_root_sha256": input_root_sha256,
+            "source_bound": True,
+            "strict_complete": True,
         }
 
     def status(self) -> ProviderStatus:
@@ -412,28 +553,11 @@ class QwenVideoReranker:
 
     @staticmethod
     def _fact_prompt() -> str:
-        return (
-            "Report only independently visible basketball facts. Return exactly one "
-            "compact JSON object with keys shot_attempt, ball_through_hoop, "
-            "shooter_outside_arc, three_point_signal, shooter_jersey, evidence. "
-            "Each fact must be true, false, or null independently; do not decide the "
-            "event class. Use null when the clip does not prove a fact. A shooting pose "
-            "does not prove a make. shooter_jersey is digits only or null. evidence is "
-            "one short factual sentence. No text outside JSON."
-        )
+        return _BASKETBALL_FACTS_PROMPT
 
     @staticmethod
     def _generic_prompt(query: str) -> str:
-        return (
-            "You are a strict video judge. Read the chronological storyboard from left "
-            "to right and top to bottom. "
-            f"User query: {query!r}. "
-            "Return exactly one compact JSON object with keys matches_query, confidence, "
-            "event_start, event_end, shot_attempt, made, three_point, shooter_jersey, "
-            "evidence. Use null whenever the frames do not prove a fact. Never infer a "
-            "made basket from a shooting posture. A jersey number must be visible; "
-            "otherwise use null."
-        )
+        return _GENERIC_QUERY_PROMPT_PREFIX + repr(query) + _GENERIC_QUERY_PROMPT_SUFFIX
 
     @staticmethod
     def _build_storyboard(
@@ -601,11 +725,16 @@ class QwenVideoReranker:
         interval: tuple[float, float],
         prompt_version: str,
     ) -> dict[str, object]:
-        runtime_identity = QWEN_INFERENCE_RUNTIME_IDENTITY
+        runtime_identity = QWEN_IN_PROCESS_RUNTIME_IDENTITY
+        execution_identity: dict[str, object] = {
+            "mode": "deprecated-in-process",
+            "runtime_identity": runtime_identity,
+        }
         if self.inference_client is not None:
-            configured_identity = self.inference_client.identity.get(
-                "runtime_identity"
-            )
+            execution_identity = self.benchmark_attestation or {}
+            if not execution_identity:
+                raise RuntimeError("Qwen worker execution identity is invalid")
+            configured_identity = execution_identity.get("runtime_identity")
             if isinstance(configured_identity, str) and configured_identity:
                 runtime_identity = configured_identity
         return {
@@ -614,6 +743,7 @@ class QwenVideoReranker:
             "interval": [round(interval[0], 3), round(interval[1], 3)],
             "prompt_version": prompt_version,
             "inference_config": {
+                "execution_identity": execution_identity,
                 "input_schema": QWEN_INPUT_SCHEMA_VERSION,
                 "runtime_identity": runtime_identity,
                 "frame_count": self.frame_count,

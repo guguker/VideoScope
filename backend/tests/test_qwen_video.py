@@ -1,4 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
+from hashlib import sha256
 import json
 from pathlib import Path
 from threading import Barrier, Lock
@@ -61,9 +62,12 @@ class RecordingMediaExtractor:
 class FakeQwenInference:
     identity = {
         "mode": "isolated-worker",
-        "contract": "qwen-worker-v1",
+        "contract": "qwen-worker-v4",
         "model": "test-model",
         "runtime_identity": "mlx-vlm==0.6.7",
+        "source_bundle_sha256": "1" * 64,
+        "prompt_protocol_sha256": "2" * 64,
+        "input_root_sha256": "3" * 64,
     }
 
     def __init__(self) -> None:
@@ -85,6 +89,21 @@ class FakeQwenInference:
             shot_attempt=True,
             ball_through_hoop=True,
             evidence="ball passes through hoop",
+        )
+
+    def judge_video_query(
+        self,
+        source: Path,
+        query: str,
+        *,
+        fps: float,
+        max_tokens: int,
+    ) -> QwenVideoJudgement:
+        self.video_calls.append((source, fps, max_tokens))
+        return QwenVideoJudgement(
+            matches_query=True,
+            confidence=0.9,
+            evidence=query,
         )
 
     def judge_storyboard(
@@ -169,6 +188,75 @@ def make_reranker(
         video_fps=video_fps,
         allow_in_process=True,
     )
+
+
+def test_benchmark_attestation_is_bound_to_exact_isolated_worker(tmp_path: Path) -> None:
+    reranker = QwenVideoReranker(
+        model_name="test-model",
+        repository=repository_with_video(tmp_path),
+        extractor=RecordingMediaExtractor(),
+        temp_dir=tmp_path / "tmp",
+        cache_dir=tmp_path / "cache",
+        top_candidates=7,
+        inference_client=FakeQwenInference(),
+    )
+
+    attestation = reranker.benchmark_attestation
+
+    assert attestation is not None
+    assert attestation["provider"] == "qwen-video"
+    assert attestation["model_identity"] == "test-model"
+    assert attestation["runtime_identity"] == "mlx-vlm==0.6.7"
+    assert attestation["source_bundle_sha256"] == "1" * 64
+    assert attestation["prompt_protocol_sha256"] == "2" * 64
+    assert attestation["input_root_sha256"] == "3" * 64
+    assert attestation["candidate_limit"] == 7
+    assert attestation["source_bound"] is True
+    assert attestation["strict_complete"] is True
+    assert str(attestation["protocol_identity"]).startswith("sha256:")
+    assert "endpoint" not in attestation
+
+
+def test_prompt_protocol_identity_covers_exact_prompt_templates() -> None:
+    encoded = json.dumps(
+        qwen_video_module._QWEN_PROMPT_PROTOCOL,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+
+    assert qwen_video_module.QWEN_PROMPT_PROTOCOL_SHA256 == sha256(encoded).hexdigest()
+    assert (
+        qwen_video_module.QwenVideoReranker._fact_prompt()
+        == qwen_video_module._QWEN_PROMPT_PROTOCOL["basketball_prompt"]
+    )
+
+
+def test_benchmark_attestation_rejects_disabled_or_wrong_model_worker(
+    tmp_path: Path,
+) -> None:
+    disabled = QwenVideoReranker(
+        model_name="test-model",
+        repository=repository_with_video(tmp_path / "disabled"),
+        extractor=RecordingMediaExtractor(),
+        temp_dir=tmp_path / "disabled" / "tmp",
+    )
+    mismatched_worker = FakeQwenInference()
+    mismatched_worker.identity = {
+        **mismatched_worker.identity,
+        "model": "different-model",
+    }
+    mismatched = QwenVideoReranker(
+        model_name="test-model",
+        repository=repository_with_video(tmp_path / "mismatch"),
+        extractor=RecordingMediaExtractor(),
+        temp_dir=tmp_path / "mismatch" / "tmp",
+        inference_client=mismatched_worker,
+    )
+
+    assert disabled.benchmark_attestation is None
+    assert mismatched.benchmark_attestation is None
 
 
 def test_parser_accepts_independent_fact_only_json() -> None:
@@ -454,6 +542,14 @@ def test_native_video_judge_disables_thinking_and_uses_two_fps(
     prompt_text = calls["template"][2][0]
     assert "matches_query" not in prompt_text
     assert "confidence" not in prompt_text
+
+
+def test_generic_prompt_is_input_neutral_for_storyboards_and_native_video() -> None:
+    prompt = QwenVideoReranker._generic_prompt("a person waves")
+
+    assert "a person waves" in prompt
+    assert "visual evidence" in prompt
+    assert "storyboard" not in prompt.casefold()
 
 
 @pytest.mark.parametrize(
@@ -761,13 +857,71 @@ def test_cache_key_includes_versioned_inference_config(tmp_path: Path) -> None:
     keys = [reranker._cache_key(**parameters) for reranker in variants]
 
     assert keys[0]["inference_config"] == {
-        "input_schema": "qwen-video-input-v1",
-        "runtime_identity": "mlx-vlm==0.6.7",
+        "execution_identity": {
+            "mode": "deprecated-in-process",
+            "runtime_identity": qwen_video_module.QWEN_IN_PROCESS_RUNTIME_IDENTITY,
+        },
+        "input_schema": "qwen-video-input-v3",
+        "runtime_identity": qwen_video_module.QWEN_IN_PROCESS_RUNTIME_IDENTITY,
         "frame_count": 12,
         "max_tokens": 320,
         "video_fps": 2,
     }
     assert len({reranker._cache_path(key) for reranker, key in zip(variants, keys)}) == 4
+
+
+@pytest.mark.parametrize(
+    "identity_field",
+    (
+        "contract",
+        "runtime_identity",
+        "source_bundle_sha256",
+        "prompt_protocol_sha256",
+        "input_root_sha256",
+    ),
+)
+def test_worker_cache_key_binds_complete_sanitized_execution_identity(
+    tmp_path: Path,
+    identity_field: str,
+) -> None:
+    extractor = RecordingMediaExtractor()
+    repository = repository_with_video(tmp_path)
+    first_client = FakeQwenInference()
+    first_client.identity = dict(FakeQwenInference.identity)
+    second_client = FakeQwenInference()
+    second_client.identity = dict(FakeQwenInference.identity)
+    second_client.identity[identity_field] = (
+        "qwen-worker-v5"
+        if identity_field == "contract"
+        else "mlx-vlm==0.6.8"
+        if identity_field == "runtime_identity"
+        else "4" * 64
+    )
+
+    def reranker(client: FakeQwenInference, suffix: str) -> QwenVideoReranker:
+        return QwenVideoReranker(
+            model_name="test-model",
+            repository=repository,
+            extractor=extractor,
+            temp_dir=tmp_path / f"tmp-{suffix}",
+            cache_dir=tmp_path / "cache",
+            inference_client=client,
+        )
+
+    parameters = {
+        "video_id": "video-1",
+        "interval": (1.0, 4.0),
+        "prompt_version": "prompt-v1",
+    }
+    first = reranker(first_client, "first")
+    second = reranker(second_client, "second")
+    first_key = first._cache_key(**parameters)
+    second_key = second._cache_key(**parameters)
+
+    assert first._cache_path(first_key) != second._cache_path(second_key)
+    boundary = first_key["inference_config"]["execution_identity"]
+    assert boundary == first.benchmark_attestation
+    assert "endpoint" not in boundary
 
 
 def test_rerank_strict_surfaces_candidate_failure(tmp_path: Path, monkeypatch) -> None:

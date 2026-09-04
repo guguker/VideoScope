@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import deque
+from collections.abc import Mapping
 from hashlib import sha256
 import importlib.util
 import io
@@ -153,13 +154,17 @@ def test_reviewed_ocr_packaging_is_exact_hash_pinned_and_pathless() -> None:
     )
     assert "--require-hashes" in installer
     assert "--only-binary=:all:" in installer
-    assert '!= "3.12.13"' in installer
     assert '[[ -e "$OCR_VENV" || -L "$OCR_VENV" ]]' in installer
-    assert 'python3.12 -I -m venv "$OCR_VENV"' in installer
     assert (
-        '"$OCR_VENV/bin/python" -I -m pip --isolated '
-        '--disable-pip-version-check install'
-    ) in installer
+        '.venv/bin/uv venv --python 3.12.13 --managed-python "$OCR_VENV"'
+        in installer
+    )
+    assert (
+        '.venv/bin/uv pip sync --python "$OCR_VENV/bin/python" '
+        '--require-hashes'
+        in installer
+    )
+    assert 'command -v python3.12' not in installer
     assert "transformers>=" not in installer
     assert "torch>=" not in installer
 
@@ -199,35 +204,57 @@ def test_ocr_lock_targets_have_a_nonmutating_exact_host_dry_run() -> None:
     assert "cmp -s workers/ocr/requirements.lock" in check_dry_run.stdout
 
 
-def test_ocr_installer_rejects_unsupported_host_before_venv_or_pip() -> None:
+def test_ocr_installer_attests_managed_runtime_before_package_sync() -> None:
     installer = (PROJECT_ROOT / "scripts" / "install-ocr.sh").read_text(
         encoding="utf-8"
     )
-    version_check = installer.index("python3.12 -I -c")
-    platform_check = installer.index(
-        "python3.12 -I scripts/check-worker-platform.py"
+    host_check = installer.index(
+        ".venv/bin/python -I scripts/check-worker-platform.py --host-only"
     )
-    create_environment = installer.index('python3.12 -I -m venv "$OCR_VENV"')
+    create_environment = installer.index(
+        '.venv/bin/uv venv --python 3.12.13 --managed-python "$OCR_VENV"'
+    )
+    platform_check = installer.index(
+        '"$OCR_VENV/bin/python" -I scripts/check-worker-platform.py'
+    )
     package_install = installer.index(
-        '"$OCR_VENV/bin/python" -I -m pip --isolated '
-        '--disable-pip-version-check install'
+        '.venv/bin/uv pip sync --python "$OCR_VENV/bin/python" '
+        '--require-hashes'
     )
 
-    assert version_check < platform_check < create_environment < package_install
+    assert host_check < create_environment < platform_check < package_install
+    assert "--no-python-downloads" in installer
     assert "PYTHONNOUSERSITE=1" in installer
 
 
-def test_ocr_docs_do_not_claim_an_unimplemented_clean_model_install() -> None:
+def test_ocr_model_acquisition_has_reviewed_source_revisions() -> None:
     readme = (PROJECT_ROOT / "workers" / "ocr" / "README.md").read_text(
         encoding="utf-8"
     )
     makefile = (PROJECT_ROOT / "Makefile").read_text(encoding="utf-8")
+    source_manifest = json.loads(
+        (PROJECT_ROOT / "workers" / "ocr" / "model-sources.lock.json").read_text(
+            encoding="utf-8"
+        )
+    )
 
-    assert "not** a complete clean-install" in readme
-    assert "neither a `models-ocr` acquisition" in readme
-    assert "command nor a reviewed upstream source/revision" in readme
-    assert "source/revision evidence" in readme
-    assert "models-ocr:" not in makefile
+    assert "make models-ocr" in readme
+    assert "does not overwrite" in readme
+    assert "models-ocr:" in makefile
+    assert source_manifest["schema_version"] == 1
+    assert source_manifest["provider"] == "huggingface_hub"
+    assert {
+        model["repository"]: model["revision"]
+        for model in source_manifest["models"]
+    } == {
+        "PaddlePaddle/PP-OCRv6_medium_det_safetensors": (
+            "4236c2b61741a259c091fd879dcc4edc339e916c"
+        ),
+        "PaddlePaddle/PP-OCRv6_medium_rec_safetensors": (
+            "024cad6a831de75c2c3c26e711ba8c4a82ccd24b"
+        ),
+    }
+    assert all(model["license"] == "apache-2.0" for model in source_manifest["models"])
 
 
 def _write_fixture_contract(tmp_path: Path) -> tuple[Path, Path, Path, str, str]:
@@ -341,6 +368,7 @@ def _reader_fixture(
     tmp_path: Path,
     *,
     include_script_identity: bool = True,
+    worker_environment: Mapping[str, str] | None = None,
 ) -> tuple[PaddleOCRReader, Path, Path]:
     python = tmp_path / "python"
     python.write_bytes(b"python-fixture")
@@ -368,6 +396,7 @@ def _reader_fixture(
             if include_script_identity
             else None
         ),
+        worker_environment=worker_environment,
     )
     return reader, script, python
 
@@ -484,6 +513,66 @@ def test_reader_executes_private_verified_script_and_binds_every_message(
 
     assert process.terminated
     assert not private_script.exists()
+
+
+def test_reader_explicit_worker_environment_never_inherits_hostile_ambient(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    isolated = tmp_path / "isolated"
+    isolated.mkdir(mode=0o700)
+    isolated.chmod(0o700)
+    explicit = {
+        "HF_HOME": str(tmp_path / "reviewed-hf"),
+        "HOME": str(isolated),
+        "PATH": str(tmp_path / "media-bin"),
+        "TMPDIR": str(isolated),
+        "XDG_CACHE_HOME": str(isolated / "cache"),
+    }
+    reader, _source_script, _python = _reader_fixture(
+        tmp_path,
+        worker_environment=explicit,
+    )
+    captured: dict[str, object] = {}
+    process = _FakeProcess(_hello(reader))
+
+    def popen(_args, **kwargs):  # type: ignore[no-untyped-def]
+        captured["args"] = _args
+        captured.update(kwargs)
+        return process
+
+    for name in ("HOME", "HF_HOME", "PATH", "TMPDIR", "XDG_CACHE_HOME"):
+        monkeypatch.setenv(name, f"/hostile/{name.casefold()}")
+    monkeypatch.setenv("VIDEOSCOPE_TEST_SECRET", "must-not-leak")
+    monkeypatch.setattr(paddle_module.subprocess, "Popen", popen)
+    image = tmp_path / "frame.jpg"
+    image.write_bytes(_png_bytes())
+
+    assert reader.read(image)
+    environment = captured["env"]
+    assert isinstance(environment, dict)
+    assert all(environment[name] == value for name, value in explicit.items())
+    assert environment["HF_HUB_CACHE"] == str(Path(explicit["HF_HOME"]) / "hub")
+    assert environment["TRANSFORMERS_CACHE"] == str(
+        Path(explicit["HF_HOME"]) / "hub"
+    )
+    assert environment["HF_DATASETS_OFFLINE"] == "1"
+    assert environment["UV_OFFLINE"] == "1"
+    assert "VIDEOSCOPE_TEST_SECRET" not in environment
+    assert not any("/hostile/" in value for value in environment.values())
+    private_script = Path(captured["args"][-1])
+    assert private_script.is_relative_to(isolated)
+    reader.close()
+
+
+def test_reader_rejects_explicit_override_of_attested_protocol_environment(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(ValueError, match="worker environment"):
+        _reader_fixture(
+            tmp_path,
+            worker_environment={"VIDEOSCOPE_OCR_MODEL_ROOT": "/unreviewed"},
+        )
 
 
 def test_reader_discards_worker_when_contract_changes_during_request(
@@ -856,6 +945,11 @@ def test_worker_startup_attestation_verifies_lock_runtime_script_and_models(
     monkeypatch, tmp_path
 ) -> None:
     worker = _load_worker_script_module()
+    monkeypatch.setattr(worker.sys, "version_info", (3, 12, 13))
+    monkeypatch.setattr(worker.sys, "platform", "darwin")
+    monkeypatch.setattr(worker.platform, "python_implementation", lambda: "CPython")
+    monkeypatch.setattr(worker.platform, "machine", lambda: "arm64")
+    monkeypatch.setattr(worker.platform, "mac_ver", lambda: ("14.0", (), ""))
     lock, manifest, model_root, script, dependency_hash, model_hash = (
         _write_worker_startup_fixture(tmp_path)
     )

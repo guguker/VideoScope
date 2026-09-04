@@ -4,6 +4,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import secrets
@@ -13,11 +14,24 @@ from types import MappingProxyType
 from typing import Literal, Self
 
 from videoscope.config import AppSettings
+from videoscope.indexing_attestation import attest_indexing_toolchain
+from videoscope.media.ffmpeg import FFmpeg
+from videoscope.model_manifest import model_identity, model_revision
+from videoscope.providers.lighthouse_worker import LighthouseWorkerClient
+from videoscope.providers.qwen_video import QwenVideoReranker
+from videoscope.providers.qwen_worker import QwenWorkerClient
+from videoscope.providers.vision_worker_client import VisionWorkerClient
 from videoscope.providers.whisper import snapshot_whisper_prompt_from_content
-from videoscope.runtime import create_indexing_specifications_from_prompt_snapshot
+from videoscope.repository import Repository
+from videoscope.runtime import (
+    create_indexing_specifications_from_prompt_snapshot,
+    create_vision_worker_specification,
+)
 from videoscope.search.service import SearchService
+from videoscope.search.temporal_refinement import TemporalRefiner
 from videoscope.search.text_matching import normalize_text
 from videoscope.search.vector_index import QdrantVectorIndex
+from videoscope.search.visual_index import SiglipVisualIndex
 
 from .adapter import (
     BENCHMARK_PRODUCT_ENVIRONMENT_COMPONENT_ID,
@@ -29,7 +43,7 @@ from .product_runtime import (
     ProductSnapshotCleanupError,
     open_product_runtime_snapshot,
 )
-from .profiles import FROZEN_PROFILES
+from .profiles import FROZEN_PROFILES, BenchmarkProfile
 from .schema import ComponentIdentity
 from .snapshots import (
     RetainedDirectory,
@@ -40,8 +54,7 @@ from .snapshots import (
 )
 
 
-_ENVIRONMENT_PROTOCOL_VERSION = 1
-_SUPPORTED_PROFILE_ID = "lexical_qdrant"
+_ENVIRONMENT_PROTOCOL_VERSION = 2
 _SUPPORTED_EXECUTION_MODE = "warm"
 _MAX_GLOSSARY_BYTES = 1024 * 1024
 _MAX_SCRATCH_ENTRIES = 200_000
@@ -98,11 +111,13 @@ class BenchmarkEnvironmentIdentity:
     glossary_sha256: str
     semantic_text_min_score: float
     visual_min_score: float
+    worker_input_root_identities: tuple[tuple[str, str], ...]
     protocol_version: int = _ENVIRONMENT_PROTOCOL_VERSION
     environment_sha256: str = field(init=False)
 
     def __post_init__(self) -> None:
-        if self.profile_id != _SUPPORTED_PROFILE_ID or not self.profile_identity:
+        profile = FROZEN_PROFILES.get(self.profile_id)
+        if profile is None or self.profile_identity != profile.identity:
             raise ValueError("benchmark environment profile identity is invalid")
         if self.execution_mode != _SUPPORTED_EXECUTION_MODE:
             raise ValueError("benchmark environment execution mode is invalid")
@@ -128,8 +143,20 @@ class BenchmarkEnvironmentIdentity:
         for value in (self.semantic_text_min_score, self.visual_min_score):
             if isinstance(value, bool) or not isinstance(value, (int, float)):
                 raise ValueError("benchmark environment score threshold is invalid")
-            if not 0 <= float(value) <= 1:
+            if not math.isfinite(float(value)) or not 0 <= float(value) <= 1:
                 raise ValueError("benchmark environment score threshold is invalid")
+        roles = tuple(role for role, _identity in self.worker_input_root_identities)
+        if (
+            roles != tuple(sorted(roles))
+            or len(roles) != len(set(roles))
+            or any(role not in {"qwen", "vision"} for role in roles)
+            or any(
+                not identity.startswith("sha256:")
+                or not _is_sha256(identity.removeprefix("sha256:"))
+                for _role, identity in self.worker_input_root_identities
+            )
+        ):
+            raise ValueError("benchmark worker input root identities are invalid")
         object.__setattr__(self, "environment_sha256", _canonical_digest(self.content_dict))
 
     @property
@@ -149,6 +176,10 @@ class BenchmarkEnvironmentIdentity:
             "qdrant_snapshot_sha256": self.qdrant_snapshot_sha256,
             "semantic_text_min_score": float(self.semantic_text_min_score),
             "visual_min_score": float(self.visual_min_score),
+            "worker_input_root_identities": {
+                role: identity
+                for role, identity in self.worker_input_root_identities
+            },
         }
 
     @property
@@ -176,6 +207,18 @@ class _FileIdentity:
     size: int
     modified_ns: int
     changed_ns: int
+
+
+@dataclass(frozen=True, slots=True)
+class _ProfileProviderWiring:
+    visual_search: object | None = None
+    temporal_refiner: object | None = None
+    moment_search: object | None = None
+    evaluation_rerankers: Mapping[str, object] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
+    worker_input_root_identities: tuple[tuple[str, str], ...] = ()
+    worker_source_probes: tuple[tuple[str, Callable[[Path], object]], ...] = ()
 
 
 def _file_identity(value: os.stat_result) -> _FileIdentity:
@@ -715,6 +758,9 @@ class ProductBenchmarkEnvironment:
         self._search_adapter: ProductBenchmarkSearchAdapter | None = None
         self._asset_resolver: LocalAssetResolver | None = None
         self._identity: BenchmarkEnvironmentIdentity | None = None
+        self._worker_source_probes: tuple[
+            tuple[str, Callable[[Path], object]], ...
+        ] = ()
         self._adapter_closed = False
         self._vector_index_closed = False
         self._scratch_root_closed = True
@@ -735,6 +781,69 @@ class ProductBenchmarkEnvironment:
             raise BenchmarkEnvironmentError("private benchmark scratch is already attached")
         self._scratch = scratch
         self._scratch_removed = False
+
+    def _attach_worker_source_probes(
+        self,
+        probes: tuple[tuple[str, Callable[[Path], object]], ...],
+    ) -> None:
+        roles = tuple(role for role, _probe in probes)
+        if (
+            roles != tuple(sorted(roles))
+            or len(roles) != len(set(roles))
+            or any(role not in {"qwen", "vision"} for role in roles)
+            or any(not callable(probe) for _role, probe in probes)
+        ):
+            raise BenchmarkEnvironmentError(
+                "benchmark worker source probe contract is invalid"
+            )
+        self._worker_source_probes = probes
+
+    def probe_worker_sources(self) -> tuple[str, ...]:
+        """Prove configured workers can read this environment's private spool."""
+
+        if not self._worker_source_probes:
+            return ()
+        if self._scratch is None or self._scratch_removed:
+            raise BenchmarkEnvironmentError("private benchmark scratch is unavailable")
+        marker = self._scratch.path / "worker-source-probe.bin"
+        body = b"videoscope-worker-source-probe-v1\n"
+        descriptor: int | None = None
+        try:
+            descriptor = os.open(
+                marker,
+                os.O_WRONLY
+                | os.O_CREAT
+                | os.O_EXCL
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+                0o600,
+            )
+            written = os.write(descriptor, body)
+            if written != len(body):
+                raise OSError("short worker probe write")
+            os.fsync(descriptor)
+            os.close(descriptor)
+            descriptor = None
+            completed: list[str] = []
+            for role, probe in self._worker_source_probes:
+                probe(marker)
+                completed.append(role)
+            return tuple(completed)
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except BaseException as error:
+            raise BenchmarkEnvironmentError(
+                "benchmark worker source boundary probe failed"
+            ) from error
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+            try:
+                marker.unlink(missing_ok=True)
+            except OSError as error:
+                raise BenchmarkEnvironmentError(
+                    "benchmark worker source probe cleanup failed"
+                ) from error
 
     def _retain_product_directory(
         self,
@@ -938,30 +1047,220 @@ class ProductBenchmarkEnvironment:
                 raise verification_failure
 
 
-def _profile_contract(
-    profile_id: str,
-    execution_mode: str,
-) -> tuple[str, str]:
-    if profile_id != _SUPPORTED_PROFILE_ID or execution_mode != _SUPPORTED_EXECUTION_MODE:
+def _profile_contract(profile_id: str, execution_mode: str) -> BenchmarkProfile:
+    profile = FROZEN_PROFILES.get(profile_id)
+    if profile is None or execution_mode != _SUPPORTED_EXECUTION_MODE:
         raise BenchmarkEnvironmentError(
-            "product benchmark environment supports only lexical_qdrant in warm mode"
+            "product benchmark environment supports only frozen profiles in warm mode"
         )
-    profile = FROZEN_PROFILES[_SUPPORTED_PROFILE_ID]
-    return profile.profile_id, profile.identity
+    return profile
+
+
+def _attested_benchmark_ffmpeg(
+    *,
+    ffmpeg_binary: Path | None = None,
+    ffprobe_binary: Path | None = None,
+) -> tuple[FFmpeg, str] | None:
+    """Return an exact read-only media runtime or decline optional capabilities."""
+    if (ffmpeg_binary is None) != (ffprobe_binary is None):
+        return None
+    attestation_arguments: dict[str, object] = {}
+    if ffmpeg_binary is not None and ffprobe_binary is not None:
+        attestation_arguments = {
+            "ffmpeg_binary": ffmpeg_binary,
+            "ffprobe_binary": ffprobe_binary,
+        }
+    try:
+        toolchain = attest_indexing_toolchain(**attestation_arguments)
+        identity = toolchain.verify_current()
+        ffmpeg = toolchain.create_ffmpeg()
+    except Exception:
+        return None
+    if (
+        not isinstance(ffmpeg, FFmpeg)
+        or type(identity) is not str
+        or not identity.startswith("sha256:")
+        or not _is_sha256(identity.removeprefix("sha256:"))
+    ):
+        return None
+    return ffmpeg, identity
+
+
+def _profile_provider_wiring(
+    *,
+    profile: BenchmarkProfile,
+    settings: AppSettings,
+    repository: Repository,
+    data_root: RetainedDirectory,
+    media_root: RetainedDirectory,
+    scratch_path: Path,
+    scratch_parent: Path,
+) -> _ProfileProviderWiring:
+    """Wire only frozen-plan readers; never build or activate an artifact."""
+    plan = profile.search_plan
+    vision_client: VisionWorkerClient | None = None
+    qwen_client: QwenWorkerClient | None = None
+    visual_search: SiglipVisualIndex | None = None
+    if plan.visual_search == "dense_siglip":
+        if settings.vision_worker_endpoint:
+            vision_client = VisionWorkerClient(
+                endpoint=settings.vision_worker_endpoint,
+                api_key=settings.vision_worker_api_key or "",
+                input_root=scratch_parent,
+                specification=create_vision_worker_specification(settings),
+                timeout=settings.vision_worker_timeout,
+            )
+        visual_search = SiglipVisualIndex(
+            data_root.child("visual-index").stable_path,
+            model_name=settings.siglip_model,
+            model_revision=model_revision(settings.siglip_model),
+            batch_size=settings.siglip_batch_size,
+            sample_step=settings.visual_index_step,
+            max_width=settings.visual_index_max_width,
+            inference_client=vision_client,
+        )
+
+    moment_search: LighthouseWorkerClient | None = None
+    if plan.lighthouse and settings.lighthouse_endpoint:
+        moment_search = LighthouseWorkerClient(
+            endpoint=settings.lighthouse_endpoint,
+            api_key=settings.lighthouse_api_key or "",
+            input_root=media_root.stable_path,
+            cache_dir=data_root.child("cache").stable_path,
+            timeout=settings.lighthouse_timeout,
+        )
+
+    needs_media_runtime = (
+        plan.temporal_refinement and vision_client is not None
+    ) or (
+        plan.reranker == "qwen"
+        and settings.qwen_video_endpoint is not None
+        and settings.qwen_video_model is not None
+    )
+    media_runtime = (
+        _attested_benchmark_ffmpeg(
+            ffmpeg_binary=getattr(settings, "ffmpeg_binary", None),
+            ffprobe_binary=getattr(settings, "ffprobe_binary", None),
+        )
+        if needs_media_runtime
+        else None
+    )
+    temporal_refiner: TemporalRefiner | None = None
+    if (
+        plan.temporal_refinement
+        and vision_client is not None
+        and visual_search is not None
+        and media_runtime is not None
+    ):
+        ffmpeg, ffmpeg_identity = media_runtime
+        worker_identity = vision_client.identity.get("siglip_specification_hash")
+        scorer_identity = (
+            f"{visual_search.model_identity}#{visual_search.specification_identity}"
+        )
+        runtime_identity = (
+            f"vision-worker:{worker_identity}"
+            if type(worker_identity) is str and worker_identity
+            else None
+        )
+        if runtime_identity is not None:
+            temporal_refiner = TemporalRefiner(
+                repository=repository,
+                extractor=ffmpeg,
+                scorer=visual_search,
+                temp_dir=scratch_path / "temporal-refinement",
+                top_candidates=settings.temporal_refinement_candidates,
+                sample_step=settings.temporal_refinement_step,
+                min_score=settings.visual_min_score,
+                ffmpeg_identity=ffmpeg_identity,
+                scorer_identity=scorer_identity,
+                runtime_identity=runtime_identity,
+            )
+
+    rerankers: dict[str, object] = {}
+    if (
+        plan.reranker == "qwen"
+        and settings.qwen_video_endpoint is not None
+        and settings.qwen_video_model is not None
+        and media_runtime is not None
+    ):
+        ffmpeg, _ffmpeg_identity = media_runtime
+        revision = model_revision(settings.qwen_video_model)
+        qwen_client = QwenWorkerClient(
+            endpoint=settings.qwen_video_endpoint,
+            api_key=settings.qwen_video_api_key or "",
+            input_root=scratch_parent,
+            expected_model_identity=model_identity(
+                settings.qwen_video_model,
+                revision,
+            ),
+            timeout=settings.qwen_video_timeout,
+        )
+        rerankers["qwen"] = QwenVideoReranker(
+            model_name=settings.qwen_video_model,
+            model_revision=revision,
+            repository=repository,
+            extractor=ffmpeg,
+            temp_dir=scratch_path / "qwen-inputs",
+            cache_dir=scratch_path / "qwen-cache",
+            top_candidates=plan.reranker_candidate_limit,
+            context_seconds=settings.qwen_video_context_seconds,
+            min_clip_seconds=settings.qwen_video_min_clip_seconds,
+            max_clip_seconds=settings.qwen_video_max_clip_seconds,
+            frame_count=settings.qwen_video_frame_count,
+            video_fps=settings.qwen_video_fps,
+            inference_client=qwen_client,
+            allow_in_process=False,
+        )
+
+    # InternVideo is intentionally not benchmark-wired until it has the same
+    # local, source-bound attestation contract as the other frozen providers.
+    root_identities: list[tuple[str, str]] = []
+    probes: list[tuple[str, Callable[[Path], object]]] = []
+    if qwen_client is not None:
+        qwen_root_identity = getattr(qwen_client, "input_root_sha256", None)
+        qwen_probe = getattr(qwen_client, "probe_source", None)
+        if not _is_sha256(qwen_root_identity) or not callable(qwen_probe):
+            raise BenchmarkEnvironmentError(
+                "Qwen benchmark worker source boundary is unavailable"
+            )
+        root_identities.append(("qwen", f"sha256:{qwen_root_identity}"))
+        probes.append(("qwen", qwen_probe))
+    if vision_client is not None:
+        vision_root_identity = getattr(vision_client, "input_root_identity", None)
+        vision_probe = getattr(vision_client, "probe_source", None)
+        if (
+            type(vision_root_identity) is not str
+            or not vision_root_identity.startswith("sha256:")
+            or not _is_sha256(vision_root_identity.removeprefix("sha256:"))
+            or not callable(vision_probe)
+        ):
+            raise BenchmarkEnvironmentError(
+                "Vision benchmark worker source boundary is unavailable"
+            )
+        root_identities.append(("vision", vision_root_identity))
+        probes.append(("vision", vision_probe))
+    return _ProfileProviderWiring(
+        visual_search=visual_search,
+        temporal_refiner=temporal_refiner,
+        moment_search=moment_search,
+        evaluation_rerankers=MappingProxyType(rerankers),
+        worker_input_root_identities=tuple(sorted(root_identities)),
+        worker_source_probes=tuple(sorted(probes, key=lambda item: item[0])),
+    )
 
 
 def open_product_benchmark_environment(
     settings: AppSettings,
     scratch_parent: Path,
     *,
-    profile_id: str = _SUPPORTED_PROFILE_ID,
+    profile_id: str = "lexical_qdrant",
     execution_mode: Literal["cold", "warm"] = _SUPPORTED_EXECUTION_MODE,
 ) -> ProductBenchmarkEnvironment:
     """Open the first concrete benchmark profile without touching product state."""
 
     if not isinstance(settings, AppSettings):
         raise ValueError("benchmark environment settings must be a validated AppSettings")
-    resolved_profile_id, profile_identity = _profile_contract(
+    profile = _profile_contract(
         profile_id,
         execution_mode,
     )
@@ -1115,15 +1414,27 @@ def open_product_benchmark_environment(
                 "benchmark glossary changed while indexing identities were captured"
             )
         indexing_hashes = _indexing_hashes(specifications)
+        provider_wiring = _profile_provider_wiring(
+            profile=profile,
+            settings=resolved_settings,
+            repository=product_snapshot.repository,
+            data_root=data_root,
+            media_root=media_access_root,
+            scratch_path=scratch.path,
+            scratch_parent=scratch_parent_absolute,
+        )
+        environment._attach_worker_source_probes(
+            provider_wiring.worker_source_probes
+        )
         search = SearchService(
             product_snapshot.repository,
             vector_index,
-            moment_search=None,
-            visual_search=None,
+            moment_search=provider_wiring.moment_search,
+            visual_search=provider_wiring.visual_search,
             lexicon=glossary_before,
-            temporal_refiner=None,
+            temporal_refiner=provider_wiring.temporal_refiner,
             candidate_reranker=None,
-            evaluation_rerankers={},
+            evaluation_rerankers=provider_wiring.evaluation_rerankers,
             semantic_text_min_score=resolved_settings.semantic_text_min_score,
             visual_min_score=resolved_settings.visual_min_score,
             specification_resolver=lambda resolved=specifications: resolved,
@@ -1135,8 +1446,8 @@ def open_product_benchmark_environment(
         if not _is_sha256(product_digest):
             raise BenchmarkEnvironmentError("product snapshot identity is unavailable")
         environment._identity = BenchmarkEnvironmentIdentity(
-            profile_id=resolved_profile_id,
-            profile_identity=profile_identity,
+            profile_id=profile.profile_id,
+            profile_identity=profile.identity,
             execution_mode="warm",
             product_snapshot_sha256=product_digest,
             fastembed_model_content_sha256=fastembed_digest,
@@ -1146,6 +1457,9 @@ def open_product_benchmark_environment(
             glossary_sha256=glossary_before.sha256,
             semantic_text_min_score=resolved_settings.semantic_text_min_score,
             visual_min_score=resolved_settings.visual_min_score,
+            worker_input_root_identities=(
+                provider_wiring.worker_input_root_identities
+            ),
         )
         environment._search_adapter = ProductBenchmarkSearchAdapter(
             search,

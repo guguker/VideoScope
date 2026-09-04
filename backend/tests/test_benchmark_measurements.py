@@ -2,8 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+import ctypes
+import errno
+import json
 import os
 from pathlib import Path
+import platform
+import subprocess
+import sys
 import threading
 
 import pytest
@@ -12,16 +18,21 @@ from videoscope.benchmark import measurements as measurements_module
 from videoscope.benchmark import (
     AssetProvenance,
     BenchmarkAsset,
+    BenchmarkDataError,
     BenchmarkDataset,
+    BenchmarkMeasurementEvidence,
     BenchmarkRunRegistry,
+    BenchmarkStorageSnapshot,
     ComponentIdentity,
     HardwareProfile,
     LocalAssetResolver,
+    MAX_MEASUREMENT_RSS_SAMPLES,
     MetricValue,
     QueryCase,
 )
 from videoscope.benchmark.measurements import (
     PROCESS_RSS_SAMPLE_INTERVAL_SECONDS,
+    DarwinLibprocProcessSnapshotProvider,
     DeclaredStorageRoot,
     MeasurementError,
     MeasurementUnavailableError,
@@ -31,12 +42,29 @@ from videoscope.benchmark.measurements import (
     StorageSnapshotter,
     StorageTraversalLimits,
     SystemMeasurementFactory,
+    create_native_process_snapshot_provider,
+    measurement_metrics_from_evidence,
 )
 from videoscope.benchmark.runner import (
     BenchmarkExecutionError,
     BenchmarkRunner,
     BenchmarkSearchHit,
     ExecutionIdentities,
+    audit_run_manifest,
+)
+from videoscope.benchmark.profiles import get_profile
+from videoscope.benchmark.serialization import run_from_dict, run_to_dict
+
+
+_TEXT_MODEL_IDENTITY = (
+    "fastembed@0.8.0:mean-pooling-v1:"
+    "sentence-transformers/paraphrase-multilingual-mpnet-base-v2:"
+    "xenova/paraphrase-multilingual-mpnet-base-v2@"
+    "e5d116277351513fd260955ece953ecddde7046e:768"
+)
+_VISUAL_MODEL_IDENTITY = (
+    "google/siglip2-base-patch16-224@"
+    "75de2d55ec2d0b4efc50b3e9ad70dba96a7b2fa2"
 )
 
 
@@ -66,6 +94,27 @@ class ScriptedProcessProvider:
             return self._snapshots[index]
 
 
+class _ScriptedDarwinProcessApi:
+    def __init__(
+        self,
+        *,
+        records: dict[int, ProcessRecord | None],
+        children: dict[int, tuple[int, ...]],
+    ) -> None:
+        self.records = records
+        self.children = children
+        self.record_calls: list[int] = []
+        self.children_calls: list[int] = []
+
+    def process_record(self, pid: int) -> ProcessRecord | None:
+        self.record_calls.append(pid)
+        return self.records.get(pid)
+
+    def child_pids(self, pid: int) -> tuple[int, ...]:
+        self.children_calls.append(pid)
+        return self.children.get(pid, ())
+
+
 def _constant_process_provider(*, rss_bytes: int = 100) -> ScriptedProcessProvider:
     return ScriptedProcessProvider(
         (
@@ -80,6 +129,137 @@ def _constant_process_provider(*, rss_bytes: int = 100) -> ScriptedProcessProvid
             ),
         )
     )
+
+
+def test_darwin_provider_reads_only_the_declared_root_tree_without_ps() -> None:
+    root = ProcessRecord(101, 1, 100, "root-start", "path-sha256:" + "a" * 64)
+    worker = ProcessRecord(
+        102,
+        101,
+        200,
+        "worker-start",
+        "path-sha256:" + "b" * 64,
+    )
+    helper = ProcessRecord(
+        103,
+        102,
+        50,
+        "helper-start",
+        "path-sha256:" + "c" * 64,
+    )
+    api = _ScriptedDarwinProcessApi(
+        records={101: root, 102: worker, 103: helper},
+        children={101: (102,), 102: (103,)},
+    )
+    provider = DarwinLibprocProcessSnapshotProvider(
+        root_pid=101,
+        _api=api,
+    )
+
+    assert provider.snapshot() == (root, worker, helper)
+    assert api.record_calls == [101, 102, 103]
+    assert api.children_calls == [101, 102, 103]
+    assert provider.identity == "darwin-libproc-rooted-process-tree@1"
+
+
+def test_darwin_provider_fails_closed_on_cycles_or_parent_mismatch() -> None:
+    root = ProcessRecord(101, 1, 100, "root", "path-sha256:" + "a" * 64)
+    wrong_parent = ProcessRecord(
+        102,
+        999,
+        200,
+        "worker",
+        "path-sha256:" + "b" * 64,
+    )
+    mismatch = DarwinLibprocProcessSnapshotProvider(
+        root_pid=101,
+        _api=_ScriptedDarwinProcessApi(
+            records={101: root, 102: wrong_parent},
+            children={101: (102,)},
+        ),
+    )
+
+    with pytest.raises(MeasurementError) as mismatch_error:
+        mismatch.snapshot()
+    assert mismatch_error.value.code == "native_process_parent_changed"
+
+    cycle = DarwinLibprocProcessSnapshotProvider(
+        root_pid=101,
+        _api=_ScriptedDarwinProcessApi(
+            records={101: root},
+            children={101: (101,)},
+        ),
+    )
+    with pytest.raises(MeasurementError) as cycle_error:
+        cycle.snapshot()
+    assert cycle_error.value.code == "invalid_native_process_tree"
+
+
+def test_native_provider_is_explicitly_unavailable_off_macos() -> None:
+    with pytest.raises(MeasurementUnavailableError) as captured:
+        create_native_process_snapshot_provider(
+            root_pid=101,
+            operating_system="Linux",
+        )
+
+    assert captured.value.code == "native_process_provider_unavailable"
+
+
+def test_darwin_api_distinguishes_a_vanished_process_from_denied_access() -> None:
+    class MissingLibrary:
+        @staticmethod
+        def proc_pidinfo(*_args) -> int:  # type: ignore[no-untyped-def]
+            ctypes.set_errno(errno.ESRCH)
+            return 0
+
+    missing_api = object.__new__(measurements_module._CtypesDarwinProcessApi)
+    missing_api._library = MissingLibrary()
+    assert missing_api.process_record(101) is None
+
+    class DeniedLibrary:
+        @staticmethod
+        def proc_pidinfo(*_args) -> int:  # type: ignore[no-untyped-def]
+            ctypes.set_errno(errno.EPERM)
+            return 0
+
+    denied_api = object.__new__(measurements_module._CtypesDarwinProcessApi)
+    denied_api._library = DeniedLibrary()
+    with pytest.raises(MeasurementUnavailableError) as captured:
+        denied_api.process_record(101)
+    assert captured.value.code == "native_process_record_unavailable"
+
+
+@pytest.mark.skipif(platform.system() != "Darwin", reason="macOS libproc contract")
+def test_real_darwin_provider_attests_the_current_process() -> None:
+    provider = create_native_process_snapshot_provider(root_pid=os.getpid())
+
+    records = provider.snapshot()
+    root = next(record for record in records if record.pid == os.getpid())
+
+    assert root.parent_pid == os.getppid()
+    assert root.rss_bytes > 0
+    assert root.start_token.startswith("darwin-start:")
+    assert root.executable_identity.startswith("path-sha256:")
+    assert len(root.executable_identity.removeprefix("path-sha256:")) == 64
+
+
+@pytest.mark.skipif(platform.system() != "Darwin", reason="macOS libproc contract")
+def test_real_darwin_provider_includes_a_declared_root_descendant() -> None:
+    child = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(10)"],
+    )
+    try:
+        records = create_native_process_snapshot_provider(
+            root_pid=os.getpid()
+        ).snapshot()
+    finally:
+        child.terminate()
+        child.wait(timeout=5)
+
+    by_pid = {record.pid: record for record in records}
+    assert child.pid in by_pid
+    assert by_pid[child.pid].parent_pid == os.getpid()
+    assert by_pid[child.pid].rss_bytes > 0
 
 
 def _worker_binding(pid: int = 102) -> ManagedProcessBinding:
@@ -107,6 +287,43 @@ def _declared_roots(base: Path) -> tuple[DeclaredStorageRoot, ...]:
             path=scratch,
             purpose="benchmark_scratch",
         ),
+    )
+
+
+def _portable_measurement_evidence() -> BenchmarkMeasurementEvidence:
+    active = BenchmarkStorageSnapshot(
+        root_id="active-index",
+        purpose="active_immutable_artifacts",
+        file_count=1,
+        directory_count=1,
+        logical_bytes=5,
+        allocated_bytes=512,
+        tree_digest="a" * 64,
+    )
+    scratch_before = BenchmarkStorageSnapshot(
+        root_id="benchmark-work",
+        purpose="benchmark_scratch",
+        file_count=0,
+        directory_count=1,
+        logical_bytes=0,
+        allocated_bytes=0,
+        tree_digest="b" * 64,
+    )
+    scratch_after = BenchmarkStorageSnapshot(
+        root_id="benchmark-work",
+        purpose="benchmark_scratch",
+        file_count=1,
+        directory_count=1,
+        logical_bytes=3,
+        allocated_bytes=512,
+        tree_digest="c" * 64,
+    )
+    return BenchmarkMeasurementEvidence(
+        schema_version=1,
+        rss_samples_bytes=(500, 550, 525),
+        storage_before=(active, scratch_before),
+        storage_after=(active, scratch_after),
+        metal_telemetry_status="unavailable",
     )
 
 
@@ -147,7 +364,7 @@ def test_protocol_identity_is_path_private_and_freezes_the_complete_contract(
     assert first.protocol_identity() != changed_limits.protocol_identity()
     assert first.protocol_identity().component_id == "benchmark_measurement_protocol"
     assert first.protocol_identity().identity.startswith(
-        "process-tree-rss-50ms-contained-storage@1:"
+        "process-tree-rss-50ms-contained-storage@2:"
     )
     assert str(tmp_path) not in first.protocol_identity().identity
     assert PROCESS_RSS_SAMPLE_INTERVAL_SECONDS == 0.05
@@ -245,6 +462,49 @@ def test_process_sampler_fails_closed_on_an_invalid_or_failed_later_sample() -> 
     with pytest.raises(MeasurementError) as error:
         sampler.finish()
     assert error.value.code == "process_sample_failed"
+
+
+def test_process_sampler_preserves_a_provider_measurement_failure_code() -> None:
+    class UnavailableProvider:
+        identity = "unavailable-native-provider@1"
+
+        @staticmethod
+        def snapshot() -> tuple[ProcessRecord, ...]:
+            raise MeasurementUnavailableError(
+                "native_process_record_unavailable"
+            )
+
+    sampler = ProcessTreeRssSampler(
+        root_pid=101,
+        provider=UnavailableProvider(),
+    )
+
+    with pytest.raises(MeasurementUnavailableError) as captured:
+        sampler.start()
+
+    assert captured.value.code == "native_process_record_unavailable"
+
+
+def test_process_sampler_fails_closed_at_the_portable_sample_bound(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(measurements_module, "MAX_MEASUREMENT_RSS_SAMPLES", 2)
+    provider = ScriptedProcessProvider(
+        (
+            (ProcessRecord(101, 1, 100, "root", "benchmark-python@1"),),
+            (ProcessRecord(101, 1, 110, "root", "benchmark-python@1"),),
+            (ProcessRecord(101, 1, 120, "root", "benchmark-python@1"),),
+        ),
+        ready_after=3,
+    )
+    sampler = ProcessTreeRssSampler(root_pid=101, provider=provider)
+
+    sampler.start()
+    assert provider.ready.wait(timeout=1)
+    with pytest.raises(MeasurementError) as error:
+        sampler.finish()
+
+    assert error.value.code == "process_sample_limit_exceeded"
 
 
 def test_process_sampler_rejects_pid_reuse_and_worker_identity_drift() -> None:
@@ -450,9 +710,29 @@ def test_system_measurement_publishes_complete_memory_and_storage_metrics(
 
     session.start()
     roots[1].path.joinpath("temporary.bin").write_bytes(b"abc")
-    metrics = {metric.name: metric.value for metric in session.finish()}
+    evidence = session.finish()
+    metrics = {
+        metric.name: metric.value
+        for metric in measurement_metrics_from_evidence(evidence)
+    }
     session.close()
 
+    assert evidence.rss_samples_bytes
+    assert set(evidence.rss_samples_bytes) == {120}
+    assert evidence.metal_telemetry_status == "unavailable"
+    assert tuple(item.root_id for item in evidence.storage_before) == (
+        "active-index",
+        "benchmark-work",
+    )
+    assert tuple(item.root_id for item in evidence.storage_after) == (
+        "active-index",
+        "benchmark-work",
+    )
+    assert all(
+        not hasattr(snapshot, field)
+        for snapshot in (*evidence.storage_before, *evidence.storage_after)
+        for field in ("path", "device", "inode")
+    )
     assert metrics["sampled_process_tree_rss_baseline_bytes"] == 120
     assert metrics["sampled_peak_process_tree_rss_bytes"] == 120
     assert metrics["sampled_process_tree_rss_increment_bytes"] == 0
@@ -461,6 +741,55 @@ def test_system_measurement_publishes_complete_memory_and_storage_metrics(
     assert metrics["benchmark_scratch_logical_bytes_baseline"] == 0
     assert metrics["benchmark_scratch_logical_bytes_final"] == 3
     assert metrics["benchmark_scratch_logical_bytes_growth"] == 3
+    assert not any("metal" in name for name in metrics)
+
+
+def test_portable_measurement_evidence_is_bounded_and_requires_matching_roots() -> None:
+    active = BenchmarkStorageSnapshot(
+        root_id="active-index",
+        purpose="active_immutable_artifacts",
+        file_count=1,
+        directory_count=1,
+        logical_bytes=5,
+        allocated_bytes=512,
+        tree_digest="a" * 64,
+    )
+    scratch = BenchmarkStorageSnapshot(
+        root_id="benchmark-work",
+        purpose="benchmark_scratch",
+        file_count=0,
+        directory_count=1,
+        logical_bytes=0,
+        allocated_bytes=0,
+        tree_digest="b" * 64,
+    )
+
+    with pytest.raises(BenchmarkDataError, match="RSS samples"):
+        BenchmarkMeasurementEvidence(
+            schema_version=1,
+            rss_samples_bytes=(1,) * (MAX_MEASUREMENT_RSS_SAMPLES + 1),
+            storage_before=(active, scratch),
+            storage_after=(active, scratch),
+            metal_telemetry_status="unavailable",
+        )
+
+    with pytest.raises(BenchmarkDataError, match="same roots"):
+        BenchmarkMeasurementEvidence(
+            schema_version=1,
+            rss_samples_bytes=(100,),
+            storage_before=(active, scratch),
+            storage_after=(active,),
+            metal_telemetry_status="unavailable",
+        )
+
+    with pytest.raises(BenchmarkDataError, match="Metal telemetry"):
+        BenchmarkMeasurementEvidence(
+            schema_version=1,
+            rss_samples_bytes=(100,),
+            storage_before=(active, scratch),
+            storage_after=(active, scratch),
+            metal_telemetry_status="complete",  # type: ignore[arg-type]
+        )
 
 
 def test_system_measurement_rejects_external_workers_and_active_artifact_drift(
@@ -540,9 +869,34 @@ class _Repository:
 class _SearchSession:
     def identities(self) -> ExecutionIdentities:
         return ExecutionIdentities(
-            model_identities=(ComponentIdentity("model", "model@1"),),
-            index_identities=(ComponentIdentity("index", "index@1"),),
-            config_identities=(ComponentIdentity("search", "search@1"),),
+            model_identities=(
+                ComponentIdentity("text_embedding", _TEXT_MODEL_IDENTITY),
+                ComponentIdentity("visual_embedding", _VISUAL_MODEL_IDENTITY),
+            ),
+            index_identities=(
+                ComponentIdentity("text_vector_index", "2" * 64),
+                ComponentIdentity("text_vector_generations", "sha256:" + "3" * 64),
+                ComponentIdentity("visual_generations", "sha256:" + "4" * 64),
+            ),
+            config_identities=(
+                ComponentIdentity(
+                    "benchmark_product_environment",
+                    "benchmark-product-environment@2:" + "5" * 64,
+                ),
+                ComponentIdentity(
+                    "evaluation_search_configuration",
+                    get_profile("dense_siglip").search_plan.identity.replace(
+                        "evaluation-search-plan",
+                        "evaluation-search-configuration",
+                        1,
+                    ),
+                ),
+                ComponentIdentity(
+                    "product_search_lifecycle",
+                    "warm:process-cache-preserved@1",
+                ),
+                ComponentIdentity("product_search_runtime", "sha256:" + "6" * 64),
+            ),
         )
 
     def lifecycle_identity(self) -> ComponentIdentity:
@@ -594,15 +948,12 @@ class _MeasurementSession:
     def start(self) -> None:
         self.started = True
 
-    def finish(self) -> tuple[MetricValue, ...]:
+    def finish(self) -> BenchmarkMeasurementEvidence:
         if self.fail:
             raise MeasurementError("measurement_failed")
         if self.invalid_metrics:
-            return (  # type: ignore[return-value]
-                MetricValue("sampled_peak_process_tree_rss_bytes", 500, "bytes"),
-                "partial-invalid-value",
-            )
-        return (MetricValue("sampled_peak_process_tree_rss_bytes", 500, "bytes"),)
+            return ("partial-invalid-value",)  # type: ignore[return-value]
+        return _portable_measurement_evidence()
 
     def close(self) -> None:
         self.closed = True
@@ -699,12 +1050,115 @@ def test_runner_publishes_an_injected_complete_measurement_atomically(
     assert session.started is True
     assert session.closed is True
     assert run.measurement_status == "complete"
+    assert run.measurement_evidence_status == "complete"
+    assert run.measurement_evidence == _portable_measurement_evidence()
     assert run.measurement_started_at == "2026-08-19T12:00:00Z"
     assert run.measurement_finished_at == "2026-08-19T12:00:00Z"
-    assert run.system_metrics == (
-        MetricValue("sampled_peak_process_tree_rss_bytes", 500, "bytes"),
+    assert run.system_metrics == measurement_metrics_from_evidence(
+        _portable_measurement_evidence()
     )
     assert runner.registry.read("measured") == run
+
+    payload = run_to_dict(run)
+    encoded = json.dumps(payload, sort_keys=True)
+    assert '"path"' not in encoded
+    assert '"device"' not in encoded
+    assert '"inode"' not in encoded
+    assert '"metal_telemetry_status": "unavailable"' in encoded
+    loaded = run_from_dict(payload)
+    assert loaded == run
+    audit_run_manifest(dataset, loaded)
+
+
+@pytest.mark.parametrize("tamper", ["rss", "storage"])
+def test_audit_recomputes_system_metrics_and_rejects_raw_evidence_tampering(
+    tmp_path: Path,
+    tamper: str,
+) -> None:
+    dataset, _repository = _dataset_and_repository()
+    runner = _measured_runner(
+        tmp_path,
+        _MeasurementFactory(_MeasurementSession()),
+    )
+    run = runner.run(
+        dataset,
+        profile_id="dense_siglip",
+        run_id=f"tamper-{tamper}",
+        execution_mode="warm",
+    )
+    payload = run_to_dict(run)
+    raw = payload["measurement_evidence"]
+    assert isinstance(raw, dict)
+    if tamper == "rss":
+        samples = raw["rss_samples_bytes"]
+        assert isinstance(samples, list)
+        samples[1] = 600
+    else:
+        after = raw["storage_after"]
+        assert isinstance(after, list)
+        scratch = after[1]
+        assert isinstance(scratch, dict)
+        scratch["logical_bytes"] = 4
+
+    forged = run_from_dict(payload)
+    with pytest.raises(BenchmarkExecutionError, match="system metrics mismatch"):
+        audit_run_manifest(dataset, forged)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (("path", "/private/index"), ("device", 42), ("inode", 84)),
+)
+def test_measurement_evidence_parser_rejects_local_storage_identity_fields(
+    tmp_path: Path,
+    field: str,
+    value: object,
+) -> None:
+    dataset, _repository = _dataset_and_repository()
+    run = _measured_runner(
+        tmp_path,
+        _MeasurementFactory(_MeasurementSession()),
+    ).run(
+        dataset,
+        profile_id="dense_siglip",
+        run_id=f"private-{field}",
+        execution_mode="warm",
+    )
+    payload = run_to_dict(run)
+    raw = payload["measurement_evidence"]
+    assert isinstance(raw, dict)
+    before = raw["storage_before"]
+    assert isinstance(before, list)
+    snapshot = before[0]
+    assert isinstance(snapshot, dict)
+    snapshot[field] = value
+
+    with pytest.raises(BenchmarkDataError, match="unexpected fields"):
+        run_from_dict(payload)
+
+
+def test_audit_rejects_legacy_aggregate_only_measurement_without_raw_evidence(
+    tmp_path: Path,
+) -> None:
+    dataset, _repository = _dataset_and_repository()
+    run = _measured_runner(
+        tmp_path,
+        _MeasurementFactory(_MeasurementSession()),
+    ).run(
+        dataset,
+        profile_id="dense_siglip",
+        run_id="legacy-measurement",
+        execution_mode="warm",
+    )
+    legacy = run_to_dict(run)
+    legacy["schema_version"] = 2
+    legacy.pop("measurement_evidence_status")
+    legacy.pop("measurement_evidence")
+    migrated = run_from_dict(legacy)
+
+    assert migrated.measurement_evidence_status == "legacy_unavailable"
+    with pytest.raises(BenchmarkExecutionError, match="raw measurement evidence"):
+        audit_run_manifest(dataset, migrated)
 
 
 def test_runner_finishes_measurement_before_closing_the_pinned_search_session(
@@ -733,7 +1187,7 @@ def test_runner_finishes_measurement_before_closing_the_pinned_search_session(
             return None
 
     class OrderedMeasurementSession(_MeasurementSession):
-        def finish(self) -> tuple[MetricValue, ...]:
+        def finish(self) -> BenchmarkMeasurementEvidence:
             events.append("measurement_finish")
             return super().finish()
 
@@ -783,6 +1237,8 @@ def test_runner_persists_failed_measurement_without_partial_metrics(
     assert session.closed is True
     assert run.run_status == "complete"
     assert run.measurement_status == "failed"
+    assert run.measurement_evidence_status == "not_applicable"
+    assert run.measurement_evidence is None
     assert run.system_metrics == ()
     assert run.measurement_protocol.identity == (
         "test-process-tree-rss-50ms-contained-storage@1"
@@ -805,6 +1261,7 @@ def test_runner_discards_all_metrics_when_the_measurement_contract_is_invalid(
 
     assert session.closed is True
     assert run.measurement_status == "failed"
+    assert run.measurement_evidence is None
     assert run.system_metrics == ()
 
 
@@ -830,6 +1287,7 @@ def test_runner_discards_metrics_when_measurement_cleanup_fails(
 
     assert session.closed is True
     assert run.measurement_status == "failed"
+    assert run.measurement_evidence is None
     assert run.system_metrics == ()
 
 

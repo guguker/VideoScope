@@ -20,6 +20,7 @@ from videoscope.providers.types import ObjectTag
 from videoscope.providers.vision_worker_contract import (
     MAX_IMAGE_BYTES,
     MAX_IMAGES,
+    MAX_PROBE_BYTES,
     MAX_RESPONSE_BYTES,
     MAX_TEXTS,
     VisionDetectRequest,
@@ -29,9 +30,12 @@ from videoscope.providers.vision_worker_contract import (
     VisionEmbedTextsRequest,
     VisionHealthResponse,
     VisionImageItem,
+    VisionSourceProbeRequest,
+    VisionSourceProbeResponse,
     VisionTextItem,
     VisionWorkerSpecification,
     identity_fields,
+    worker_input_root_identity,
 )
 
 
@@ -252,12 +256,31 @@ class VisionWorkerClient:
             raise ValueError("Vision worker input root must not be a symlink")
         self._api_key = api_key
         self.input_root = lexical_root
+        self._input_root_identity: str | None = None
         self.specification = specification
         self.timeout = timeout
         self.client = client
         self._client_lock = Lock()
         self._status_lock = Lock()
         self._cached_status: tuple[float, VisionCapabilityStatus] | None = None
+
+    @property
+    def input_root_identity(self) -> str:
+        with self._client_lock:
+            if self._input_root_identity is None:
+                self._input_root_identity = worker_input_root_identity(
+                    self.input_root
+                )
+            return self._input_root_identity
+
+    def _input_root_is_current(self) -> bool:
+        try:
+            return (
+                worker_input_root_identity(self.input_root)
+                == self.input_root_identity
+            )
+        except ValueError:
+            return False
 
     @property
     def identity(self) -> dict[str, object]:
@@ -268,6 +291,7 @@ class VisionWorkerClient:
             "specification_hash": self.specification.identity,
             "siglip_specification_hash": self.specification.siglip_identity,
             "detector_specification_hash": self.specification.detector_identity,
+            "input_root_identity": self.input_root_identity,
         }
 
     def _http_client(self) -> HTTPClient:
@@ -295,11 +319,15 @@ class VisionWorkerClient:
             )
             response.raise_for_status()
             health = VisionHealthResponse.model_validate(response.json())
-            expected = identity_fields(self.specification)
+            expected = identity_fields(
+                self.specification,
+                input_root_identity=self.input_root_identity,
+            )
             exact = (
                 health.status == "ok"
                 and all(getattr(health, field) == value for field, value in expected.items())
                 and health.embedding_dimensions == self.specification.embedding_dimensions
+                and self._input_root_is_current()
             )
         except Exception:
             exact = False
@@ -330,6 +358,8 @@ class VisionWorkerClient:
         )
 
     def _relative_source(self, source: Path) -> str:
+        if not self._input_root_is_current():
+            raise RuntimeError("Vision worker input root identity changed")
         lexical = Path(os.path.abspath(source))
         current = self.input_root
         try:
@@ -360,10 +390,13 @@ class VisionWorkerClient:
         payload: object,
         request_id: str,
     ) -> None:
-        expected = identity_fields(self.specification)
+        expected = identity_fields(
+            self.specification,
+            input_root_identity=self.input_root_identity,
+        )
         if getattr(payload, "request_id", None) != request_id or any(
             getattr(payload, field, None) != value for field, value in expected.items()
-        ):
+        ) or not self._input_root_is_current():
             raise ValueError("Vision worker response identity mismatch")
 
     def _embedding_request(
@@ -395,6 +428,40 @@ class VisionWorkerClient:
         except (TypeError, ValueError, ValidationError):
             raise RuntimeError("Vision worker response contract violation") from None
 
+    def probe_source(self, source: Path) -> None:
+        path = Path(source)
+        relative_path = self._relative_source(path)
+        digest, size_bytes = _source_identity(path)
+        if size_bytes > MAX_PROBE_BYTES:
+            raise RuntimeError("Vision worker probe source is too large")
+        request = VisionSourceProbeRequest(
+            **identity_fields(
+                self.specification,
+                input_root_identity=self.input_root_identity,
+            ),
+            request_id=uuid4().hex,
+            relative_path=relative_path,
+            expected_sha256=digest,
+            expected_size_bytes=size_bytes,
+        )
+        try:
+            response = self._http_client().post(
+                f"{self.endpoint}/v1/probe",
+                json=request.model_dump(mode="json"),
+                headers=self._headers(json_request=True),
+                timeout=min(self.timeout, 10.0),
+            )
+            response.raise_for_status()
+            payload = VisionSourceProbeResponse.model_validate(response.json())
+            self._validate_response_identity(payload, request.request_id)
+            if (
+                payload.source_sha256 != digest
+                or payload.source_size_bytes != size_bytes
+            ):
+                raise ValueError("Vision worker probe source identity changed")
+        except Exception:
+            raise RuntimeError("Vision worker source probe failed") from None
+
     def image_vectors(self, paths: list[Path]):  # type: ignore[no-untyped-def]
         import numpy as np
 
@@ -411,7 +478,10 @@ class VisionWorkerClient:
             for index, path in enumerate(paths)
         ]
         request = VisionEmbedImagesRequest(
-            **identity_fields(self.specification),
+            **identity_fields(
+                self.specification,
+                input_root_identity=self.input_root_identity,
+            ),
             request_id=request_id,
             items=items,
         )
@@ -438,7 +508,10 @@ class VisionWorkerClient:
             for index, text in enumerate(texts)
         ]
         request = VisionEmbedTextsRequest(
-            **identity_fields(self.specification),
+            **identity_fields(
+                self.specification,
+                input_root_identity=self.input_root_identity,
+            ),
             request_id=request_id,
             items=items,
         )
@@ -453,7 +526,10 @@ class VisionWorkerClient:
         request_id = uuid4().hex
         item = self._image_item(image, item_id="detect-source")
         request = VisionDetectRequest(
-            **identity_fields(self.specification),
+            **identity_fields(
+                self.specification,
+                input_root_identity=self.input_root_identity,
+            ),
             request_id=request_id,
             source=item,
             minimum_confidence=self.specification.minimum_confidence,

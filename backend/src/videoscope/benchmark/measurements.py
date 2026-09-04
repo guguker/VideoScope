@@ -1,17 +1,26 @@
 from __future__ import annotations
 
+from collections import deque
+import ctypes
+import ctypes.util
 from dataclasses import asdict, dataclass, field
+import errno
 from hashlib import sha256
 import json
 import os
 from pathlib import Path
+import platform
 import stat
 import threading
 from typing import Iterable, Literal, Protocol
 
 from .schema import (
+    MEASUREMENT_EVIDENCE_SCHEMA_VERSION,
     MEASUREMENT_PROTOCOL_COMPONENT_ID,
+    MAX_MEASUREMENT_RSS_SAMPLES,
     BenchmarkDataError,
+    BenchmarkMeasurementEvidence,
+    BenchmarkStorageSnapshot,
     ComponentIdentity,
     MetricValue,
     _require_id,
@@ -21,10 +30,13 @@ from .schema import (
 
 PROCESS_RSS_SAMPLE_INTERVAL_SECONDS = 0.05
 MEASUREMENT_PROTOCOL_IDENTITY_PREFIX = (
-    "process-tree-rss-50ms-contained-storage@1"
+    "process-tree-rss-50ms-contained-storage@2"
 )
 MAX_PROCESS_RECORDS = 100_000
 _MAX_RSS_BYTES = (1 << 63) - 1
+_DARWIN_PROC_PIDTBSDINFO = 3
+_DARWIN_PROC_PIDTASKINFO = 4
+_DARWIN_PROC_PIDPATHINFO_MAXSIZE = 4_096
 _STORAGE_PURPOSES = frozenset(
     {"active_immutable_artifacts", "benchmark_scratch"}
 )
@@ -136,12 +148,276 @@ class ProcessSnapshotProvider(Protocol):
     def snapshot(self) -> Iterable[ProcessRecord]: ...
 
 
+class _DarwinProcBsdInfo(ctypes.Structure):
+    _fields_ = (
+        ("pbi_flags", ctypes.c_uint32),
+        ("pbi_status", ctypes.c_uint32),
+        ("pbi_xstatus", ctypes.c_uint32),
+        ("pbi_pid", ctypes.c_uint32),
+        ("pbi_ppid", ctypes.c_uint32),
+        ("pbi_uid", ctypes.c_uint32),
+        ("pbi_gid", ctypes.c_uint32),
+        ("pbi_ruid", ctypes.c_uint32),
+        ("pbi_rgid", ctypes.c_uint32),
+        ("pbi_svuid", ctypes.c_uint32),
+        ("pbi_svgid", ctypes.c_uint32),
+        ("rfu_1", ctypes.c_uint32),
+        ("pbi_comm", ctypes.c_char * 16),
+        ("pbi_name", ctypes.c_char * 32),
+        ("pbi_nfiles", ctypes.c_uint32),
+        ("pbi_pgid", ctypes.c_uint32),
+        ("pbi_pjobc", ctypes.c_uint32),
+        ("e_tdev", ctypes.c_uint32),
+        ("e_tpgid", ctypes.c_uint32),
+        ("pbi_nice", ctypes.c_int32),
+        ("pbi_start_tvsec", ctypes.c_uint64),
+        ("pbi_start_tvusec", ctypes.c_uint64),
+    )
+
+
+class _DarwinProcTaskInfo(ctypes.Structure):
+    _fields_ = (
+        ("pti_virtual_size", ctypes.c_uint64),
+        ("pti_resident_size", ctypes.c_uint64),
+        ("pti_total_user", ctypes.c_uint64),
+        ("pti_total_system", ctypes.c_uint64),
+        ("pti_threads_user", ctypes.c_uint64),
+        ("pti_threads_system", ctypes.c_uint64),
+        ("pti_policy", ctypes.c_int32),
+        ("pti_faults", ctypes.c_int32),
+        ("pti_pageins", ctypes.c_int32),
+        ("pti_cow_faults", ctypes.c_int32),
+        ("pti_messages_sent", ctypes.c_int32),
+        ("pti_messages_received", ctypes.c_int32),
+        ("pti_syscalls_mach", ctypes.c_int32),
+        ("pti_syscalls_unix", ctypes.c_int32),
+        ("pti_csw", ctypes.c_int32),
+        ("pti_threadnum", ctypes.c_int32),
+        ("pti_numrunning", ctypes.c_int32),
+        ("pti_priority", ctypes.c_int32),
+    )
+
+
+class _DarwinProcessApi(Protocol):
+    def process_record(self, pid: int) -> ProcessRecord | None: ...
+
+    def child_pids(self, pid: int) -> tuple[int, ...]: ...
+
+
+class _CtypesDarwinProcessApi:
+    """Minimal libproc binding; never shells out or scans unrelated processes."""
+
+    def __init__(self) -> None:
+        library_name = ctypes.util.find_library("proc") or "/usr/lib/libproc.dylib"
+        try:
+            library = ctypes.CDLL(library_name, use_errno=True)
+            library.proc_listchildpids.argtypes = (
+                ctypes.c_int,
+                ctypes.c_void_p,
+                ctypes.c_int,
+            )
+            library.proc_listchildpids.restype = ctypes.c_int
+            library.proc_pidinfo.argtypes = (
+                ctypes.c_int,
+                ctypes.c_int,
+                ctypes.c_uint64,
+                ctypes.c_void_p,
+                ctypes.c_int,
+            )
+            library.proc_pidinfo.restype = ctypes.c_int
+            library.proc_pidpath.argtypes = (
+                ctypes.c_int,
+                ctypes.c_void_p,
+                ctypes.c_uint32,
+            )
+            library.proc_pidpath.restype = ctypes.c_int
+        except (AttributeError, OSError):
+            raise MeasurementUnavailableError(
+                "native_process_provider_unavailable"
+            ) from None
+        self._library = library
+
+    def process_record(self, pid: int) -> ProcessRecord | None:
+        before = self._bsd_info(pid)
+        if before is None:
+            return None
+        task = _DarwinProcTaskInfo()
+        task_size = ctypes.sizeof(task)
+        ctypes.set_errno(0)
+        task_result = self._library.proc_pidinfo(
+            pid,
+            _DARWIN_PROC_PIDTASKINFO,
+            0,
+            ctypes.byref(task),
+            task_size,
+        )
+        if task_result != task_size:
+            if _darwin_process_query_failed():
+                return None
+        path_buffer = ctypes.create_string_buffer(
+            _DARWIN_PROC_PIDPATHINFO_MAXSIZE
+        )
+        ctypes.set_errno(0)
+        path_size = self._library.proc_pidpath(
+            pid,
+            path_buffer,
+            len(path_buffer),
+        )
+        if path_size <= 0:
+            if _darwin_process_query_failed():
+                return None
+        if path_size >= len(path_buffer):
+            raise MeasurementError("invalid_native_process_snapshot")
+        after = self._bsd_info(pid)
+        if after is None:
+            return None
+        if _darwin_bsd_identity(before) != _darwin_bsd_identity(after):
+            raise MeasurementError("native_process_identity_changed")
+        if before.pbi_pid != pid:
+            raise MeasurementError("invalid_native_process_snapshot")
+        executable = bytes(path_buffer.raw[:path_size]).split(b"\0", 1)[0]
+        if not executable:
+            raise MeasurementError("invalid_native_process_snapshot")
+        rss_bytes = int(task.pti_resident_size)
+        if rss_bytes < 0 or rss_bytes > _MAX_RSS_BYTES:
+            raise MeasurementError("invalid_native_process_snapshot")
+        return ProcessRecord(
+            pid=pid,
+            parent_pid=int(before.pbi_ppid),
+            rss_bytes=rss_bytes,
+            start_token=(
+                "darwin-start:"
+                f"{int(before.pbi_start_tvsec)}:"
+                f"{int(before.pbi_start_tvusec)}"
+            ),
+            executable_identity=(
+                "path-sha256:" + sha256(executable).hexdigest()
+            ),
+        )
+
+    def child_pids(self, pid: int) -> tuple[int, ...]:
+        ctypes.set_errno(0)
+        hint = self._library.proc_listchildpids(pid, None, 0)
+        if hint < 0 or (hint == 0 and ctypes.get_errno() != 0):
+            if _darwin_process_query_failed():
+                return ()
+        capacity = max(64, hint + 64)
+        while capacity <= MAX_PROCESS_RECORDS:
+            buffer = (ctypes.c_int * capacity)()
+            ctypes.set_errno(0)
+            count = self._library.proc_listchildpids(
+                pid,
+                buffer,
+                ctypes.sizeof(buffer),
+            )
+            if count < 0 or (count == 0 and ctypes.get_errno() != 0):
+                if _darwin_process_query_failed():
+                    return ()
+            if count >= capacity:
+                capacity *= 2
+                continue
+            values = tuple(int(value) for value in buffer[:count] if value > 0)
+            if len(values) != len(set(values)):
+                raise MeasurementError("invalid_native_process_snapshot")
+            return tuple(sorted(values))
+        raise MeasurementError("process_record_limit_exceeded")
+
+    def _bsd_info(self, pid: int) -> _DarwinProcBsdInfo | None:
+        value = _DarwinProcBsdInfo()
+        value_size = ctypes.sizeof(value)
+        ctypes.set_errno(0)
+        result = self._library.proc_pidinfo(
+            pid,
+            _DARWIN_PROC_PIDTBSDINFO,
+            0,
+            ctypes.byref(value),
+            value_size,
+        )
+        if result == value_size:
+            return value
+        if _darwin_process_query_failed():
+            return None
+        raise AssertionError("unreachable")
+
+
+def _darwin_bsd_identity(value: _DarwinProcBsdInfo) -> tuple[int, ...]:
+    return (
+        int(value.pbi_pid),
+        int(value.pbi_ppid),
+        int(value.pbi_start_tvsec),
+        int(value.pbi_start_tvusec),
+    )
+
+
+def _darwin_process_query_failed() -> bool:
+    error_number = ctypes.get_errno()
+    if error_number == errno.ESRCH:
+        return True
+    if error_number in {errno.EACCES, errno.EPERM}:
+        raise MeasurementUnavailableError(
+            "native_process_record_unavailable"
+        )
+    raise MeasurementError("native_process_snapshot_failed")
+
+
+class DarwinLibprocProcessSnapshotProvider:
+    """Low-overhead native snapshot of one rooted macOS process tree."""
+
+    identity = "darwin-libproc-rooted-process-tree@1"
+
+    def __init__(
+        self,
+        *,
+        root_pid: int,
+        _api: _DarwinProcessApi | None = None,
+    ) -> None:
+        _require_pid(root_pid, "native process root pid")
+        self._root_pid = root_pid
+        self._api = _api or _CtypesDarwinProcessApi()
+
+    def snapshot(self) -> tuple[ProcessRecord, ...]:
+        records: list[ProcessRecord] = []
+        pending: deque[tuple[int, int | None]] = deque(((self._root_pid, None),))
+        scheduled = {self._root_pid}
+        while pending:
+            pid, expected_parent = pending.popleft()
+            record = self._api.process_record(pid)
+            if record is None:
+                if pid == self._root_pid:
+                    raise MeasurementUnavailableError("process_root_unavailable")
+                continue
+            if expected_parent is not None and record.parent_pid != expected_parent:
+                raise MeasurementError("native_process_parent_changed")
+            records.append(record)
+            if len(records) > MAX_PROCESS_RECORDS:
+                raise MeasurementError("process_record_limit_exceeded")
+            for child_pid in self._api.child_pids(pid):
+                if child_pid <= 0 or child_pid in scheduled:
+                    raise MeasurementError("invalid_native_process_tree")
+                scheduled.add(child_pid)
+                pending.append((child_pid, pid))
+        return tuple(records)
+
+
+def create_native_process_snapshot_provider(
+    *,
+    root_pid: int,
+    operating_system: str | None = None,
+) -> ProcessSnapshotProvider:
+    """Create the pinned host provider or fail before claiming RSS evidence."""
+
+    if (operating_system or platform.system()) != "Darwin":
+        raise MeasurementUnavailableError("native_process_provider_unavailable")
+    return DarwinLibprocProcessSnapshotProvider(root_pid=root_pid)
+
+
 @dataclass(frozen=True, slots=True)
 class ProcessTreeRssMeasurement:
     baseline_bytes: int
     peak_bytes: int
     increment_bytes: int
     sample_count: int
+    samples_bytes: tuple[int, ...]
 
     def __post_init__(self) -> None:
         for field_name in (
@@ -157,6 +433,24 @@ class ProcessTreeRssMeasurement:
                 )
         if self.sample_count == 0:
             raise BenchmarkDataError("process RSS sample_count must be positive")
+        if (
+            not isinstance(self.samples_bytes, tuple)
+            or len(self.samples_bytes) != self.sample_count
+            or any(type(value) is not int or value < 0 for value in self.samples_bytes)
+        ):
+            raise BenchmarkDataError(
+                "process RSS samples must match the aggregate sample count"
+            )
+        if len(self.samples_bytes) > MAX_MEASUREMENT_RSS_SAMPLES:
+            raise BenchmarkDataError("process RSS samples exceed the portable bound")
+        if self.baseline_bytes != self.samples_bytes[0]:
+            raise BenchmarkDataError(
+                "process RSS baseline_bytes must equal the first raw sample"
+            )
+        if self.peak_bytes != max(self.samples_bytes):
+            raise BenchmarkDataError(
+                "process RSS peak_bytes must equal the maximum raw sample"
+            )
         if self.peak_bytes < self.baseline_bytes:
             raise BenchmarkDataError(
                 "process RSS peak_bytes must be at least baseline_bytes"
@@ -242,6 +536,7 @@ class ProcessTreeRssSampler:
             peak_bytes=peak,
             increment_bytes=peak - baseline,
             sample_count=len(samples),
+            samples_bytes=samples,
         )
 
     def close(self) -> None:
@@ -262,6 +557,10 @@ class ProcessTreeRssSampler:
                 self._stop.set()
                 return
             with self._lock:
+                if len(self._samples) >= MAX_MEASUREMENT_RSS_SAMPLES:
+                    self._error = MeasurementError("process_sample_limit_exceeded")
+                    self._stop.set()
+                    return
                 self._samples.append(sample)
 
     def _sample_once(self) -> int:
@@ -269,6 +568,8 @@ class ProcessTreeRssSampler:
             raise MeasurementError("process_provider_identity_changed")
         try:
             values = iter(self._provider.snapshot())
+        except MeasurementError:
+            raise
         except Exception:
             raise MeasurementError("process_sample_failed") from None
         records: list[ProcessRecord] = []
@@ -737,7 +1038,7 @@ class SystemMeasurementSession:
         self._sampler = sampler
         self._started = True
 
-    def finish(self) -> tuple[MetricValue, ...]:
+    def finish(self) -> BenchmarkMeasurementEvidence:
         if not self._started or self._finished:
             raise MeasurementError("measurement_session_invalid_state")
         self._finished = True
@@ -756,7 +1057,13 @@ class SystemMeasurementSession:
         )
         if before_active != after_active:
             raise MeasurementError("active_artifacts_changed")
-        return _measurement_metrics(process, before, after)
+        return BenchmarkMeasurementEvidence(
+            schema_version=MEASUREMENT_EVIDENCE_SCHEMA_VERSION,
+            rss_samples_bytes=process.samples_bytes,
+            storage_before=_portable_storage_snapshots(before),
+            storage_after=_portable_storage_snapshots(after),
+            metal_telemetry_status="unavailable",
+        )
 
     def close(self) -> None:
         sampler = self._sampler
@@ -843,7 +1150,10 @@ class SystemMeasurementFactory:
                     key=lambda item: (item.role, item.executable_identity),
                 )
             ],
-            "metric_contract": "all-or-nothing-v1",
+            "evidence_schema_version": MEASUREMENT_EVIDENCE_SCHEMA_VERSION,
+            "max_rss_samples": MAX_MEASUREMENT_RSS_SAMPLES,
+            "metal_telemetry": "explicitly-unavailable",
+            "metric_contract": "all-or-nothing-portable-evidence-v2",
             "process_provider_identity": provider_identity,
             "rss_sample_interval_milliseconds": 50,
             "storage_limits": asdict(self.storage_limits),
@@ -886,7 +1196,7 @@ class SystemMeasurementFactory:
 class BenchmarkMeasurementSession(Protocol):
     def start(self) -> None: ...
 
-    def finish(self) -> tuple[MetricValue, ...]: ...
+    def finish(self) -> BenchmarkMeasurementEvidence: ...
 
     def close(self) -> None: ...
 
@@ -900,11 +1210,15 @@ class BenchmarkMeasurementFactory(Protocol):
     def open_session(self) -> BenchmarkMeasurementSession: ...
 
 
-def _measurement_metrics(
-    process: ProcessTreeRssMeasurement,
-    before: tuple[StorageRootSnapshot, ...],
-    after: tuple[StorageRootSnapshot, ...],
+def measurement_metrics_from_evidence(
+    evidence: BenchmarkMeasurementEvidence,
 ) -> tuple[MetricValue, ...]:
+    if not isinstance(evidence, BenchmarkMeasurementEvidence):
+        raise BenchmarkDataError(
+            "system metrics require portable benchmark measurement evidence"
+        )
+    before = evidence.storage_before
+    after = evidence.storage_after
     active = _aggregate_storage(
         item for item in before if item.purpose == "active_immutable_artifacts"
     )
@@ -977,29 +1291,46 @@ def _measurement_metrics(
         ),
         MetricValue(
             "process_tree_rss_sample_count",
-            process.sample_count,
+            len(evidence.rss_samples_bytes),
             "count",
         ),
         MetricValue(
             "sampled_peak_process_tree_rss_bytes",
-            process.peak_bytes,
+            max(evidence.rss_samples_bytes),
             "bytes",
         ),
         MetricValue(
             "sampled_process_tree_rss_baseline_bytes",
-            process.baseline_bytes,
+            evidence.rss_samples_bytes[0],
             "bytes",
         ),
         MetricValue(
             "sampled_process_tree_rss_increment_bytes",
-            process.increment_bytes,
+            max(evidence.rss_samples_bytes) - evidence.rss_samples_bytes[0],
             "bytes",
         ),
     )
     return tuple(sorted(values, key=lambda item: item.name))
 
 
-def _aggregate_storage(values: Iterable[StorageRootSnapshot]) -> _TreeTotals:
+def _portable_storage_snapshots(
+    values: tuple[StorageRootSnapshot, ...],
+) -> tuple[BenchmarkStorageSnapshot, ...]:
+    return tuple(
+        BenchmarkStorageSnapshot(
+            root_id=value.root_id,
+            purpose=value.purpose,
+            file_count=value.file_count,
+            directory_count=value.directory_count,
+            logical_bytes=value.logical_bytes,
+            allocated_bytes=value.allocated_bytes,
+            tree_digest=value.tree_digest,
+        )
+        for value in values
+    )
+
+
+def _aggregate_storage(values: Iterable[BenchmarkStorageSnapshot]) -> _TreeTotals:
     file_count = 0
     directory_count = 0
     logical_bytes = 0
@@ -1246,6 +1577,7 @@ __all__ = [
     "PROCESS_RSS_SAMPLE_INTERVAL_SECONDS",
     "BenchmarkMeasurementFactory",
     "BenchmarkMeasurementSession",
+    "DarwinLibprocProcessSnapshotProvider",
     "DeclaredStorageRoot",
     "ManagedProcessBinding",
     "MeasurementError",
@@ -1259,4 +1591,6 @@ __all__ = [
     "StorageTraversalLimits",
     "SystemMeasurementFactory",
     "SystemMeasurementSession",
+    "create_native_process_snapshot_provider",
+    "measurement_metrics_from_evidence",
 ]

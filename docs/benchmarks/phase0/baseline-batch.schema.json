@@ -1,0 +1,142 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://videoscope.local/schemas/phase0-baseline-batch-v1.json",
+  "title": "VideoScope Phase-0 baseline batch receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "status",
+    "code_sha",
+    "dataset_revision",
+    "policy_revision",
+    "ml_environment_manifest_identity",
+    "ml_environment_attestation_id",
+    "environment_bindings",
+    "profile_runs",
+    "worker_lifecycle"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "status": {
+      "const": "complete"
+    },
+    "code_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"
+    },
+    "dataset_revision": {
+      "$ref": "#/$defs/sha256"
+    },
+    "policy_revision": {
+      "$ref": "#/$defs/sha256"
+    },
+    "ml_environment_manifest_identity": {
+      "$ref": "#/$defs/prefixed_sha256"
+    },
+    "ml_environment_attestation_id": {
+      "const": "videoscope-phase0-ml-environment-v1"
+    },
+    "environment_bindings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "owner",
+        "vision_index",
+        "vision",
+        "whisper",
+        "ocr",
+        "lighthouse",
+        "qwen"
+      ],
+      "properties": {
+        "owner": { "const": "base" },
+        "vision_index": { "const": "vision" },
+        "vision": { "const": "vision" },
+        "whisper": { "const": "whisper" },
+        "ocr": { "const": "ocr" },
+        "lighthouse": { "const": "lighthouse" },
+        "qwen": { "const": "qwen" }
+      }
+    },
+    "profile_runs": {
+      "type": "array",
+      "minItems": 5,
+      "maxItems": 5,
+      "prefixItems": [
+        { "$ref": "#/$defs/lexical_run" },
+        { "$ref": "#/$defs/dense_run" },
+        { "$ref": "#/$defs/temporal_run" },
+        { "$ref": "#/$defs/lighthouse_run" },
+        { "$ref": "#/$defs/qwen_run" }
+      ],
+      "items": false
+    },
+    "worker_lifecycle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cleanup_status", "retirement_status"],
+      "properties": {
+        "cleanup_status": { "const": "complete" },
+        "retirement_status": { "const": "complete" }
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "prefixed_sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["profile_id", "run_id", "manifest_sha256"],
+      "properties": {
+        "profile_id": { "type": "string" },
+        "run_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:@+-]*$"
+        },
+        "manifest_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "lexical_run": {
+      "allOf": [
+        { "$ref": "#/$defs/run" },
+        { "properties": { "profile_id": { "const": "lexical_qdrant" } } }
+      ]
+    },
+    "dense_run": {
+      "allOf": [
+        { "$ref": "#/$defs/run" },
+        { "properties": { "profile_id": { "const": "dense_siglip" } } }
+      ]
+    },
+    "temporal_run": {
+      "allOf": [
+        { "$ref": "#/$defs/run" },
+        { "properties": { "profile_id": { "const": "temporal_refinement" } } }
+      ]
+    },
+    "lighthouse_run": {
+      "allOf": [
+        { "$ref": "#/$defs/run" },
+        { "properties": { "profile_id": { "const": "lighthouse" } } }
+      ]
+    },
+    "qwen_run": {
+      "allOf": [
+        { "$ref": "#/$defs/run" },
+        { "properties": { "profile_id": { "const": "qwen_verification" } } }
+      ]
+    }
+  }
+}

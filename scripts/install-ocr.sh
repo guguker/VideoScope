@@ -4,19 +4,13 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-if ! command -v python3.12 >/dev/null 2>&1; then
-  echo "Python 3.12.13 is required for the isolated OCR worker." >&2
+if [[ ! -x .venv/bin/python || ! -x .venv/bin/uv ]]; then
+  echo "The base environment is required; run 'make install' first." >&2
   exit 1
 fi
 
-if [[ "$(python3.12 -I -c 'import platform; print(platform.python_version())')" != "3.12.13" ]]; then
-  echo "The reviewed OCR runtime requires exactly Python 3.12.13." >&2
-  exit 1
-fi
-
-# This must run before venv creation or package installation so an unsupported
-# host cannot fail only after the expensive, externally visible sync step.
-python3.12 -I scripts/check-worker-platform.py
+# Reject an unsupported host before creating or downloading a managed runtime.
+.venv/bin/python -I scripts/check-worker-platform.py --host-only
 
 OCR_VENV="$ROOT/.venv-ocr"
 if [[ -e "$OCR_VENV" || -L "$OCR_VENV" ]]; then
@@ -24,13 +18,13 @@ if [[ -e "$OCR_VENV" || -L "$OCR_VENV" ]]; then
   exit 1
 fi
 
-python3.12 -I -m venv "$OCR_VENV"
-"$OCR_VENV/bin/python" -I -m pip --isolated --disable-pip-version-check install \
-  --require-hashes \
+.venv/bin/uv venv --python 3.12.13 --managed-python "$OCR_VENV"
+"$OCR_VENV/bin/python" -I scripts/check-worker-platform.py
+.venv/bin/uv pip sync --python "$OCR_VENV/bin/python" --require-hashes \
   --only-binary=:all: \
-  --no-deps \
-  --requirement workers/ocr/requirements.lock
-"$OCR_VENV/bin/python" -I -m pip --isolated --disable-pip-version-check check
+  --no-python-downloads \
+  workers/ocr/requirements.lock
+.venv/bin/uv pip check --python "$OCR_VENV/bin/python"
 
 OCR_MODEL_ROOT="${VIDEOSCOPE_OCR_MODEL_ROOT:-$HOME/.paddlex/official_models}"
 HF_HUB_OFFLINE=1 \

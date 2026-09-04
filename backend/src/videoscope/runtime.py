@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 import hashlib
 import json
 import logging
@@ -643,6 +644,36 @@ def create_visual_index(
     )
 
 
+def _temporal_refiner_scorer_identities(
+    scorer: object,
+    vision_client: object | None,
+) -> tuple[str | None, str | None]:
+    """Project only immutable, path-free scorer/runtime identities."""
+    model = getattr(scorer, "model_identity", None)
+    specification = getattr(scorer, "specification_identity", None)
+    if (
+        type(model) is not str
+        or not model
+        or type(specification) is not str
+        or not specification
+        or vision_client is None
+    ):
+        return None, None
+    try:
+        worker_identity = getattr(vision_client, "identity")
+    except Exception:
+        return None, None
+    if not isinstance(worker_identity, dict):
+        return None, None
+    runtime_identity = worker_identity.get("siglip_specification_hash")
+    if type(runtime_identity) is not str or not runtime_identity:
+        return None, None
+    return (
+        f"{model}#{specification}",
+        f"vision-worker:{runtime_identity}",
+    )
+
+
 def create_object_detector(
     settings: AppSettings,
     *,
@@ -1152,8 +1183,11 @@ def build_runtime(
     repository: Repository,
     *,
     indexing_toolchain: AttestedIndexingToolchain | None = None,
+    ocr_worker_environment: Mapping[str, str] | None = None,
 ) -> Runtime:
-    resolved_toolchain, _ = _verified_indexing_toolchain(indexing_toolchain)
+    resolved_toolchain, toolchain_identity = _verified_indexing_toolchain(
+        indexing_toolchain
+    )
     ffmpeg = _attested_ffmpeg(resolved_toolchain)
     scenes = SceneDetector(
         threshold=settings.scene_threshold,
@@ -1164,12 +1198,14 @@ def build_runtime(
     ocr = PaddleOCRReader(
         worker_python=settings.ocr_worker_python,
         worker_script=settings.ocr_worker_script,
+        worker_model_root=getattr(settings, "ocr_model_root", None),
         expected_dependency_identity=OCR_WORKER_DEPENDENCY_IDENTITY,
         expected_runtime_identity=OCR_WORKER_RUNTIME_IDENTITY,
         expected_model_identity=OCR_MODEL_ARTIFACT_IDENTITY,
         expected_script_sha256=_reviewed_ocr_script_sha256(
             settings.ocr_worker_script
         ),
+        worker_environment=ocr_worker_environment,
     )
     object_detector = create_object_detector(
         settings,
@@ -1230,6 +1266,9 @@ def build_runtime(
         timeout=settings.internvideo_timeout,
     )
     qwen_video = create_qwen_reranker(settings, repository, ffmpeg)
+    temporal_scorer_identity, temporal_runtime_identity = (
+        _temporal_refiner_scorer_identities(siglip, vision_client)
+    )
 
     qdrant_ready = qdrant.status().state is ProviderState.READY
     vector_index = qdrant if qdrant_ready else EmptyVectorIndex()
@@ -1257,6 +1296,9 @@ def build_runtime(
             top_candidates=settings.temporal_refinement_candidates,
             sample_step=settings.temporal_refinement_step,
             min_score=settings.visual_min_score,
+            ffmpeg_identity=toolchain_identity,
+            scorer_identity=temporal_scorer_identity,
+            runtime_identity=temporal_runtime_identity,
         )
         if visual_provider is not None
         else None

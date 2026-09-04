@@ -40,21 +40,32 @@ credentials/query/fragment и слабый ключ отклоняются пр�
 или подвижный model ID отклоняется до запуска HTTP-сервера. Pinned
 Hub snapshot ищется только в локальном кэше и не может быть подменён
 одноимённым относительным каталогом.
-Общий input root не настраивается отдельно и всегда равен
-`VIDEOSCOPE_DATA_DIR/tmp`, поэтому backend и worker не могут незаметно разойтись
-по разным каталогам.
+По умолчанию общий input root равен `VIDEOSCOPE_DATA_DIR/tmp`. Для изолированного
+benchmark harness его можно явно закрепить через
+`VIDEOSCOPE_QWEN_WORKER_INPUT_ROOT`; backend-клиент должен получить тот же root,
+а обе стороны связывают его path-free identity и отклоняют расхождение.
 
 ## Контракт и границы доверия
 
-Версия контракта — `qwen-worker-v1`. Оба endpoint требуют bearer-токен:
+Версия HTTP-контракта — `qwen-worker-v4`; составная runtime identity имеет
+версию `videoscope-qwen-worker-v4`. Все три endpoint требуют bearer-токен:
 
 - `GET /v1/health` сообщает точную model identity, состояние lazy-load,
-  закреплённую runtime identity (`mlx-vlm==0.6.7`), допустимые типы входа и
-  inference-лимиты для файла, запроса, токенов и concurrency; transport body caps
-  закреплены контрактом, но не рекламируются health-ответом;
-- `POST /v1/judge` принимает request ID, те же точные model/runtime identity, тип входа,
-  относительный путь, фиксированный prompt kind, ограниченный query, FPS и
-  `max_tokens`; неизвестные поля запрещены;
+  составную runtime identity: CPython/platform, полный exact distribution
+  manifest (`mlx-vlm==0.6.7` и вся dependency closure) и полный model-artifact
+  manifest; также допустимые типы входа и inference-лимиты для файла, запроса,
+  токенов и concurrency; transport body caps закреплены контрактом, но не
+  рекламируются health-ответом;
+- `POST /v1/judge` принимает request ID, те же точные model/runtime identity, тип
+  входа, относительный путь, обязательные SHA-256/byte size точного содержимого,
+  фиксированный prompt kind, ограниченный query, FPS и `max_tokens`; неизвестные
+  поля запрещены;
+- `basketball_facts` принимает только native MP4, обязательный FPS и не допускает
+  пользовательский query; `generic_query` принимает JPEG storyboard без FPS либо
+  native MP4 с обязательными query и FPS. Любая другая комбинация отклоняется до
+  чтения входного файла и inference;
+- `POST /v1/probe` до benchmark-запуска доказывает, что backend и worker видят
+  один и тот же неизменённый файл внутри одного source root, не запуская модель;
 - ответ повторяет request ID и model identity и содержит типизированное Qwen
   judgement без сырого model output.
 
@@ -73,14 +84,17 @@ Timeout ограничивает ожидание backend, но не пытае�
 вернётся. Если backend к этому моменту удалил одноразовый файл, post-check worker
 завершит запрос fail-closed без результата.
 
-Медиа не передаётся в JSON. Backend создаёт одноразовый файл под `data/tmp` и
-отправляет только его POSIX-relative path. Worker запрещает absolute paths,
-`..`, symlinks, нештатные расширения и non-regular files, проверяет размер и
-снимок `device/inode/size/mtime/ctime` до и после inference. Корень
-считается локальной доверенной зоной, доступной только владельцу процесса;
-изменение файла во время
-inference приводит к fail-closed `409`. Внешние ответы не содержат exception,
-model path или traceback.
+Медиа не передаётся в JSON. Backend создаёт одноразовый файл под `data/tmp`,
+читает его через descriptor-relative `O_NOFOLLOW` traversal и отправляет только
+POSIX-relative path вместе с exact SHA-256/byte size. Worker повторяет такое же
+descriptor-safe чтение, удерживает исходный descriptor на всё время inference и
+копирует проверенные байты в случайный private-каталог с правами `0700`; MLX
+получает только read-only `0400` materialization, а не mutable shared pathname.
+После inference worker повторно проверяет содержимое materialization, исходный
+inode и metadata всех каталогов traversal. Поэтому in-place mutation, symlink и
+даже временный rename-swap с восстановлением имени приводят к fail-closed `409`;
+private copy и descriptors удаляются/закрываются при любом исходе. Внешние ответы
+не содержат exception, model path или traceback.
 
 Capability проверяется перед включением Qwen в runtime и кратко кэшируется, чтобы
 опрос статуса интерфейсом не создавал HTTP-запрос на каждом обращении. Перед

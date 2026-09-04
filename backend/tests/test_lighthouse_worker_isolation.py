@@ -24,9 +24,20 @@ def test_lighthouse_profile_uses_dedicated_locked_environment() -> None:
     backend_project = (ROOT / "backend/pyproject.toml").read_text(encoding="utf-8")
 
     assert "uv venv --python 3.11.14 --managed-python" in install
+    assert (
+        ".venv-lighthouse/bin/python -I scripts/check-worker-platform.py "
+        "--python-version 3.11.14"
+    ) in install
     assert "uv pip sync --python .venv-lighthouse/bin/python" in install
     assert "workers/lighthouse/requirements.lock" in install
     assert "--require-hashes" in install
+    # The exact CLIP/Lighthouse revisions and a few locked transitive packages
+    # are source-only; a global binary-only flag makes this frozen lock
+    # unsatisfiable. Hashes remain mandatory for every artifact.
+    assert "--only-binary=:all:" not in install
+    assert "--no-python-downloads" in install
+    assert "uv pip check --python .venv-lighthouse/bin/python" in install
+    assert '[ -e ".venv-lighthouse" ] || [ -L ".venv-lighthouse" ]' in install
     assert "--project backend" not in install
     assert "--inexact" not in install
     assert 'PYTHONPATH="$(CURDIR)/backend/src"' in makefile

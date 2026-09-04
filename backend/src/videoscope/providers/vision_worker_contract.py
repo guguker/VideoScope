@@ -4,8 +4,10 @@ from dataclasses import dataclass
 from hashlib import sha256
 import json
 import math
-from pathlib import PurePosixPath
+import os
+from pathlib import Path, PurePosixPath
 import re
+import stat
 from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -60,6 +62,7 @@ MAX_BATCH_IMAGE_BYTES = 128 * 1024 * 1024
 MAX_BATCH_IMAGE_PIXELS = 160_000_000
 MAX_DETECTIONS = 500
 MAX_EMBEDDING_DIMENSIONS = 4096
+MAX_PROBE_BYTES = 4096
 
 SIGLIP_PREPROCESSING_REVISION = "siglip2-auto-processor-rgb-normalized-v1"
 SIGLIP_TOKENIZER_REVISION = "siglip2-auto-tokenizer-max-length-64-truncation-v1"
@@ -158,6 +161,7 @@ SIGLIP_ARTIFACT_MANIFEST: dict[
 _REQUEST_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 _ITEM_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_ROOT_IDENTITY_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _HF_REPOSITORY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$")
 _HF_REVISION_RE = re.compile(r"^[0-9a-f]{40}$")
 _SAFE_RELATIVE_PATH_RE = re.compile(r"^[A-Za-z0-9._/-]+$")
@@ -182,6 +186,51 @@ def validate_relative_image_path(value: str) -> str:
     ):
         raise ValueError("relative_path must stay inside the worker input root")
     return path.as_posix()
+
+
+def worker_input_root_identity_from_metadata(metadata: os.stat_result) -> str:
+    if not stat.S_ISDIR(metadata.st_mode):
+        raise ValueError("Vision worker input root must be a directory")
+    payload = {
+        "device": metadata.st_dev,
+        "group": metadata.st_gid,
+        "inode": metadata.st_ino,
+        "mode": stat.S_IMODE(metadata.st_mode),
+        "owner": metadata.st_uid,
+        "protocol": "videoscope-worker-input-root@1",
+    }
+    canonical = json.dumps(
+        payload,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return f"sha256:{sha256(canonical).hexdigest()}"
+
+
+def worker_input_root_identity(path: Path) -> str:
+    """Return a path-free identity for one no-follow directory capability."""
+
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    directory = getattr(os, "O_DIRECTORY", None)
+    if nofollow is None or directory is None:
+        raise ValueError("Vision worker requires no-follow directory access")
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | directory | nofollow
+    absolute = Path(os.path.abspath(path))
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(absolute.anchor, flags)
+        for component in absolute.parts[1:]:
+            child = os.open(component, flags, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = child
+        return worker_input_root_identity_from_metadata(os.fstat(descriptor))
+    except OSError as error:
+        raise ValueError("Vision worker input root must be a safe directory") from error
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
 
 
 @dataclass(frozen=True, slots=True)
@@ -339,6 +388,7 @@ class VisionIdentity(_ContractModel):
     detector_specification_hash: str = Field(pattern=_SHA256_RE.pattern)
     siglip_model_identity: str = Field(min_length=1, max_length=200)
     detector_model_identity: str = Field(min_length=1, max_length=200)
+    input_root_identity: str = Field(pattern=_ROOT_IDENTITY_RE.pattern)
 
 
 class VisionRequestIdentity(VisionIdentity):
@@ -395,6 +445,22 @@ class VisionEmbedTextsRequest(VisionRequestIdentity):
 class VisionDetectRequest(VisionRequestIdentity):
     source: VisionImageItem
     minimum_confidence: float = Field(ge=0, le=1)
+
+
+class VisionSourceProbeRequest(VisionRequestIdentity):
+    relative_path: str = Field(min_length=1, max_length=240)
+    expected_sha256: str = Field(pattern=_SHA256_RE.pattern)
+    expected_size_bytes: int = Field(gt=0, le=MAX_PROBE_BYTES)
+
+    @field_validator("relative_path")
+    @classmethod
+    def validate_path(cls, value: str) -> str:
+        return validate_relative_image_path(value)
+
+
+class VisionSourceProbeResponse(VisionRequestIdentity):
+    source_sha256: str = Field(pattern=_SHA256_RE.pattern)
+    source_size_bytes: int = Field(gt=0, le=MAX_PROBE_BYTES)
 
 
 class VisionVectorItem(_ContractModel):
@@ -458,9 +524,9 @@ class VisionHealthResponse(VisionIdentity):
     status: Literal["ok", "unavailable"]
     siglip_loaded: bool
     detector_loaded: bool
-    operations: list[Literal["embed_images", "embed_texts", "detect"]] = Field(
-        min_length=3,
-        max_length=3,
+    operations: list[Literal["probe", "embed_images", "embed_texts", "detect"]] = Field(
+        min_length=4,
+        max_length=4,
     )
     embedding_dimensions: int = Field(ge=1, le=MAX_EMBEDDING_DIMENSIONS)
     max_images: int = Field(ge=1, le=MAX_IMAGES)
@@ -477,14 +543,20 @@ class VisionHealthResponse(VisionIdentity):
     @classmethod
     def validate_operations(
         cls,
-        value: list[Literal["embed_images", "embed_texts", "detect"]],
-    ) -> list[Literal["embed_images", "embed_texts", "detect"]]:
-        if value != ["embed_images", "embed_texts", "detect"]:
+        value: list[Literal["probe", "embed_images", "embed_texts", "detect"]],
+    ) -> list[Literal["probe", "embed_images", "embed_texts", "detect"]]:
+        if value != ["probe", "embed_images", "embed_texts", "detect"]:
             raise ValueError("vision worker operations do not match the contract")
         return value
 
 
-def identity_fields(specification: VisionWorkerSpecification) -> dict[str, str]:
+def identity_fields(
+    specification: VisionWorkerSpecification,
+    *,
+    input_root_identity: str,
+) -> dict[str, str]:
+    if _ROOT_IDENTITY_RE.fullmatch(input_root_identity) is None:
+        raise ValueError("Vision worker input root identity is invalid")
     return {
         "schema_version": VISION_WORKER_SCHEMA_VERSION,
         "runtime_identity": specification.runtime_identity,
@@ -493,6 +565,7 @@ def identity_fields(specification: VisionWorkerSpecification) -> dict[str, str]:
         "detector_specification_hash": specification.detector_identity,
         "siglip_model_identity": specification.siglip_model_identity,
         "detector_model_identity": specification.detector_model_identity,
+        "input_root_identity": input_root_identity,
     }
 
 

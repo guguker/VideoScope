@@ -59,7 +59,7 @@ dependencies and execution parameters, or use a redistributable prepared fixture
 Validate and calculate the canonical dataset revision with the Python contract:
 
 ```bash
-PYTHONPATH=backend/src .venv/bin/python - <<'PY'
+.venv/bin/python -I - <<'PY'
 from pathlib import Path
 
 from videoscope.benchmark import (
@@ -72,6 +72,75 @@ dataset = video_verifier_dataset_from_json(path.read_bytes())
 print(video_verifier_dataset_revision(dataset))
 PY
 ```
+
+## Strict direct runner
+
+The committed direct runner executes the frozen prepared inputs without entering
+the product search pipeline and without calling the fallback-capable reranker
+method. A local candidate manifest binds exactly one proposal to every frozen
+case; ranks must be unique and contiguous, and its `dataset_revision` must equal
+the canonical dataset revision:
+
+```json
+{
+  "schema_version": 1,
+  "dataset_revision": "<64-character dataset SHA-256>",
+  "candidates": [
+    {
+      "case_id": "sports-made-three-blue-15",
+      "candidate_id": "proposal-blue-15",
+      "prepared_input_path": "/absolute/private/path/blue-15.mp4",
+      "proposal_rank": 1,
+      "proposal_score": 0.91
+    }
+  ]
+}
+```
+
+Repeat the candidate object for every case in the dataset.
+
+The path is a local binding only. Before and after inference the runner verifies
+the prepared file against the case byte size and SHA-256. The output contains
+the content identity, candidate identity, normalized typed facts, latency and a
+derived binding revision, but never the local path, query/description, free-form
+model evidence, bearer token or raw exception.
+
+With the isolated Qwen worker already running, invoke it as follows (the exact
+model identity must match the worker health contract):
+
+```bash
+export VIDEOSCOPE_VERIFIER_BENCHMARK_KEY='<same bearer token as the worker>'
+.venv/bin/python -I \
+  -m videoscope.benchmark.video_verifier_runner run \
+  --dataset docs/benchmarks/video-verifier/seed-v1.json \
+  --candidates /absolute/private/path/candidates.json \
+  --output /absolute/private/path/run-v1.json \
+  --run-id qwen-9b-regression-v1 \
+  --code-sha "$(git rev-parse HEAD)" \
+  --endpoint http://127.0.0.1:8781 \
+  --input-root /absolute/path/to/VIDEOSCOPE_DATA_DIR/tmp \
+  --model-identity \
+    mlx-community/Qwen3.5-9B-MLX-4bit@938d8919941c6e7efd3c7150eff7fe9d12afa631 \
+  --api-key-env VIDEOSCOPE_VERIFIER_BENCHMARK_KEY
+```
+
+Publication is create-once: an existing result is never replaced. A valid but
+wrong typed prediction is `model_miss`; an unavailable worker, unsupported
+input/prompt pair, corrupt or changed prepared input, invalid response contract,
+or inference exception is `infrastructure_error`. Any infrastructure error makes
+the run `infrastructure_failed` and the CLI exits with code 8 after preserving
+the sanitized attempt records.
+
+The versioned `qwen-worker-v4` strict contract supports `basketball_facts` on a
+native MP4, and `generic_visual` on either a prepared JPEG storyboard or a native
+MP4. Native generic requests bind the exact frozen query and FPS in the typed
+request; every request also binds the case's frozen prepared-input SHA-256 and
+byte size. The worker performs inference only on a private read-only copy made
+from a retained `O_NOFOLLOW` descriptor and fails closed on source namespace
+drift. Storyboard requests bind the same query and forbid FPS. Therefore all ten
+native inputs in `seed-v1.json` execute through the direct worker boundary. An
+unsupported prompt/input combination is still an infrastructure error and is
+never silently converted into a model miss or an untracked derived input.
 
 The next meaningful milestone is a separate set of new whole videos for
 train/validation/promotion. The current ten cases are a regression harness only.

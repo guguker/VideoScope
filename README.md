@@ -10,8 +10,8 @@
   восстановлением незавершённых попыток после перезапуска;
 - сцены PySceneDetect и кадры-превью через FFmpeg;
 - локальная расшифровка Whisper Large v3 Turbo через изолированный Apple MLX worker;
-- опциональная аттестованная граница PaddleOCR/Transformers; worker остаётся
-  недоступным без заранее предоставленных exact model bytes;
+- опциональная аттестованная граница PaddleOCR/Transformers с закреплёнными
+  source revisions, model hashes и отдельным offline worker;
 - мультиязычный поиск по кадрам через изолированный SigLIP 2 worker с быстрым 224 и quality-профилем 384;
 - локальный RF-DETR Small в том же изолированном vision worker;
 - legacy Roboflow Serverless adapter для пользовательских Universe-моделей;
@@ -33,9 +33,10 @@
 
 ## Запуск
 
-Требования: macOS 14+ на Apple Silicon, Python 3.12, Node.js 22, pnpm 11 и
-FFmpeg. Изолированные Vision/Whisper workers закреплены точнее на Python
-3.12.13 и намеренно не объявляются совместимыми с Intel Mac или Linux.
+Требования: macOS 14+ на Apple Silicon, `uv==0.12.3`, Node.js 22, pnpm 11,
+FFmpeg и FFprobe. Bootstrap и изолированные Vision/Whisper/OCR/Qwen workers
+закреплены на uv-managed CPython 3.12.13; Lighthouse — на CPython 3.11.14.
+Intel Mac и Linux не входят в заявленный контракт локальных Apple-ML workers.
 
 Минимальный запуск не требует ML-профилей:
 
@@ -54,12 +55,22 @@ make install-vision
 make models-vision
 make install-whisper
 make models-whisper
-make install-ocr    # необязательно; требует заранее provisioned reviewed model bytes
+make models-ocr     # явная загрузка только закреплённых reviewed model bytes
+make install-ocr    # необязательно; установка и offline-проверка worker
 make install-video
 make models-video
 make install-lighthouse   # необязательно; отдельный Python 3.11 worker
 make models-lighthouse
+make ml-attest-offline
 ```
+
+`make ml-attest-offline` проверяет locks, Python и identities, но не запускает
+инференс. Полный Phase 0 smoke требует отдельные абсолютные roots, cache и пути
+всех worker-интерпретаторов; точная clean-install и offline-команда
+`make full-ml-smoke` приведены в
+[docs/ml-environment-attestation.md](docs/ml-environment-attestation.md). Smoke
+не скачивает модели, сам поднимает измеряемые loopback workers и не пишет в
+проектный `data/`.
 
 После установки новых провайдеров перезапустите `make dev`. Vision, Whisper,
 Qwen и Lighthouse запускаются в отдельных терминалах командами
@@ -78,10 +89,10 @@ offline maintenance-команды для уже загруженной библ
 поэтому несовместимые старые окна автоматически не читаются. Профили и известные
 ограничения зависимостей описаны в
 [docs/dependencies.md](docs/dependencies.md).
-Точные OCR model bytes пока не имеют воспроизводимого downloader в репозитории:
-`make install-ocr` только проверяет заранее предоставленный набор из
-`workers/ocr/model-artifacts.lock.json`. Подробности — в
-`workers/ocr/README.md`.
+`make models-ocr` получает только файлы из закреплённых Hugging Face revisions,
+проверяет license evidence, размер и SHA-256 в приватном staging и не заменяет
+существующий несовместимый каталог. `make install-ocr` после этого проверяет те
+же bytes offline. Подробности — в [workers/ocr/README.md](workers/ocr/README.md).
 
 После обновления старой базы до схемы поколений ранее сохранённые сегменты не
 считаются проверенными и не попадают в поиск автоматически. Для каждого нужного
@@ -159,6 +170,32 @@ Evaluation harness вычисляет метрики только на лока�
 о качестве модели; Qwen используется как дополнительное подтверждение, а не как
 самостоятельный классификатор типа броска или номера игрока.
 
+Переносимый benchmark runner принимает все закреплённые профили
+`lexical_qdrant`, `dense_siglip`, `temporal_refinement`, `lighthouse`,
+`qwen_verification` и `internvideo` в режиме `warm`. Он работает только с
+существующими read-only snapshot/generation и никогда не индексирует данные или
+не включает fallback. Пример безопасного capability preflight:
+
+```sh
+.venv/bin/python -m videoscope.benchmark run \
+  --dataset /absolute/path/to/dataset.json \
+  --registry /absolute/path/to/existing-run-registry \
+  --data-dir /absolute/path/to/product-data \
+  --scratch-parent /absolute/path/to/existing-mode-0700-scratch \
+  --run-id phase0-preflight \
+  --profile dense_siglip \
+  --execution-mode warm \
+  --preflight
+```
+
+Preflight возвращает полную capability matrix. Код `8` означает ошибку
+product execution/preflight, а `9` — недоступное или неуспешное измерение.
+Предзапущенные внешние ML workers пока нельзя привязать к PID/start-token, поэтому
+их benchmark-профили честно получают
+`external_worker_process_binding_unavailable` по измерению; отдельный full-ML
+smoke решает это self-spawn и учитывает descendants. Подробный контракт — в
+[docs/benchmark-core.md](docs/benchmark-core.md).
+
 ## Vision и Whisper workers
 
 SigLIP/RF-DETR и MLX Whisper больше не устанавливаются в `.venv`. Создайте два
@@ -216,6 +253,11 @@ VIDEOSCOPE_QWEN_VIDEO_FRAME_COUNT=12
 
 Официальная модель `OpenGVLab/InternVideo2_5_Chat_8B` рассчитана на CUDA и FlashAttention, поэтому локальный Mac-путь остаётся на SigLIP 2. InternVideo подключается как отдельный GPU endpoint: VideoScope отправляет ему до восьми кадров только из четырёх лучших кандидатов и получает оценку релевантности и краткое обоснование. Сервис должен находиться в приватной сети, использовать HTTPS и обязательный API key; публичный plaintext HTTP для кадров и bearer-токена недопустим.
 
+Замороженный benchmark-профиль `internvideo` существует, но текущий локальный
+benchmark и full-ML smoke намеренно фиксируют его как
+`not_configured/provider_not_configured`: до source-bound runtime attestation он
+не может участвовать в promotion evidence и не заменяется другой моделью.
+
 ## Lighthouse
 
 Официальная библиотека тестировалась авторами на старом Python/CUDA-стеке и
@@ -248,7 +290,12 @@ LIGHTHOUSE_API_KEY=<отдельный URL-safe токен длиной не м�
 make test
 make build
 make demo
+make ml-attest-offline
 ```
+
+Код и unit/integration tests для full-ML smoke готовы, но успешный receipt на
+целевом M4 Pro ещё не записан; Phase 0 нельзя считать завершённой до такого
+прогона и проверки benchmark/rollback evidence.
 
 Архитектура и схема ранжирования описаны в [docs/architecture.md](docs/architecture.md).
 Контракты HTTP и локального хранения — в [docs/data-contracts.md](docs/data-contracts.md).
@@ -256,6 +303,8 @@ make demo
 Эксперименты и ограничения спортивного профиля — в [docs/basketball-model-upgrade.md](docs/basketball-model-upgrade.md).
 
 Актуальный выбор локальных моделей, A/B на M4 Pro и условия fine-tune — в [docs/local-model-strategy.md](docs/local-model-strategy.md).
+Пошаговый контракт качественной ML-автономии, включая data loop, обучение,
+promotion gates и rollback, — в [docs/ml-autonomy-plan.md](docs/ml-autonomy-plan.md).
 Утверждённая системная переработка артефактов, индексов, benchmark и jobs — в
 [docs/system-rebuild.md](docs/system-rebuild.md).
 

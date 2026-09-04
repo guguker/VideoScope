@@ -1,0 +1,30 @@
+{
+  "models": [
+    {
+      "directory": "PP-OCRv6_medium_det_safetensors",
+      "license": "apache-2.0",
+      "license_evidence": {
+        "name": "README.md",
+        "sha256": "cdba9f31531fe1a4ff1323a21d7cf671a7a042b23a788ffeb081d1845acccdb6",
+        "size": 23399
+      },
+      "repository": "PaddlePaddle/PP-OCRv6_medium_det_safetensors",
+      "revision": "4236c2b61741a259c091fd879dcc4edc339e916c",
+      "role": "detection"
+    },
+    {
+      "directory": "PP-OCRv6_medium_rec_safetensors",
+      "license": "apache-2.0",
+      "license_evidence": {
+        "name": "README.md",
+        "sha256": "22d8205ebe83ec6423b658ce26d7780a551a68d6646b8ff30f55d2acb18a876b",
+        "size": 23787
+      },
+      "repository": "PaddlePaddle/PP-OCRv6_medium_rec_safetensors",
+      "revision": "024cad6a831de75c2c3c26e711ba8c4a82ccd24b",
+      "role": "recognition"
+    }
+  ],
+  "provider": "huggingface_hub",
+  "schema_version": 1
+}

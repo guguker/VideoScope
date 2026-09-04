@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import sqlite3
 
+import numpy as np
 import pytest
 
 from videoscope.artifacts import (
@@ -21,8 +22,17 @@ from videoscope.jobs import (
     VideoIndexIntent,
     VideoIndexPlanSnapshot,
 )
+from videoscope.media.ffmpeg import SampledFrame
+from videoscope.providers.lighthouse_worker import (
+    LighthouseEncodedWindow,
+    LighthouseGenerationStore,
+)
 from videoscope.providers.whisper import WhisperPromptSnapshot
 from videoscope.repository import LATEST_SCHEMA_VERSION, Repository, SegmentRecord
+from videoscope.search.embeddings import HashEmbedding
+from videoscope.search.service import SearchService
+from videoscope.search.vector_index import QdrantVectorIndex
+from videoscope.search.visual_index import SiglipVisualIndex
 
 
 TOKEN_A = "worker-token-aaaaaaaaaaaaaaaa"
@@ -959,6 +969,426 @@ def test_job_completion_atomically_activates_staged_segments_text_and_thumbnail(
     assert repository.get_active_text_vector_generation("video-1") == new_text
     video = repository.get_video("video-1")
     assert video is not None and video.thumbnail_path == new_thumbnail
+
+
+def test_failed_full_job_publish_keeps_prior_release_searchable_after_restart(
+    tmp_path,
+    monkeypatch,
+    request,
+) -> None:  # type: ignore[no-untyped-def]
+    database_path = tmp_path / "videoscope.sqlite3"
+    media_root = tmp_path / "media"
+    media_root.mkdir()
+    source = media_root / "video-1.mp4"
+    source.write_bytes(b"deterministic rollback drill fixture")
+    source_bytes = source.read_bytes()
+    source_sha256 = hashlib.sha256(source_bytes).hexdigest()
+
+    qdrant_path = tmp_path / "qdrant"
+    visual_path = tmp_path / "visual-generations"
+    lighthouse_path = tmp_path / "lighthouse-generations"
+    vector_index = QdrantVectorIndex(
+        qdrant_path,
+        embedding=HashEmbedding(16),
+    )
+    request.addfinalizer(vector_index.close)
+    visual_store = SiglipVisualIndex(
+        visual_path,
+        model_name="videoscope/rollback-drill-siglip",
+        model_revision="a" * 40,
+        sample_step=4.0,
+        max_width=64,
+        extractor_identity="phase0-rollback-frame-extractor-v1",
+    )
+    monkeypatch.setattr(
+        visual_store,
+        "_image_vectors",
+        lambda paths: np.tile(
+            np.array([[1.0, 0.0]], dtype=np.float32),
+            (len(paths), 1),
+        ),
+    )
+    lighthouse_store = LighthouseGenerationStore(lighthouse_path)
+
+    class RollbackFrameExtractor:
+        @staticmethod
+        def extract_frames(
+            current_source,
+            destination,
+            start,
+            end,
+            *,
+            step,
+            max_width,
+        ):  # type: ignore[no-untyped-def]
+            assert current_source == source
+            assert (start, end, step, max_width) == (0.0, 4.0, 4.0, 64)
+            destination.mkdir(parents=True, exist_ok=True)
+            frame = destination / "frame-0000.jpg"
+            frame.write_bytes(b"deterministic rollback frame")
+            return [SampledFrame(0.0, frame)]
+
+    base_plan = _plan(executor_identity="videoscope.indexer.rollback-drill-v1")
+    plan = VideoIndexPlanSnapshot(
+        schema_version=base_plan.schema_version,
+        specifications=base_plan.specifications,
+        visual_dense_specification=_stage(
+            StageKind.VISUAL_DENSE,
+            parameters={
+                "visual_specification_hash": visual_store.specification.identity,
+            },
+        ),
+        lighthouse_specification=_stage(
+            StageKind.LIGHTHOUSE,
+            parameters={
+                "specification_hash": lighthouse_store.specification.identity,
+            },
+        ),
+        whisper_prompt_snapshot=base_plan.whisper_prompt_snapshot,
+        executor_identity=base_plan.executor_identity,
+    )
+    repository = Repository(database_path)
+    repository.initialize()
+    _video, job_a = repository.create_video_with_asset_and_index_job(
+        video_id="video-1",
+        original_name="video-1.mp4",
+        stored_name=source.name,
+        media_path=str(source),
+        size_bytes=len(source_bytes),
+        source_sha256=source_sha256,
+        plan=plan,
+        job_id="job-a",
+    )
+    repository.update_video("video-1", duration=4.0)
+    searched_generation_ids: list[tuple[str, ...]] = []
+    search_generations = vector_index.search_generations
+
+    def record_generation_search(*args, **kwargs):  # type: ignore[no-untyped-def]
+        searched_generation_ids.append(
+            tuple(binding.generation_id for binding in kwargs["bindings"])
+        )
+        return search_generations(*args, **kwargs)
+
+    monkeypatch.setattr(vector_index, "search_generations", record_generation_search)
+
+    external_descriptors: dict[
+        str,
+        dict[StageKind, dict[str, object]],
+    ] = {}
+
+    def stage_complete_release(
+        *,
+        job_id: str,
+        execution_token: str,
+        release: str,
+    ) -> dict[str, str]:
+        claimed = repository.claim_next_video_index_job(
+            execution_token=execution_token,
+            stage="scenes",
+        )
+        assert claimed is not None and claimed.job_id == job_id
+        generation_ids: dict[str, str] = {}
+        modalities = {
+            StageKind.SCENES: "scene",
+            StageKind.SPEECH: "speech",
+            StageKind.OCR: "ocr",
+            StageKind.OBJECTS: "objects",
+        }
+        for specification in plan.specifications.segment_specifications:
+            kind = specification.kind
+            run = _start_owned_stage_run(
+                repository,
+                job_id=job_id,
+                specification=specification,
+                run_id=f"{release}-{kind.value}-run",
+                execution_token=execution_token,
+            )
+            generation = repository.commit_segment_generation(
+                run.run_id,
+                generation_id=f"{release}-{kind.value}-generation",
+                segments=[
+                    _segment(
+                        f"{release}-{kind.value}-segment",
+                        modality=modalities[kind],
+                        text=f"{release} {modalities[kind]} evidence",
+                    )
+                ],
+                execution_token=execution_token,
+            )
+            generation_ids[kind.value] = generation.generation_id
+
+        text_run = _start_owned_stage_run(
+            repository,
+            job_id=job_id,
+            specification=plan.specifications.text_vectors,
+            run_id=f"{release}-text-vectors-run",
+            execution_token=execution_token,
+        )
+        build = repository.reserve_text_vector_generation(
+            text_run.run_id,
+            index_specification=vector_index.index_specification,
+            semantic_specifications=(
+                plan.specifications.semantic_segment_specifications
+            ),
+            generation_id=f"{release}-text-vectors-generation",
+            execution_token=execution_token,
+        )
+        text_generation = repository.commit_text_vector_generation(
+            text_run.run_id,
+            receipt=vector_index.build_generation(build),
+            execution_token=execution_token,
+        )
+        generation_ids[StageKind.TEXT_VECTORS.value] = (
+            text_generation.generation_id
+        )
+
+        visual_descriptor = visual_store.build_video_source(
+            "video-1",
+            source,
+            4.0,
+            RollbackFrameExtractor(),
+        )
+        feature_value = 1.0 if release == "alpha" else 2.0
+        lighthouse_generation_id = lighthouse_store.build_generation(
+            video_id="video-1",
+            source_sha256=source_sha256,
+            source_size_bytes=len(source_bytes),
+            duration_seconds=4.0,
+            windows=[
+                LighthouseEncodedWindow(
+                    offset=0.0,
+                    end=4.0,
+                    video_features=np.full(
+                        (1, 1, 514),
+                        feature_value,
+                        dtype=np.float32,
+                    ),
+                    video_mask=np.ones((1, 1), dtype=np.float32),
+                )
+            ],
+        )
+        lighthouse_descriptor = lighthouse_store.generation_descriptor(
+            "video-1",
+            lighthouse_generation_id,
+            force_content_validation=True,
+        )
+        assert lighthouse_descriptor is not None
+        external_descriptors[release] = {
+            StageKind.VISUAL_DENSE: visual_descriptor,
+            StageKind.LIGHTHOUSE: lighthouse_descriptor,
+        }
+
+        for kind, descriptor in external_descriptors[release].items():
+            specification = plan.for_kind(kind)
+            run = _start_owned_stage_run(
+                repository,
+                job_id=job_id,
+                specification=specification,
+                run_id=f"{release}-{kind.value}-run",
+                execution_token=execution_token,
+            )
+            generation = repository.commit_external_index_generation(
+                run.run_id,
+                descriptor=descriptor,
+                execution_token=execution_token,
+            )
+            generation_ids[kind.value] = generation.generation_id
+        return generation_ids
+
+    def active_generation_map(target: Repository) -> dict[str, str]:
+        active: dict[str, str] = {}
+        for kind in (
+            StageKind.SCENES,
+            StageKind.SPEECH,
+            StageKind.OCR,
+            StageKind.OBJECTS,
+        ):
+            generation = target.get_active_segment_generation("video-1", kind)
+            assert generation is not None
+            active[kind.value] = generation.generation_id
+        text_generation = target.get_active_text_vector_generation("video-1")
+        assert text_generation is not None
+        active[StageKind.TEXT_VECTORS.value] = text_generation.generation_id
+        for kind in (StageKind.VISUAL_DENSE, StageKind.LIGHTHOUSE):
+            generation = target.get_active_external_index_generation(
+                "video-1",
+                kind,
+            )
+            assert generation is not None
+            active[kind.value] = generation.generation_id
+        return active
+
+    generation_a = stage_complete_release(
+        job_id=job_a.job_id,
+        execution_token=TOKEN_A,
+        release="alpha",
+    )
+    repository.complete_video_index_job(job_a.job_id, execution_token=TOKEN_A)
+    active_a = active_generation_map(repository)
+    assert active_a == generation_a
+    active_external_a = repository.get_external_index_release_snapshot(["video-1"])
+    assert active_external_a.visual_dense["video-1"] == external_descriptors[
+        "alpha"
+    ][StageKind.VISUAL_DENSE]
+    assert active_external_a.lighthouse["video-1"] == external_descriptors[
+        "alpha"
+    ][StageKind.LIGHTHOUSE]
+    asset_a = repository.get_video_asset("video-1")
+    assert asset_a is not None and asset_a.sha256 == source_sha256
+    search_a = SearchService(
+        repository,
+        vector_index,
+        specification_resolver=lambda: plan.specifications,
+    ).search(
+        "alpha speech evidence",
+        mode="speech",
+        use_lighthouse=False,
+        raise_on_provider_error=True,
+    )
+    assert search_a and search_a[0].evidence[0].text == "alpha speech evidence"
+    assert searched_generation_ids[-1] == (
+        generation_a[StageKind.TEXT_VECTORS.value],
+    )
+
+    job_b = repository.enqueue_video_reindex_job(
+        "video-1",
+        plan=plan,
+        job_id="job-b",
+    )
+    generation_b = stage_complete_release(
+        job_id=job_b.job_id,
+        execution_token=TOKEN_B,
+        release="beta",
+    )
+    activate = repository._activate_video_index_job_outputs
+
+    def fail_before_publish_commit(*args, **kwargs):  # type: ignore[no-untyped-def]
+        activate(*args, **kwargs)
+        raise RuntimeError("injected pre-commit publication failure")
+
+    monkeypatch.setattr(
+        repository,
+        "_activate_video_index_job_outputs",
+        fail_before_publish_commit,
+    )
+    with pytest.raises(RuntimeError, match="pre-commit publication"):
+        repository.complete_video_index_job(job_b.job_id, execution_token=TOKEN_B)
+    monkeypatch.setattr(repository, "_activate_video_index_job_outputs", activate)
+    repository.fail_video_index_job(
+        job_b.job_id,
+        execution_token=TOKEN_B,
+        error_code="job_execution_failed",
+    )
+
+    # Simulate a complete process restart: release the embedded storage lock and
+    # reconstruct every durable reader from only its on-disk state.
+    vector_index.close()
+
+    reopened = Repository(database_path)
+    reopened.initialize()
+    reopened_vector_index = QdrantVectorIndex(
+        qdrant_path,
+        embedding=HashEmbedding(16),
+    )
+    request.addfinalizer(reopened_vector_index.close)
+    reopened_visual_store = SiglipVisualIndex(
+        visual_path,
+        model_name="videoscope/rollback-drill-siglip",
+        model_revision="a" * 40,
+        sample_step=4.0,
+        max_width=64,
+        extractor_identity="phase0-rollback-frame-extractor-v1",
+    )
+    reopened_lighthouse_store = LighthouseGenerationStore(lighthouse_path)
+    failed_b = reopened.get_video_index_job(job_b.job_id)
+    assert failed_b is not None
+    assert (failed_b.state, failed_b.error_code) == (
+        JobState.FAILED,
+        "job_execution_failed",
+    )
+    reopened_video = reopened.get_video("video-1")
+    assert reopened_video is not None and reopened_video.status == "ready"
+    assert active_generation_map(reopened) == active_a
+    assert set(active_a.values()).isdisjoint(generation_b.values())
+    reopened_asset = reopened.get_video_asset("video-1")
+    assert reopened_asset == asset_a
+    assert hashlib.sha256(source.read_bytes()).hexdigest() == source_sha256
+    reopened.verify_asset_identity("video-1", media_root=media_root)
+
+    alpha_binding = reopened.get_text_vector_search_binding(
+        generation_a[StageKind.TEXT_VECTORS.value]
+    )
+    beta_binding = reopened.get_text_vector_search_binding(
+        generation_b[StageKind.TEXT_VECTORS.value]
+    )
+    assert alpha_binding is not None and beta_binding is not None
+    assert reopened_vector_index.validate_generation(alpha_binding) is True
+    assert reopened_vector_index.validate_generation(beta_binding) is True
+    assert {
+        hit.generation_id
+        for hit in reopened_vector_index.search_generations(
+            "alpha speech evidence",
+            bindings=[alpha_binding],
+            modalities={"speech"},
+            limit=10,
+        )
+    } == {generation_a[StageKind.TEXT_VECTORS.value]}
+    assert {
+        hit.generation_id
+        for hit in reopened_vector_index.search_generations(
+            "beta speech evidence",
+            bindings=[beta_binding],
+            modalities={"speech"},
+            limit=10,
+        )
+    } == {generation_b[StageKind.TEXT_VECTORS.value]}
+
+    active_external_after_restart = reopened.get_external_index_release_snapshot(
+        ["video-1"]
+    )
+    assert active_external_after_restart == active_external_a
+    for release, generations in (("alpha", generation_a), ("beta", generation_b)):
+        assert reopened_visual_store.generation_descriptor(
+            "video-1",
+            generations[StageKind.VISUAL_DENSE.value],
+            force_content_validation=True,
+        ) == external_descriptors[release][StageKind.VISUAL_DENSE]
+        assert reopened_lighthouse_store.generation_descriptor(
+            "video-1",
+            generations[StageKind.LIGHTHOUSE.value],
+            force_content_validation=True,
+        ) == external_descriptors[release][StageKind.LIGHTHOUSE]
+
+    search_after_restart = SearchService(
+        reopened,
+        reopened_vector_index,
+        specification_resolver=lambda: plan.specifications,
+    ).search(
+        "alpha speech evidence",
+        mode="speech",
+        use_lighthouse=False,
+        raise_on_provider_error=False,
+    )
+    assert search_after_restart
+    assert (search_after_restart[0].start, search_after_restart[0].end) == (
+        search_a[0].start,
+        search_a[0].end,
+    )
+    assert search_after_restart[0].evidence[0].text == "alpha speech evidence"
+    assert all(
+        "beta" not in evidence.text
+        for result in search_after_restart
+        for evidence in result.evidence
+    )
+    with reopened._connect() as connection:
+        gc_generation_ids = {
+            row[0]
+            for row in connection.execute(
+                "SELECT generation_id FROM artifact_gc_jobs"
+            )
+        }
+    assert set(active_a.values()).isdisjoint(gc_generation_ids)
+    reopened_vector_index.close()
 
 
 def test_changed_plan_without_outputs_releases_no_mismatched_active_generations(

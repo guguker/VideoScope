@@ -14,9 +14,12 @@ from .schema import (
     BenchmarkDataError,
     BenchmarkDataset,
     BenchmarkInterval,
+    BenchmarkMeasurementEvidence,
     BenchmarkRunManifest,
     BenchmarkResultEvidence,
+    BenchmarkStorageSnapshot,
     ComponentIdentity,
+    CriticalSliceLabels,
     HardNegative,
     HardwareProfile,
     MetricValue,
@@ -161,6 +164,12 @@ def run_to_dict(run: BenchmarkRunManifest) -> JsonObject:
         "measurement_status": run.measurement_status,
         "measurement_started_at": run.measurement_started_at,
         "measurement_finished_at": run.measurement_finished_at,
+        "measurement_evidence_status": run.measurement_evidence_status,
+        "measurement_evidence": (
+            _measurement_evidence_to_dict(run.measurement_evidence)
+            if run.measurement_evidence is not None
+            else None
+        ),
         "case_outcomes": [_outcome_to_dict(outcome) for outcome in run.case_outcomes],
     }
 
@@ -171,9 +180,11 @@ def run_from_dict(value: JsonObject) -> BenchmarkRunManifest:
         raise BenchmarkDataError("run manifest schema_version must be an integer")
     if schema_version == 1:
         return _legacy_run_from_dict(value)
+    if schema_version == 2:
+        return _v2_run_from_dict(value)
     if schema_version != RUN_SCHEMA_VERSION:
         raise BenchmarkDataError(
-            f"run manifest schema_version must be 1 or {RUN_SCHEMA_VERSION}"
+            f"run manifest schema_version must be 1, 2 or {RUN_SCHEMA_VERSION}"
         )
     fields = {
         "schema_version",
@@ -195,6 +206,8 @@ def run_from_dict(value: JsonObject) -> BenchmarkRunManifest:
         "measurement_status",
         "measurement_started_at",
         "measurement_finished_at",
+        "measurement_evidence_status",
+        "measurement_evidence",
         "case_outcomes",
     }
     expect_fields(value, fields, "run manifest")
@@ -248,6 +261,101 @@ def run_from_dict(value: JsonObject) -> BenchmarkRunManifest:
         measurement_started_at=value["measurement_started_at"],  # type: ignore[arg-type]
         measurement_finished_at=value["measurement_finished_at"],  # type: ignore[arg-type]
         case_outcomes=outcomes,
+        measurement_evidence_status=value["measurement_evidence_status"],  # type: ignore[arg-type]
+        measurement_evidence=(
+            None
+            if value["measurement_evidence"] is None
+            else _measurement_evidence_from_dict(
+                expect_object(
+                    value["measurement_evidence"],
+                    "measurement_evidence",
+                )
+            )
+        ),
+    )
+
+
+def _v2_run_from_dict(value: JsonObject) -> BenchmarkRunManifest:
+    """Read the exact aggregate-only v2 shape without inventing raw evidence."""
+
+    fields = {
+        "schema_version",
+        "run_id",
+        "created_at",
+        "started_at",
+        "finished_at",
+        "run_status",
+        "code_sha",
+        "dataset_revision",
+        "model_identities",
+        "index_identities",
+        "config_identities",
+        "hardware",
+        "execution_mode",
+        "quality_metrics",
+        "system_metrics",
+        "measurement_protocol",
+        "measurement_status",
+        "measurement_started_at",
+        "measurement_finished_at",
+        "case_outcomes",
+    }
+    expect_fields(value, fields, "run manifest")
+    outcomes = _parse_tuple(
+        value["case_outcomes"],
+        "case_outcomes",
+        _outcome_from_dict,
+    )
+    measurement_status = value["measurement_status"]
+    return BenchmarkRunManifest(
+        schema_version=RUN_SCHEMA_VERSION,
+        run_id=value["run_id"],  # type: ignore[arg-type]
+        created_at=value["created_at"],  # type: ignore[arg-type]
+        started_at=value["started_at"],  # type: ignore[arg-type]
+        finished_at=value["finished_at"],  # type: ignore[arg-type]
+        run_status=value["run_status"],  # type: ignore[arg-type]
+        code_sha=value["code_sha"],  # type: ignore[arg-type]
+        dataset_revision=value["dataset_revision"],  # type: ignore[arg-type]
+        model_identities=_parse_tuple(
+            value["model_identities"],
+            "model_identities",
+            _identity_from_dict,
+        ),
+        index_identities=_parse_tuple(
+            value["index_identities"],
+            "index_identities",
+            _identity_from_dict,
+        ),
+        config_identities=_parse_tuple(
+            value["config_identities"],
+            "config_identities",
+            _identity_from_dict,
+        ),
+        hardware=_hardware_from_dict(expect_object(value["hardware"], "hardware")),
+        execution_mode=value["execution_mode"],  # type: ignore[arg-type]
+        quality_metrics=_parse_tuple(
+            value["quality_metrics"],
+            "quality_metrics",
+            _metric_from_dict,
+        ),
+        system_metrics=_parse_tuple(
+            value["system_metrics"],
+            "system_metrics",
+            _metric_from_dict,
+        ),
+        measurement_protocol=_identity_from_dict(
+            expect_object(value["measurement_protocol"], "measurement_protocol")
+        ),
+        measurement_status=measurement_status,  # type: ignore[arg-type]
+        measurement_started_at=value["measurement_started_at"],  # type: ignore[arg-type]
+        measurement_finished_at=value["measurement_finished_at"],  # type: ignore[arg-type]
+        case_outcomes=outcomes,
+        measurement_evidence_status=(
+            "legacy_unavailable"
+            if measurement_status == "complete"
+            else "not_applicable"
+        ),
+        measurement_evidence=None,
     )
 
 
@@ -255,8 +363,8 @@ def _legacy_run_from_dict(value: JsonObject) -> BenchmarkRunManifest:
     """Read the exact released v1 shape without rewriting immutable bytes.
 
     A v1 manifest has no explicit run/measurement timeline.  It is therefore
-    represented in memory as a conservative v2 ``not_measured`` run.  New
-    writes always use v2; callers must not treat this compatibility read as an
+    represented in memory as a conservative v3 ``not_measured`` run.  New
+    writes always use v3; callers must not treat this compatibility read as an
     evidence-preserving upgrade of the old methodology.
     """
 
@@ -323,6 +431,8 @@ def _legacy_run_from_dict(value: JsonObject) -> BenchmarkRunManifest:
         measurement_started_at=None,
         measurement_finished_at=None,
         case_outcomes=outcomes,
+        measurement_evidence_status="not_applicable",
+        measurement_evidence=None,
     )
 
 
@@ -413,7 +523,7 @@ def _case_to_dict(case: QueryCase, *, canonical: bool) -> JsonObject:
         modalities.sort()
         relevant.sort(key=_canonical_json_key)
         negatives.sort(key=_canonical_json_key)
-    return {
+    result: JsonObject = {
         "case_id": case.case_id,
         "query": case.query,
         "asset_ids": asset_ids,
@@ -425,6 +535,12 @@ def _case_to_dict(case: QueryCase, *, canonical: bool) -> JsonObject:
         "hard_negatives": negatives,
         "notes": case.notes,
     }
+    if case.critical_slices is not None:
+        result["critical_slices"] = _critical_slice_labels_to_dict(
+            case.critical_slices,
+            canonical=canonical,
+        )
+    return result
 
 
 def _case_from_dict(value: JsonObject) -> QueryCase:
@@ -440,6 +556,8 @@ def _case_from_dict(value: JsonObject) -> QueryCase:
         "hard_negatives",
         "notes",
     }
+    if "critical_slices" in value:
+        fields.add("critical_slices")
     expect_fields(value, fields, "case")
     asset_ids = tuple(expect_list(value["asset_ids"], "case.asset_ids"))
     modalities = tuple(expect_list(value["modalities"], "case.modalities"))
@@ -464,6 +582,67 @@ def _case_from_dict(value: JsonObject) -> QueryCase:
         relevant_intervals=relevant,
         hard_negatives=negatives,
         notes=value["notes"],  # type: ignore[arg-type]
+        critical_slices=(
+            _critical_slice_labels_from_dict(
+                expect_object(value["critical_slices"], "case.critical_slices")
+            )
+            if "critical_slices" in value
+            else None
+        ),
+    )
+
+
+def _critical_slice_labels_to_dict(
+    labels: CriticalSliceLabels,
+    *,
+    canonical: bool,
+) -> JsonObject:
+    event_class = list(labels.event_class)
+    capture_condition = list(labels.capture_condition)
+    distribution_shift = list(labels.distribution_shift)
+    if canonical:
+        event_class.sort()
+        capture_condition.sort()
+        distribution_shift.sort()
+    return {
+        "schema_version": labels.schema_version,
+        "event_class": event_class,
+        "capture_condition": capture_condition,
+        "distribution_shift": distribution_shift,
+    }
+
+
+def _critical_slice_labels_from_dict(value: JsonObject) -> CriticalSliceLabels:
+    expect_fields(
+        value,
+        {
+            "schema_version",
+            "event_class",
+            "capture_condition",
+            "distribution_shift",
+        },
+        "case.critical_slices",
+    )
+    return CriticalSliceLabels(
+        schema_version=value["schema_version"],  # type: ignore[arg-type]
+        event_class=tuple(
+            expect_list(
+                value["event_class"],
+                "case.critical_slices.event_class",
+            )
+        ),  # type: ignore[arg-type]
+        capture_condition=tuple(
+            expect_list(
+                value["capture_condition"],
+                "case.critical_slices.capture_condition",
+            )
+        ),  # type: ignore[arg-type]
+        distribution_shift=tuple(
+            expect_list(
+                value["distribution_shift"],
+                "case.critical_slices.distribution_shift",
+            )
+        ),  # type: ignore[arg-type]
     )
 
 
@@ -516,6 +695,95 @@ def _identity_from_dict(value: JsonObject) -> ComponentIdentity:
     return ComponentIdentity(
         component_id=value["component_id"],  # type: ignore[arg-type]
         identity=value["identity"],  # type: ignore[arg-type]
+    )
+
+
+def _measurement_evidence_to_dict(
+    evidence: BenchmarkMeasurementEvidence,
+) -> JsonObject:
+    return {
+        "schema_version": evidence.schema_version,
+        "rss_samples_bytes": list(evidence.rss_samples_bytes),
+        "storage_before": [
+            _storage_snapshot_to_dict(item) for item in evidence.storage_before
+        ],
+        "storage_after": [
+            _storage_snapshot_to_dict(item) for item in evidence.storage_after
+        ],
+        "metal_telemetry_status": evidence.metal_telemetry_status,
+    }
+
+
+def _measurement_evidence_from_dict(
+    value: JsonObject,
+) -> BenchmarkMeasurementEvidence:
+    expect_fields(
+        value,
+        {
+            "schema_version",
+            "rss_samples_bytes",
+            "storage_before",
+            "storage_after",
+            "metal_telemetry_status",
+        },
+        "measurement evidence",
+    )
+    return BenchmarkMeasurementEvidence(
+        schema_version=value["schema_version"],  # type: ignore[arg-type]
+        rss_samples_bytes=tuple(
+            expect_list(
+                value["rss_samples_bytes"],
+                "measurement evidence RSS samples",
+            )
+        ),  # type: ignore[arg-type]
+        storage_before=_parse_tuple(
+            value["storage_before"],
+            "measurement evidence storage_before",
+            _storage_snapshot_from_dict,
+        ),
+        storage_after=_parse_tuple(
+            value["storage_after"],
+            "measurement evidence storage_after",
+            _storage_snapshot_from_dict,
+        ),
+        metal_telemetry_status=value["metal_telemetry_status"],  # type: ignore[arg-type]
+    )
+
+
+def _storage_snapshot_to_dict(snapshot: BenchmarkStorageSnapshot) -> JsonObject:
+    return {
+        "root_id": snapshot.root_id,
+        "purpose": snapshot.purpose,
+        "file_count": snapshot.file_count,
+        "directory_count": snapshot.directory_count,
+        "logical_bytes": snapshot.logical_bytes,
+        "allocated_bytes": snapshot.allocated_bytes,
+        "tree_digest": snapshot.tree_digest,
+    }
+
+
+def _storage_snapshot_from_dict(value: JsonObject) -> BenchmarkStorageSnapshot:
+    expect_fields(
+        value,
+        {
+            "root_id",
+            "purpose",
+            "file_count",
+            "directory_count",
+            "logical_bytes",
+            "allocated_bytes",
+            "tree_digest",
+        },
+        "measurement storage snapshot",
+    )
+    return BenchmarkStorageSnapshot(
+        root_id=value["root_id"],  # type: ignore[arg-type]
+        purpose=value["purpose"],  # type: ignore[arg-type]
+        file_count=value["file_count"],  # type: ignore[arg-type]
+        directory_count=value["directory_count"],  # type: ignore[arg-type]
+        logical_bytes=value["logical_bytes"],  # type: ignore[arg-type]
+        allocated_bytes=value["allocated_bytes"],  # type: ignore[arg-type]
+        tree_digest=value["tree_digest"],  # type: ignore[arg-type]
     )
 
 

@@ -1,0 +1,386 @@
+{
+  "schema_version": 1,
+  "policy_id": "phase0-regression-baseline",
+  "policy_version": "1.0.0",
+  "evaluation_data": {
+    "status": "regression_seen_only",
+    "evidence_use": "regression_only",
+    "promotion_evidence_status": "not_promotion_evidence",
+    "promotion_eligible": false,
+    "promotion_blocker": "independent_holdout_not_available",
+    "product_dataset_status": "frozen_regression_seen",
+    "product_dataset": {
+      "dataset_id": "video-verifier-product-regression",
+      "dataset_version": "1.0.0",
+      "dataset_revision": "8cda261148ce3f459e08c3762017cec86970ab7c85d36eaa77ef9f832a2ae6a1",
+      "dataset_schema_version": 1,
+      "case_count": 5,
+      "source_group_count": 2,
+      "evidence_use": "regression_only"
+    },
+    "verifier_dataset": {
+      "dataset_id": "video-verifier-private-regression",
+      "dataset_version": "1.0.0",
+      "dataset_revision": "2758ce6fd86c4ad921ae29bff83126a31a5ddbfabdca79748c58fa3d42f1763b",
+      "dataset_schema_version": 1,
+      "case_count": 10,
+      "source_group_count": 2,
+      "splits": [
+        "regression_seen"
+      ],
+      "label_qualities": [
+        "gold"
+      ],
+      "strata": [
+        "basketball_facts",
+        "generic_visual"
+      ]
+    }
+  },
+  "contracts": {
+    "benchmark_methodology_version": 5,
+    "benchmark_methodology_identity": "portable-retrieval@5;temporal-iou-threshold=0.3;quality-denominator=completed-positive-cases;matching=rank-prefix-maximum-cardinality-one-to-one;candidate-recall=one-to-one-gold-interval-coverage-at-50;precision=one-to-one-prefix-gains-over-five;ndcg=one-to-one-prefix-gains-at-10;latency-p95=nearest-rank",
+    "benchmark_dataset_schema_version": 1,
+    "benchmark_run_schema_version": 3,
+    "video_verifier_dataset_schema_version": 1,
+    "video_verifier_candidate_schema_version": 1,
+    "video_verifier_run_schema_version": 1,
+    "promotion_policy_schema_version": 2,
+    "evaluation_search_plan_schema_version": 1,
+    "measurement_evidence_schema_version": 1,
+    "measurement_protocol_identity_prefix": "process-tree-rss-50ms-contained-storage@2"
+  },
+  "profiles": [
+    {
+      "profile_id": "lexical_qdrant",
+      "profile_schema_version": 2,
+      "profile_identity": "lexical_qdrant@2:c969abf7df5d61c960cd80e809ac2fd5ddd1720fa952fd1ca7990a92ba83ea28",
+      "search_plan_identity": "evaluation-search-plan@1:a15fc64b8e4ed52541e7e0ccc3420c82dd5124e2d7e297dc05877a81d60130d1",
+      "phase0_requirement": "must_execute_or_report_not_configured"
+    },
+    {
+      "profile_id": "dense_siglip",
+      "profile_schema_version": 2,
+      "profile_identity": "dense_siglip@2:fed33a018e21985309d3bb2ff2dfcdd1fbabd28f09348d2f9e3eab1aea0f69f9",
+      "search_plan_identity": "evaluation-search-plan@1:4f166f8b52495ff3fecf8bcd6ef3feb3d719fdd1efe836e7699314c6282990b8",
+      "phase0_requirement": "must_execute_or_report_not_configured"
+    },
+    {
+      "profile_id": "temporal_refinement",
+      "profile_schema_version": 2,
+      "profile_identity": "temporal_refinement@2:327c7aaa021dbb05d541a98791f9897ef66f557d0490155273bd3fa01f2a00ed",
+      "search_plan_identity": "evaluation-search-plan@1:da8141c594867c593a9dbb32c58e2f604e05e62a65348fc2d50aa70fc6e2bd42",
+      "phase0_requirement": "must_execute_or_report_not_configured"
+    },
+    {
+      "profile_id": "lighthouse",
+      "profile_schema_version": 2,
+      "profile_identity": "lighthouse@2:cd682ea319b7c588e34374664f9a202c7f2dd370e009a8163d1a34615244055c",
+      "search_plan_identity": "evaluation-search-plan@1:8c17f88070d32850b7de41c227a2108786071d8ee3bdc65bce24235bc745c085",
+      "phase0_requirement": "must_execute_or_report_not_configured"
+    },
+    {
+      "profile_id": "qwen_verification",
+      "profile_schema_version": 2,
+      "profile_identity": "qwen_verification@2:71f6397db54369742b54792eb8014107742f219a6ea1408d9c9915c45e0acd99",
+      "search_plan_identity": "evaluation-search-plan@1:2470081fa218169d9f8d8bd6553aa7fb28471644a693ad1b310d95d66e2fbdfc",
+      "phase0_requirement": "must_execute_or_report_not_configured"
+    },
+    {
+      "profile_id": "internvideo",
+      "profile_schema_version": 2,
+      "profile_identity": "internvideo@2:217007cb7f0fc0cd2663fd99dd9ed8569f10e4fb8f5ce330ca78d12a6192c9ff",
+      "search_plan_identity": "evaluation-search-plan@1:7173660cd6d0984cf82b0cce61531d69f83d9d739f1eb3fe3ca6aa601abda994",
+      "phase0_requirement": "optional_execute_or_report_not_configured"
+    }
+  ],
+  "primary_metrics": [
+    {
+      "metric_name": "candidate_recall_at_50",
+      "level": "proposal",
+      "direction": "higher_is_better",
+      "unit": "fraction"
+    },
+    {
+      "metric_name": "precision_at_5",
+      "level": "product",
+      "direction": "higher_is_better",
+      "unit": "fraction"
+    },
+    {
+      "metric_name": "recall_at_10",
+      "level": "product",
+      "direction": "higher_is_better",
+      "unit": "fraction"
+    },
+    {
+      "metric_name": "recall_at_20",
+      "level": "product",
+      "direction": "higher_is_better",
+      "unit": "fraction"
+    },
+    {
+      "metric_name": "ndcg_at_10",
+      "level": "product",
+      "direction": "higher_is_better",
+      "unit": "fraction"
+    },
+    {
+      "metric_name": "mean_boundary_error_seconds",
+      "level": "product",
+      "direction": "lower_is_better",
+      "unit": "seconds"
+    },
+    {
+      "metric_name": "hard_negative_hit_rate",
+      "level": "product",
+      "direction": "lower_is_better",
+      "unit": "fraction"
+    },
+    {
+      "metric_name": "model_miss_count",
+      "level": "component",
+      "direction": "lower_is_better",
+      "unit": "count"
+    },
+    {
+      "metric_name": "infrastructure_error_count",
+      "level": "reliability",
+      "direction": "lower_is_better",
+      "unit": "count"
+    },
+    {
+      "metric_name": "error_count",
+      "level": "reliability",
+      "direction": "lower_is_better",
+      "unit": "count"
+    },
+    {
+      "metric_name": "p95_latency_ms",
+      "level": "system",
+      "direction": "lower_is_better",
+      "unit": "milliseconds"
+    },
+    {
+      "metric_name": "sampled_peak_process_tree_rss_bytes",
+      "level": "system",
+      "direction": "lower_is_better",
+      "unit": "bytes"
+    }
+  ],
+  "critical_slices": [
+    {
+      "slice_id": "made_3",
+      "dimension": "event_class",
+      "value": "made_3"
+    },
+    {
+      "slice_id": "made_2",
+      "dimension": "event_class",
+      "value": "made_2"
+    },
+    {
+      "slice_id": "free_throw",
+      "dimension": "event_class",
+      "value": "free_throw"
+    },
+    {
+      "slice_id": "miss",
+      "dimension": "event_class",
+      "value": "miss"
+    },
+    {
+      "slice_id": "replay",
+      "dimension": "event_class",
+      "value": "replay"
+    },
+    {
+      "slice_id": "advertisement_non_game",
+      "dimension": "event_class",
+      "value": "advertisement_non_game"
+    },
+    {
+      "slice_id": "scoreboard_hidden",
+      "dimension": "capture_condition",
+      "value": "scoreboard_hidden"
+    },
+    {
+      "slice_id": "low_resolution",
+      "dimension": "capture_condition",
+      "value": "low_resolution"
+    },
+    {
+      "slice_id": "different_camera_or_league",
+      "dimension": "distribution_shift",
+      "value": "different_camera_or_league"
+    },
+    {
+      "slice_id": "ood_non_basketball",
+      "dimension": "domain",
+      "value": "ood_non_basketball"
+    },
+    {
+      "slice_id": "universal_non_sports",
+      "dimension": "domain",
+      "value": "universal_non_sports"
+    }
+  ],
+  "hard_guardrails": {
+    "metrics": [
+      {
+        "guardrail_id": "candidate_recall_floor",
+        "metric_name": "candidate_recall_at_50",
+        "scope": "overall",
+        "direction": "higher_is_better",
+        "absolute_threshold": 0.95,
+        "maximum_absolute_regression": null,
+        "maximum_relative_regression": null
+      },
+      {
+        "guardrail_id": "precision_at_5_floor",
+        "metric_name": "precision_at_5",
+        "scope": "overall",
+        "direction": "higher_is_better",
+        "absolute_threshold": 0.6,
+        "maximum_absolute_regression": null,
+        "maximum_relative_regression": null
+      },
+      {
+        "guardrail_id": "recall_at_20_floor",
+        "metric_name": "recall_at_20",
+        "scope": "overall",
+        "direction": "higher_is_better",
+        "absolute_threshold": 0.8,
+        "maximum_absolute_regression": null,
+        "maximum_relative_regression": null
+      },
+      {
+        "guardrail_id": "mean_boundary_error_ceiling",
+        "metric_name": "mean_boundary_error_seconds",
+        "scope": "overall",
+        "direction": "lower_is_better",
+        "absolute_threshold": 1.0,
+        "maximum_absolute_regression": null,
+        "maximum_relative_regression": null
+      },
+      {
+        "guardrail_id": "hard_negative_false_positive_ceiling",
+        "metric_name": "hard_negative_hit_rate",
+        "scope": "overall",
+        "direction": "lower_is_better",
+        "absolute_threshold": 0.0,
+        "maximum_absolute_regression": null,
+        "maximum_relative_regression": null
+      },
+      {
+        "guardrail_id": "infrastructure_error_ceiling",
+        "metric_name": "error_count",
+        "scope": "overall",
+        "direction": "lower_is_better",
+        "absolute_threshold": 0.0,
+        "maximum_absolute_regression": null,
+        "maximum_relative_regression": null
+      },
+      {
+        "guardrail_id": "verifier_infrastructure_error_ceiling",
+        "metric_name": "infrastructure_error_count",
+        "scope": "overall",
+        "direction": "lower_is_better",
+        "absolute_threshold": 0.0,
+        "maximum_absolute_regression": null,
+        "maximum_relative_regression": null
+      },
+      {
+        "guardrail_id": "peak_process_tree_rss_ceiling",
+        "metric_name": "sampled_peak_process_tree_rss_bytes",
+        "scope": "overall",
+        "direction": "lower_is_better",
+        "absolute_threshold": 17179869184,
+        "maximum_absolute_regression": null,
+        "maximum_relative_regression": null
+      },
+      {
+        "guardrail_id": "interactive_latency_regression",
+        "metric_name": "p95_latency_ms",
+        "scope": "overall",
+        "direction": "lower_is_better",
+        "absolute_threshold": null,
+        "maximum_absolute_regression": 2000.0,
+        "maximum_relative_regression": 0.25
+      },
+      {
+        "guardrail_id": "critical_ndcg_regression",
+        "metric_name": "ndcg_at_10",
+        "scope": "critical_slices",
+        "direction": "higher_is_better",
+        "absolute_threshold": null,
+        "maximum_absolute_regression": 0.05,
+        "maximum_relative_regression": null
+      },
+      {
+        "guardrail_id": "critical_recall_regression",
+        "metric_name": "recall_at_10",
+        "scope": "critical_slices",
+        "direction": "higher_is_better",
+        "absolute_threshold": null,
+        "maximum_absolute_regression": 0.05,
+        "maximum_relative_regression": null
+      },
+      {
+        "guardrail_id": "universal_ndcg_regression",
+        "metric_name": "ndcg_at_10",
+        "scope": "universal_non_sports",
+        "direction": "higher_is_better",
+        "absolute_threshold": null,
+        "maximum_absolute_regression": 0.02,
+        "maximum_relative_regression": null
+      },
+      {
+        "guardrail_id": "universal_recall_regression",
+        "metric_name": "recall_at_10",
+        "scope": "universal_non_sports",
+        "direction": "higher_is_better",
+        "absolute_threshold": null,
+        "maximum_absolute_regression": 0.02,
+        "maximum_relative_regression": null
+      }
+    ],
+    "conditions": [
+      "known_made_threes_in_top_10",
+      "free_throw_never_confirmed_as_three",
+      "advertisement_never_confirmed_as_three",
+      "jersey_requires_multiframe_corroboration",
+      "zero_infrastructure_errors",
+      "no_metal_oom",
+      "no_sustained_swap",
+      "evidence_or_abstain_preserved",
+      "train_serve_preprocessing_parity",
+      "regression_seen_never_promotion_evidence"
+    ]
+  },
+  "minimum_useful_effect": {
+    "comparison_baseline": "frozen_feature_control",
+    "combination": "any",
+    "effects": [
+      {
+        "metric_name": "ndcg_at_10",
+        "direction": "higher_is_better",
+        "minimum_absolute_improvement": 0.03
+      },
+      {
+        "metric_name": "recall_at_10",
+        "direction": "higher_is_better",
+        "minimum_absolute_improvement": 0.03
+      }
+    ]
+  },
+  "uncertainty": {
+    "method": "source_group_bootstrap",
+    "confidence_level": 0.95,
+    "resampling_unit": "whole_source_group",
+    "minimum_completed_gold_cases_per_critical_slice": 20,
+    "minimum_source_groups_per_critical_slice": 2,
+    "interval_rule": "two_sided_interval_excludes_zero",
+    "decision_when_unavailable": "insufficient_evidence"
+  }
+}

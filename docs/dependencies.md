@@ -3,22 +3,46 @@
 VideoScope разделяет базовое приложение и ресурсоёмкие ML-провайдеры. Backend
 использует `.venv`, SigLIP/RF-DETR — `.venv-vision`, Whisper —
 `.venv-whisper`, OCR — `.venv-ocr`, Qwen — `.venv-qwen`, а Lighthouse —
-`.venv-lighthouse`. Основному приложению нужен Python 3.12, а Vision, Whisper и
-OCR workers воспроизводимо поддерживаются на Apple Silicon с macOS 14+ и ровно
-Python 3.12.13. Lighthouse отдельно закреплён на Python 3.11.14. Также нужны
-Node.js 22, pnpm 11, FFmpeg и FFprobe. Intel Mac и Linux не входят в заявленный
-контракт локальных Apple-ML workers.
+`.venv-lighthouse`. Base, Vision, Whisper, OCR и Qwen воспроизводимо
+поддерживаются на Apple Silicon с macOS 14+ и ровно CPython 3.12.13. Lighthouse
+отдельно закреплён на CPython 3.11.14. Для bootstrap нужен `uv==0.12.3`; полный
+`make install` также требует Node.js 22 и pnpm 11, а backend-only Phase 0 — нет.
+FFmpeg и FFprobe нужны обоим вариантам. Intel Mac и Linux не входят в
+заявленный контракт локальных Apple-ML workers.
 
 ## Профили Python
 
 | Профиль | Команда | Назначение |
 | --- | --- | --- |
 | base + dev | `make install` | FastAPI, SQLite/Qdrant, PySceneDetect, тесты (включая Torch-boundary regressions) и frontend-зависимости |
+| Phase 0 backend | `make install-backend` | Тот же закреплённый base + dev Python runtime без установки frontend; используется только для воспроизводимой offline-аттестации |
 | Vision worker | `make install-vision` | Изолированный SigLIP 2 + RF-DETR runtime из хэшированного lock |
 | Whisper worker | `make install-whisper` | Изолированный MLX Whisper runtime из хэшированного lock |
-| OCR worker | `make install-ocr` | PaddleOCR в изолированном `.venv-ocr`, аттестованный локальный JSONL stdio; точные model bytes предоставляются заранее |
+| OCR worker | `make models-ocr && make install-ocr` | PaddleOCR в изолированном `.venv-ocr`, revision-pinned model acquisition и аттестованный локальный JSONL stdio |
 | Qwen worker | `make install-video` | Изолированные `.venv-qwen`, MLX-VLM и loopback HTTP worker |
 | Lighthouse worker | `make install-lighthouse` | Отдельный Python 3.11 lock с закреплёнными Lighthouse/OpenAI CLIP; модели ставятся только `make models-lighthouse` |
+
+Для clean-checkout Phase 0 окружения создаются без переиспользования старых
+worker-каталогов и в фиксированном порядке:
+
+```sh
+UV_OFFLINE=1 make install-backend
+make install-vision
+make install-whisper
+make install-video
+make install-lighthouse
+.venv/bin/python -I scripts/download-ocr-models.py \
+  --destination /absolute/path/to/new-reviewed-ocr-model-root
+VIDEOSCOPE_OCR_MODEL_ROOT=/absolute/path/to/new-reviewed-ocr-model-root \
+  make install-ocr
+```
+
+До offline-проверки модели получают отдельным явно сетевым шагом: `models-base`,
+`models-vision`, `models-whisper`, `models-video` запускаются с одним выбранным
+абсолютным `HF_HOME`, а затем выполняется `models-lighthouse`. Полная команда с
+явными cache/root bindings и порядок `make ml-attest-offline` →
+`make full-ml-smoke` приведены в
+[`ml-environment-attestation.md`](ml-environment-attestation.md).
 
 `pydantic` объявлен напрямую в базовом профиле и в отдельном `deploy/internvideo/requirements.txt`, потому что оба сервиса импортируют его публичный API. `huggingface-hub` также является прямой базовой зависимостью: провайдеры проверяют закреплённые локальные snapshots, а `scripts/download-models.py` загружает их через Hub.
 
@@ -26,23 +50,33 @@ FastEmbed закреплён на `0.8.0`: для MPNet это фиксируе�
 Версия runtime и pooling входят в identity Qdrant collection, поэтому их осознанное
 обновление автоматически требует полной перестройки текстового индекса.
 
-OCR worker не загружает модели самостоятельно. Репозиторий проверяет размеры и
-SHA-256 файлов из `workers/ocr/model-artifacts.lock.json`, но пока не содержит
-reviewed source/revision/downloader, способного получить именно эти bytes с
-чистого checkout. Перед `make install-ocr` оператор должен независимо
-предоставить проверенный набор; точная граница и оставшийся packaging blocker
-описаны в `workers/ocr/README.md`.
+OCR worker не загружает модели самостоятельно. Отдельная явная команда
+`make models-ocr` связывает `workers/ocr/model-sources.lock.json` с точными
+размерами и SHA-256 из `model-artifacts.lock.json`, загружает только разрешённые
+файлы в приватный staging и публикует их после полной проверки. Существующий
+неверный каталог не заменяется. `make install-ocr` затем выполняет только
+hash-locked установку и offline startup attestation.
 
 `make models-base`, `make models-vision`, `make models-whisper` и
 `make models-video` запускаются только после установки соответствующего
 окружения. Compatibility-команда `make install-ml` устанавливает два отдельных
 Vision/Whisper worker, но ничего не добавляет в `.venv`. Общая команда
-`make models` последовательно загружает эти четыре профиля. Hugging Face
+`make models` последовательно загружает base, Vision, Whisper, OCR и Qwen. Hugging Face
 snapshots закреплены проверенными commit SHA в
 `scripts/download-models.py`, чтобы повторный bootstrap не переключал модель на
 новую ревизию незаметно. Runtime открывает те же commit snapshots в offline-режиме,
 а идентификаторы производных Qwen/SigLIP/Qdrant-артефактов включают revision,
 поэтому смена manifest не переиспользует старые оценки или векторы.
+
+`make full-ml-smoke` ничего не устанавливает и не скачивает. Он требует
+существующий mode-0700 disposable root, отдельный абсолютный model root вне
+checkout, явные `HF_HOME`/OCR model root, exact `ffmpeg`/`ffprobe` и пять Python
+worker paths, совпадающих с venv из environment manifest. Worker-процессы
+получают только каталог этой media-пары в `PATH`, а `HOME`/`TMPDIR` находятся в
+disposable root. Прямые FastEmbed/RF-DETR/Lighthouse файлы читаются из внешнего
+model root в раскладке `data/models`; Hugging Face snapshots и OCR остаются в
+своих явно выбранных cache/root. InternVideo не входит в локальные зависимости
+этого smoke и в receipt остаётся `not_configured/provider_not_configured`.
 
 ### Почему ML-провайдеры вынесены в отдельные процессы
 
@@ -114,8 +148,8 @@ Worker слушает только `127.0.0.1`, требует bearer token, и�
 Frontend закреплён файлом `frontend/pnpm-lock.yaml`, Python —
 `backend/uv.lock` для Python 3.12 и отдельными hashed locks для Vision, Whisper
 и Lighthouse workers.
-Bootstrap устанавливает `uv==0.12.3` и всегда
-использует точный `uv sync --locked`; CI использует тот же lock и отклоняет
+Bootstrap требует внешний `uv==0.12.3`, создаёт uv-managed CPython 3.12.13 и
+всегда использует точный `uv sync --locked`; CI использует тот же lock и отклоняет
 рассинхронизацию с `pyproject.toml`. Поэтому повторный
 `make install-video` синхронизирует `.venv-qwen` из этого же lock-файла без
 `--inexact`; Qwen package graph поэтому не зависит от текущего состояния `.venv`.
