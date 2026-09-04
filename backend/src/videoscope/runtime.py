@@ -1378,6 +1378,7 @@ def build_runtime(
             visual_min_score=settings.visual_min_score,
             specification_resolver=lambda: create_indexing_specifications(settings),
             thumbnails_dir=settings.thumbnails_dir,
+            media_root=settings.media_dir,
         ),
         clips=ClipService(repository, ffmpeg, settings.clips_dir, settings.temp_dir),
         providers=providers,

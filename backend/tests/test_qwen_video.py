@@ -275,6 +275,13 @@ def test_parser_accepts_independent_fact_only_json() -> None:
     assert result.shooter_jersey == "15"
 
 
+def test_parser_rejects_truncated_fenced_json() -> None:
+    with pytest.raises(ValueError, match="JSON object"):
+        parse_qwen_judgement(
+            '```json\n{"evidence": "The image is a solid'
+        )
+
+
 @pytest.mark.parametrize("literal", ["NaN", "Infinity", "-Infinity"])
 def test_parser_rejects_non_finite_numeric_values(literal: str) -> None:
     result = parse_qwen_judgement(

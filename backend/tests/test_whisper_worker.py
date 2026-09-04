@@ -1617,6 +1617,100 @@ def test_mlx_runtime_normalizes_and_bounds_untrusted_model_output(
     assert captured["word_timestamps"] is True
 
 
+def test_mlx_runtime_omits_zero_duration_timestamp_quantization() -> None:
+    result = whisper_worker_module._normalize_mlx_transcript(
+        {
+            "language": "ru",
+            "segments": [
+                {
+                    "start": 0.60,
+                    "end": 1.96,
+                    "text": "названия команд названия.",
+                    "avg_logprob": -0.2,
+                    "words": [
+                        {
+                            "word": " названия",
+                            "start": 0.60,
+                            "end": 1.28,
+                            "probability": 0.8,
+                        },
+                        {
+                            "word": " команд",
+                            "start": 1.28,
+                            "end": 1.28,
+                            "probability": 0.7,
+                        },
+                        {
+                            "word": " названия.",
+                            "start": 1.96,
+                            "end": 1.96,
+                            "probability": 0.6,
+                        },
+                    ],
+                }
+            ],
+        },
+        requested_language="ru",
+        duration_seconds=3.0,
+    )
+
+    assert result.segments[0].start == 0.60
+    assert result.segments[0].end == 1.96
+    assert result.segments[0].metadata["words"] == [
+        {
+            "word": "названия",
+            "start": 0.60,
+            "end": 1.28,
+            "probability": 0.8,
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    "zero_word",
+    [
+        {"word": 7, "start": 1.28, "end": 1.28, "probability": 0.7},
+        {
+            "word": "команд",
+            "start": float("nan"),
+            "end": 1.28,
+            "probability": 0.7,
+        },
+        {"word": "команд", "start": 2.0, "end": 2.0, "probability": 0.7},
+        {"word": "команд", "start": 1.0, "end": 1.0, "probability": 0.7},
+        {"word": "команд", "start": 1.4, "end": 1.3, "probability": 0.7},
+    ],
+)
+def test_mlx_runtime_zero_duration_exception_remains_fail_closed(
+    zero_word: dict[str, object],
+) -> None:
+    with pytest.raises(ValueError, match="mlx-whisper word"):
+        whisper_worker_module._normalize_mlx_transcript(
+            {
+                "language": "ru",
+                "segments": [
+                    {
+                        "start": 0.60,
+                        "end": 1.96,
+                        "text": "названия команд",
+                        "avg_logprob": -0.2,
+                        "words": [
+                            {
+                                "word": "названия",
+                                "start": 0.60,
+                                "end": 1.28,
+                                "probability": 0.8,
+                            },
+                            zero_word,
+                        ],
+                    }
+                ],
+            },
+            requested_language="ru",
+            duration_seconds=3.0,
+        )
+
+
 def test_mlx_runtime_rejects_unreviewed_or_mutated_model_artifacts(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

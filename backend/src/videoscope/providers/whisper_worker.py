@@ -2504,13 +2504,21 @@ def _normalize_mlx_transcript(
                     and word_start < previous_word_end
                 )
                 or word_start < start
-                or word_end <= word_start
+                or word_end < word_start
                 or word_end > end
                 or not 0 <= probability <= 1
             ):
                 raise ValueError("mlx-whisper word timeline is invalid")
             if len(word_text) > MAX_WORD_TEXT_CHARS:
                 raise ValueError("mlx-whisper word text is too long")
+            previous_word_end = word_end
+            total_words += 1
+            total_text += len(word_text)
+            if word_end == word_start:
+                # MLX timestamp-token quantization can collapse a valid word to a
+                # point. Preserve the strict segment and ordering contracts, but
+                # omit unusable word-level metadata instead of inventing bounds.
+                continue
             words.append(
                 {
                     "word": word_text,
@@ -2519,9 +2527,6 @@ def _normalize_mlx_transcript(
                     "probability": probability,
                 }
             )
-            previous_word_end = word_end
-            total_words += 1
-            total_text += len(word_text)
         total_text += len(text)
         if total_text > MAX_OUTPUT_TEXT_CHARS:
             raise ValueError("mlx-whisper returned too much text")

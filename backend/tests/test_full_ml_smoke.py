@@ -242,7 +242,7 @@ class _Qwen:
         max_tokens: int,
     ) -> QwenVideoJudgement:
         self.events.append("qwen.judge")
-        assert source.is_file() and fps == 1.0 and max_tokens == 64
+        assert source.is_file() and fps == 1.0 and max_tokens == 320
         return QwenVideoJudgement(
             matches_query=None,
             confidence=0.0,

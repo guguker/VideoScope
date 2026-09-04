@@ -1040,7 +1040,7 @@ def test_worker_dependency_and_runtime_validation_fail_closed(monkeypatch) -> No
     monkeypatch.setattr(
         worker.importlib_metadata,
         "distributions",
-        lambda: [Distribution("good", "1.0"), Distribution("pip", "25.0.1")],
+        lambda: [Distribution("good", "1.0")],
     )
     worker._verify_installed_dependencies({"good": "1.0"})
     with pytest.raises(worker.ProtocolError, match="version mismatch"):
@@ -1051,7 +1051,6 @@ def test_worker_dependency_and_runtime_validation_fail_closed(monkeypatch) -> No
         "distributions",
         lambda: [
             Distribution("good", "1.0"),
-            Distribution("pip", "25.0.1"),
             Distribution("unreviewed", "9.9"),
         ],
     )
@@ -1079,6 +1078,46 @@ def test_worker_dependency_and_runtime_validation_fail_closed(monkeypatch) -> No
         "platform==aarch64-apple-darwin-macos14plus|lock-sha256:"
         + "a" * 64
     )
+
+
+def test_fresh_worker_accepts_exact_lock_set_without_bootstrap_pip(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    worker = _load_worker_script_module()
+    packages = worker._parse_dependency_lock(DEPENDENCY_LOCK.read_bytes())
+    assert "pip" not in packages
+
+    class Distribution:
+        def __init__(self, name: str, version: str) -> None:
+            self.metadata = {"Name": name}
+            self.version = version
+
+    installed = [
+        Distribution(name, version) for name, version in packages.items()
+    ]
+    monkeypatch.setattr(
+        worker.importlib_metadata,
+        "version",
+        lambda name: packages[name],
+    )
+    monkeypatch.setattr(
+        worker.importlib_metadata,
+        "distributions",
+        lambda: list(installed),
+    )
+    worker._verify_installed_dependencies(packages)
+
+    for extra in (
+        Distribution("pip", "25.0.1"),
+        Distribution("unreviewed", "9.9"),
+    ):
+        monkeypatch.setattr(
+            worker.importlib_metadata,
+            "distributions",
+            lambda extra=extra: [*installed, extra],
+        )
+        with pytest.raises(worker.ProtocolError, match="dependency set"):
+            worker._verify_installed_dependencies(packages)
 
 
 @pytest.mark.parametrize(

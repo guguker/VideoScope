@@ -31,6 +31,9 @@ but does not overwrite an existing invalid directory or other user state.
 Given those pre-provisioned model bytes, `make install-ocr` creates a fresh
 hash-locked dependency environment and runs the attestation-only startup path.
 It rejects an unsupported host before creating the environment or invoking pip.
+The fresh `uv pip sync` environment must contain exactly the distributions in
+`requirements.lock`; an injected bootstrap `pip` distribution is rejected like
+any other unreviewed package.
 The worker will not become ready when the Python patch version, platform,
 dependency lock, installed versions, worker script, or model artifacts differ
 from the reviewed identities.
