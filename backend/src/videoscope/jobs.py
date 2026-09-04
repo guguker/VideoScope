@@ -71,6 +71,14 @@ _PLAN_STAGE_FIELDS = (
 _MAX_PLAN_CANONICAL_JSON_BYTES = 1024 * 1024
 
 
+def is_safe_execution_token(value: object) -> bool:
+    """Return whether a token satisfies the shared durable-job fence contract."""
+    return (
+        type(value) is str
+        and _EXECUTION_TOKEN_PATTERN.fullmatch(value) is not None
+    )
+
+
 def _reject_non_finite_json(value: str) -> None:
     raise ValueError(f"non-finite JSON value: {value}")
 
@@ -445,8 +453,7 @@ class VideoIndexJob:
 
         execution_token = self.execution_token
         if execution_token is not None and (
-            type(execution_token) is not str
-            or not _EXECUTION_TOKEN_PATTERN.fullmatch(execution_token)
+            not is_safe_execution_token(execution_token)
         ):
             raise ValueError("job execution token must be a safe opaque value")
         error_code = _validate_error_code(self.error_code)
@@ -603,10 +610,7 @@ def _require_running_and_fence(job: VideoIndexJob, execution_token: str) -> None
         raise JobTransitionError("terminal job is immutable")
     if job.state is not JobState.RUNNING:
         raise JobTransitionError("job must be running")
-    if (
-        type(execution_token) is not str
-        or not _EXECUTION_TOKEN_PATTERN.fullmatch(execution_token)
-    ):
+    if not is_safe_execution_token(execution_token):
         raise JobFenceError("job execution token is invalid")
     if execution_token != job.execution_token:
         raise JobFenceError("job execution token does not own this attempt")

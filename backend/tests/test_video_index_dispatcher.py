@@ -455,6 +455,59 @@ def test_dispatcher_requires_its_exact_repository_and_executor_contract(tmp_path
         )
 
 
+def test_default_execution_token_uses_exact_256_bit_hex(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    generated_sizes: list[int] = []
+    monkeypatch.setattr(
+        dispatcher_module.secrets,
+        "token_urlsafe",
+        lambda _size: "_" + "a" * 42,
+    )
+    monkeypatch.setattr(
+        dispatcher_module.secrets,
+        "token_hex",
+        lambda size: generated_sizes.append(size) or "ab" * size,
+    )
+    dispatcher = DurableVideoIndexDispatcher(
+        _repository(tmp_path),
+        SimpleExecutor(),
+        executor_identity_resolver=lambda: "sha256:" + "a" * 64,
+        start_immediately=False,
+    )
+
+    assert dispatcher._new_execution_token() == "ab" * 32
+    assert generated_sizes == [32]
+
+
+@pytest.mark.parametrize(
+    "token",
+    [
+        "_" + "a" * 63,
+        "-" + "a" * 63,
+        "short",
+        "a" * 15 + "!",
+        "a" * 257,
+        7,
+    ],
+)
+def test_dispatcher_rejects_invalid_factory_token_before_claim(
+    tmp_path,
+    token: object,
+) -> None:
+    dispatcher = DurableVideoIndexDispatcher(
+        _repository(tmp_path),
+        SimpleExecutor(),
+        executor_identity_resolver=lambda: "sha256:" + "a" * 64,
+        token_factory=lambda: token,  # type: ignore[return-value]
+        start_immediately=False,
+    )
+
+    with pytest.raises(ValueError, match="token factory"):
+        dispatcher._new_execution_token()
+
+
 class SimpleExecutor:
     def process_durable(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
         return ()

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from hashlib import sha256
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -16,6 +17,10 @@ from videoscope.providers.vision_worker_client import (
 )
 from videoscope.providers.whisper_worker import WhisperWorkerClient
 import videoscope.runtime as runtime_module
+from videoscope.search.service import (
+    EvaluationSearchConfiguration,
+    SearchAssetBinding,
+)
 from videoscope.search.vector_index import EmptyVectorIndex
 
 
@@ -400,12 +405,57 @@ def test_build_runtime_starts_lexical_only_without_reviewed_fastembed_cache(
         assert runtime.text_embedding_runtime is None
         assert isinstance(runtime.queue.indexer.vector_index, EmptyVectorIndex)
         assert runtime.search.vector_index is runtime.queue.indexer.vector_index
+        assert runtime.search.media_root == settings.media_dir
+        assert runtime.search.media_access_root is None
         qdrant = runtime.generation_store
         assert qdrant.status().state is ProviderState.UNAVAILABLE
         assert qdrant.embedding.strict_no_fallback is True
         assert qdrant.embedding.backend == "unavailable"
         with pytest.raises(RuntimeError, match="reviewed semantic embedding"):
             qdrant.embedding.embed(["must never use a fallback"])
+
+        content = b"runtime-pinned-media"
+        source = settings.media_dir / "runtime-video.mp4"
+        source.write_bytes(content)
+        source_sha256 = sha256(content).hexdigest()
+        repository.create_video_with_asset(
+            video_id="runtime-video",
+            original_name="runtime-video.mp4",
+            stored_name=source.name,
+            media_path=str(source),
+            size_bytes=len(content),
+            source_sha256=source_sha256,
+        )
+        repository.update_video(
+            "runtime-video",
+            status="ready",
+            duration=1.0,
+        )
+        session = runtime.search.open_pinned_evaluation(
+            EvaluationSearchConfiguration(
+                modalities=("visual",),
+                modality_weights=(("visual", 1.0),),
+                text_search="disabled",
+                visual_search="dense_siglip",
+                temporal_refinement=False,
+                lighthouse=False,
+                reranker="none",
+                reranker_trigger="disabled",
+                reranker_candidate_limit=0,
+                result_limit=20,
+            ),
+            (
+                SearchAssetBinding(
+                    external_id="runtime-video",
+                    video_id="runtime-video",
+                    source_sha256=source_sha256,
+                    byte_size=len(content),
+                    duration_seconds=1.0,
+                ),
+            ),
+        )
+        session.close()
+        assert source.read_bytes() == content
     finally:
         assert runtime.close() is True
     assert list(settings.temp_dir.glob(".videoscope-fastembed-*")) == []

@@ -566,7 +566,14 @@ def test_start_job_claims_queued_work_using_authoritative_inputs() -> None:
 
 @pytest.mark.parametrize(
     "token",
-    ["", "short", "worker token with spaces", "x" * 257],
+    [
+        "",
+        "short",
+        "_" + "x" * 31,
+        "-" + "x" * 31,
+        "worker token with spaces",
+        "x" * 257,
+    ],
 )
 def test_start_job_rejects_unsafe_execution_tokens(token: str) -> None:
     with pytest.raises(ValueError, match="execution token"):

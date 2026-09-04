@@ -7,7 +7,13 @@ import secrets
 from threading import Event, Lock, Thread, current_thread
 from typing import Callable, Protocol
 
-from videoscope.jobs import JobFenceError, JobState, VideoIndexJob, VideoIndexPlanSnapshot
+from videoscope.jobs import (
+    JobFenceError,
+    JobState,
+    VideoIndexJob,
+    VideoIndexPlanSnapshot,
+    is_safe_execution_token,
+)
 from videoscope.processing.indexer import (
     JobCancelled,
     VideoIndexExecutionContext,
@@ -80,7 +86,7 @@ class DurableVideoIndexDispatcher:
             or not 1 <= recovery_batch_size <= 1000
         ):
             raise ValueError("dispatcher recovery batch size must be between 1 and 1000")
-        resolved_token_factory = token_factory or (lambda: secrets.token_urlsafe(32))
+        resolved_token_factory = token_factory or (lambda: secrets.token_hex(32))
         if not callable(resolved_token_factory):
             raise TypeError("dispatcher token factory must be callable")
 
@@ -160,7 +166,7 @@ class DurableVideoIndexDispatcher:
 
     def _new_execution_token(self) -> str:
         token = self.token_factory()
-        if type(token) is not str:
+        if not is_safe_execution_token(token):
             raise ValueError("dispatcher token factory returned invalid data")
         return token
 

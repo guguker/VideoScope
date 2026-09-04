@@ -57,7 +57,6 @@ _ALLOWED_ERROR_CODES = {
     "protocol_limit",
     "startup_failed",
 }
-_REVIEWED_BOOTSTRAP_DISTRIBUTIONS = {"pip": "25.0.1"}
 
 
 class ProtocolError(ValueError):
@@ -272,7 +271,6 @@ def _verify_installed_dependencies(packages: dict[str, str]) -> None:
             raise ProtocolError("dependency is missing") from error
         if installed_version != expected_version:
             raise ProtocolError("dependency version mismatch")
-    expected = {**packages, **_REVIEWED_BOOTSTRAP_DISTRIBUTIONS}
     observed: dict[str, str] = {}
     try:
         distributions = importlib_metadata.distributions()
@@ -289,7 +287,7 @@ def _verify_installed_dependencies(packages: dict[str, str]) -> None:
         raise
     except Exception as error:
         raise ProtocolError("installed dependency set is unavailable") from error
-    if observed != expected:
+    if observed != packages:
         raise ProtocolError("unreviewed installed dependency set")
 
 

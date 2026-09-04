@@ -95,6 +95,7 @@ EXIT_INTERNAL = 70
 EXIT_INTERRUPTED = 130
 
 _QUERY = "synthetic local video"
+_QWEN_SMOKE_MAX_TOKENS = 320
 _OFFLINE_ENVIRONMENT = {
     "HF_HUB_OFFLINE": "1",
     "PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK": "True",
@@ -2600,7 +2601,7 @@ def _run_components(
         lambda: clients.qwen.judge_video(  # type: ignore[attr-defined]
             fixture.qwen_video,
             fps=1.0,
-            max_tokens=64,
+            max_tokens=_QWEN_SMOKE_MAX_TOKENS,
         ),
     )
     if not isinstance(judgement, QwenVideoJudgement):
