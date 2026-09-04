@@ -69,6 +69,75 @@ must have a strictly increasing timeline, monotonic recovery/swap counters,
 consistent bounded derived values, zero recovery/swap delta, no observed OOM
 and process-tree RSS within the frozen policy ceiling.
 
+The persisted full-smoke receipt is schema version `2`; schema version `1` is
+deliberately rejected by the Phase-0 collector because it did not prove which
+search components actually ran. Every executed profile receipt now contains one
+exact, path-free `component_execution` object with this shape:
+
+```json
+{
+  "schema_version": 1,
+  "profile_identity": "<exact frozen profile identity>",
+  "search_configuration_identity": "evaluation-search-configuration@1:<sha256>",
+  "invoked_component_ids": [
+    "text_vectors",
+    "lexical_text",
+    "visual_dense",
+    "temporal_refinement",
+    "lighthouse",
+    "qwen_verification"
+  ],
+  "component_input_counts": {
+    "text_vectors": 1,
+    "lexical_text": 1,
+    "visual_dense": 1,
+    "temporal_refinement": 1,
+    "lighthouse": 1,
+    "qwen_verification": 1
+  },
+  "component_output_counts": {
+    "text_vectors": 1,
+    "lexical_text": 1,
+    "visual_dense": 1,
+    "temporal_refinement": 1,
+    "lighthouse": 1,
+    "qwen_verification": 1
+  },
+  "component_evidence_counts": {
+    "text_vectors": 1,
+    "lexical_text": 1,
+    "visual_dense": 1,
+    "temporal_refinement": 1,
+    "lighthouse": 1,
+    "qwen_verification": 1
+  }
+}
+```
+
+This example shows the fully selected `qwen_verification` profile; actual counts
+may be any bounded values that satisfy the rules below.
+
+The six canonical component IDs, in order, are `text_vectors`, `lexical_text`,
+`visual_dense`, `temporal_refinement`, `lighthouse` and `qwen_verification`.
+Selection is cumulative across the frozen ladder: `lexical_qdrant` selects the
+first two; `dense_siglip` adds `visual_dense`; `temporal_refinement` adds its
+named component; `lighthouse` adds `lighthouse`; and `qwen_verification` adds
+`qwen_verification`. The invoked list must equal that exact ordered selection.
+All three count maps must contain exactly the six keys. Counts are non-negative
+JSON integers (booleans are invalid), every selected component must have
+positive input, output and evidence counts, and every unselected component must
+remain zero. Missing, extra, duplicate, reordered, foreign or path-bearing
+values fail the whole smoke closed.
+
+The collector normalizes these traces rather than retaining caller-controlled
+field ordering. The normalized per-profile objects are preserved under
+`full_ml_smoke.component_execution` in both `baseline-snapshot.json` and
+`sanitized-report.json`, alongside the retained full-smoke `schema_version`, so
+the committed evidence can be audited without raw queries, media, provider
+output or local paths. Because this is a breaking extension of both aggregate
+artifacts, `baseline-snapshot.json` and `sanitized-report.json` use schema
+version `2`; their pre-trace schema version `1` must not be substituted.
+
 ## Capture and assemble
 
 Use a private temporary directory so raw input receipts never enter the

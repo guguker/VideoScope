@@ -241,6 +241,7 @@ class VisionWorkerClient:
         input_root: Path,
         specification: VisionWorkerSpecification,
         timeout: float = 120.0,
+        health_timeout: float = 5.0,
         client: HTTPClient | None = None,
     ) -> None:
         self.endpoint = _validate_endpoint(endpoint)
@@ -251,6 +252,10 @@ class VisionWorkerClient:
             raise ValueError("Vision worker API key must be 32-256 URL-safe characters")
         if not 0 < timeout <= 600:
             raise ValueError("Vision worker timeout must be between 0 and 600 seconds")
+        if not 0 < health_timeout <= 600:
+            raise ValueError(
+                "Vision worker health timeout must be between 0 and 600 seconds"
+            )
         lexical_root = Path(os.path.abspath(input_root))
         if lexical_root.is_symlink():
             raise ValueError("Vision worker input root must not be a symlink")
@@ -259,6 +264,7 @@ class VisionWorkerClient:
         self._input_root_identity: str | None = None
         self.specification = specification
         self.timeout = timeout
+        self.health_timeout = health_timeout
         self.client = client
         self._client_lock = Lock()
         self._status_lock = Lock()
@@ -315,7 +321,7 @@ class VisionWorkerClient:
             response = self._http_client().get(
                 f"{self.endpoint}/v1/health",
                 headers=self._headers(),
-                timeout=min(self.timeout, 5.0),
+                timeout=self.health_timeout,
             )
             response.raise_for_status()
             health = VisionHealthResponse.model_validate(response.json())

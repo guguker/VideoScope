@@ -616,13 +616,49 @@ def create_indexing_specifications(settings: AppSettings) -> IndexingSpecificati
     return create_indexing_run_plan(settings).specifications
 
 
-def create_vision_worker_client(settings: AppSettings) -> VisionWorkerClient | None:
+def create_vision_worker_client(
+    settings: AppSettings,
+    *,
+    input_root: Path | None = None,
+) -> VisionWorkerClient | None:
     if not settings.vision_worker_endpoint:
         return None
+    resolved_input_root = settings.data_dir
+    if input_root is not None:
+        try:
+            raw_input_root = os.fspath(input_root)
+            if (
+                not isinstance(input_root, Path)
+                or not input_root.is_absolute()
+                or not raw_input_root
+                or "\x00" in raw_input_root
+            ):
+                raise OSError
+            lexical_input_root = Path(os.path.abspath(raw_input_root))
+            candidate = lexical_input_root.resolve(strict=True)
+            lexical_product_data = Path(os.path.abspath(settings.data_dir))
+            product_data = lexical_product_data.resolve(strict=True)
+            expected_input_root = product_data.parent
+            filesystem_root = Path(candidate.anchor).resolve(strict=True)
+            user_home = Path.home().resolve(strict=True)
+            if (
+                lexical_input_root != candidate
+                or lexical_product_data != product_data
+                or not candidate.is_dir()
+                or candidate != expected_input_root
+                or candidate in {filesystem_root, user_home}
+            ):
+                raise OSError
+        except (TypeError, ValueError, OSError, RuntimeError) as error:
+            raise ValueError(
+                "Vision worker input root must be an existing no-symlink absolute "
+                "directory equal to the exact parent of product data"
+            ) from error
+        resolved_input_root = candidate
     return VisionWorkerClient(
         endpoint=settings.vision_worker_endpoint,
         api_key=settings.vision_worker_api_key or "",
-        input_root=settings.data_dir,
+        input_root=resolved_input_root,
         specification=create_vision_worker_specification(settings),
         timeout=settings.vision_worker_timeout,
     )
@@ -1184,6 +1220,7 @@ def build_runtime(
     *,
     indexing_toolchain: AttestedIndexingToolchain | None = None,
     ocr_worker_environment: Mapping[str, str] | None = None,
+    vision_worker_input_root: Path | None = None,
 ) -> Runtime:
     resolved_toolchain, toolchain_identity = _verified_indexing_toolchain(
         indexing_toolchain
@@ -1193,7 +1230,14 @@ def build_runtime(
         threshold=settings.scene_threshold,
         max_scene_seconds=settings.max_scene_seconds,
     )
-    vision_client = create_vision_worker_client(settings)
+    vision_client = (
+        create_vision_worker_client(settings)
+        if vision_worker_input_root is None
+        else create_vision_worker_client(
+            settings,
+            input_root=vision_worker_input_root,
+        )
+    )
     whisper = create_whisper_transcriber(settings)
     ocr = PaddleOCRReader(
         worker_python=settings.ocr_worker_python,

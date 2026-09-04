@@ -49,6 +49,16 @@ _BENCHMARK_MAX_METADATA_BYTES = 64 * 1024 * 1024
 _BENCHMARK_MAX_ASSETS = 128
 _BENCHMARK_MAX_ASSET_BYTES = 16 * 1024**3
 _BENCHMARK_MAX_MEDIA_BYTES = 128 * 1024**3
+PRODUCT_SEARCH_EXECUTION_TRACE_SCHEMA_VERSION = 1
+PRODUCT_SEARCH_EXECUTION_COUNT_MAX = (1 << 63) - 1
+_PRODUCT_SEARCH_EXECUTION_COMPONENT_IDS = (
+    "text_vectors",
+    "lexical_text",
+    "visual_dense",
+    "temporal_refinement",
+    "lighthouse",
+    "qwen_verification",
+)
 
 
 def _canonical_digest(value: object) -> str:
@@ -194,6 +204,184 @@ class EvaluationSearchConfiguration:
     @property
     def identity(self) -> str:
         return f"evaluation-search-configuration@{self.schema_version}:{sha256(self.canonical_json.encode('utf-8')).hexdigest()}"
+
+
+@dataclass(frozen=True, slots=True)
+class ProductSearchExecutionTrace:
+    """Immutable account of strict component calls made by one pinned search."""
+
+    schema_version: int
+    configuration_identity: str
+    invoked_component_ids: tuple[str, ...]
+    component_input_counts: tuple[tuple[str, int], ...]
+    component_output_counts: tuple[tuple[str, int], ...]
+    component_evidence_counts: tuple[tuple[str, int], ...]
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.schema_version) is not int
+            or self.schema_version != PRODUCT_SEARCH_EXECUTION_TRACE_SCHEMA_VERSION
+            or type(self.configuration_identity) is not str
+            or re.fullmatch(
+                r"evaluation-search-configuration@1:[0-9a-f]{64}",
+                self.configuration_identity,
+            )
+            is None
+        ):
+            raise ValueError("product search execution trace identity is invalid")
+        if (
+            type(self.invoked_component_ids) is not tuple
+            or any(
+                type(component_id) is not str
+                or component_id not in _PRODUCT_SEARCH_EXECUTION_COMPONENT_IDS
+                for component_id in self.invoked_component_ids
+            )
+            or len(set(self.invoked_component_ids))
+            != len(self.invoked_component_ids)
+            or self.invoked_component_ids
+            != tuple(
+                component_id
+                for component_id in _PRODUCT_SEARCH_EXECUTION_COMPONENT_IDS
+                if component_id in self.invoked_component_ids
+            )
+        ):
+            raise ValueError("product search invoked components are invalid")
+        counts_by_kind = tuple(
+            self._validate_counts(values, kind)
+            for values, kind in (
+                (self.component_input_counts, "input"),
+                (self.component_output_counts, "output"),
+                (self.component_evidence_counts, "evidence"),
+            )
+        )
+        invoked = set(self.invoked_component_ids)
+        if any(
+            component_id not in invoked
+            and any(counts[component_id] != 0 for counts in counts_by_kind)
+            for component_id in _PRODUCT_SEARCH_EXECUTION_COMPONENT_IDS
+        ):
+            raise ValueError("uninvoked product search component has execution counts")
+
+    @staticmethod
+    def _validate_counts(
+        values: tuple[tuple[str, int], ...],
+        kind: str,
+    ) -> dict[str, int]:
+        if (
+            type(values) is not tuple
+            or len(values) != len(_PRODUCT_SEARCH_EXECUTION_COMPONENT_IDS)
+        ):
+            raise ValueError(f"product search component {kind} counts are invalid")
+        output: dict[str, int] = {}
+        for expected_component_id, item in zip(
+            _PRODUCT_SEARCH_EXECUTION_COMPONENT_IDS,
+            values,
+            strict=True,
+        ):
+            if (
+                type(item) is not tuple
+                or len(item) != 2
+                or item[0] != expected_component_id
+                or type(item[1]) is not int
+                or item[1] < 0
+                or item[1] > PRODUCT_SEARCH_EXECUTION_COUNT_MAX
+            ):
+                raise ValueError(
+                    f"product search component {kind} counts are invalid"
+                )
+            output[expected_component_id] = item[1]
+        return output
+
+    def component_input_count(self, component_id: str) -> int:
+        return dict(self.component_input_counts).get(component_id, 0)
+
+    def component_output_count(self, component_id: str) -> int:
+        return dict(self.component_output_counts).get(component_id, 0)
+
+    def component_evidence_count(self, component_id: str) -> int:
+        return dict(self.component_evidence_counts).get(component_id, 0)
+
+
+class _ProductSearchExecutionRecorder:
+    """Single-search mutable recorder guarded by pinned-session identity."""
+
+    def __init__(
+        self,
+        *,
+        owner: object,
+        configuration_identity: str,
+    ) -> None:
+        self._owner = owner
+        self._configuration_identity = configuration_identity
+        self._events: dict[str, tuple[int, int, int]] = {}
+
+    def validate_owner(
+        self,
+        *,
+        owner: object,
+        configuration_identity: str,
+    ) -> None:
+        if (
+            owner is not self._owner
+            or configuration_identity != self._configuration_identity
+        ):
+            raise ValueError("pinned search execution recorder ownership is invalid")
+
+    def record(
+        self,
+        component_id: str,
+        *,
+        input_count: int,
+        output_count: int,
+        evidence_count: int,
+        owner: object,
+    ) -> None:
+        self.validate_owner(
+            owner=owner,
+            configuration_identity=self._configuration_identity,
+        )
+        if (
+            component_id not in _PRODUCT_SEARCH_EXECUTION_COMPONENT_IDS
+            or component_id in self._events
+            or any(
+                type(count) is not int or count < 0
+                or count > PRODUCT_SEARCH_EXECUTION_COUNT_MAX
+                for count in (input_count, output_count, evidence_count)
+            )
+        ):
+            raise ValueError("product search execution event is invalid")
+        self._events[component_id] = (
+            input_count,
+            output_count,
+            evidence_count,
+        )
+
+    def finish(self, *, owner: object) -> ProductSearchExecutionTrace:
+        self.validate_owner(
+            owner=owner,
+            configuration_identity=self._configuration_identity,
+        )
+        return ProductSearchExecutionTrace(
+            schema_version=PRODUCT_SEARCH_EXECUTION_TRACE_SCHEMA_VERSION,
+            configuration_identity=self._configuration_identity,
+            invoked_component_ids=tuple(
+                component_id
+                for component_id in _PRODUCT_SEARCH_EXECUTION_COMPONENT_IDS
+                if component_id in self._events
+            ),
+            component_input_counts=tuple(
+                (component_id, self._events.get(component_id, (0, 0, 0))[0])
+                for component_id in _PRODUCT_SEARCH_EXECUTION_COMPONENT_IDS
+            ),
+            component_output_counts=tuple(
+                (component_id, self._events.get(component_id, (0, 0, 0))[1])
+                for component_id in _PRODUCT_SEARCH_EXECUTION_COMPONENT_IDS
+            ),
+            component_evidence_counts=tuple(
+                (component_id, self._events.get(component_id, (0, 0, 0))[2])
+                for component_id in _PRODUCT_SEARCH_EXECUTION_COMPONENT_IDS
+            ),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -736,11 +924,14 @@ class SearchService:
         raise_on_provider_error: bool = False,
         _evaluation_configuration: EvaluationSearchConfiguration | None = None,
         _pinned_session: PinnedProductSearchSession | None = None,
+        _execution_recorder: _ProductSearchExecutionRecorder | None = None,
     ) -> list[SearchResultView]:
         normalized_query = query.strip()
         if not normalized_query:
             raise ValueError("search query is empty")
         if _evaluation_configuration is None:
+            if _execution_recorder is not None:
+                raise ValueError("execution recorder requires pinned evaluation")
             if mode not in SEARCH_MODALITIES:
                 raise ValueError("unsupported search mode")
             plan = self.query_router.route(
@@ -753,8 +944,13 @@ class SearchService:
                 not isinstance(_evaluation_configuration, EvaluationSearchConfiguration)
                 or _pinned_session is None
                 or not raise_on_provider_error
+                or _execution_recorder is None
             ):
                 raise ValueError("pinned evaluation search contract is invalid")
+            _pinned_session._validate_execution_recorder(
+                _execution_recorder,
+                configuration_identity=_evaluation_configuration.identity,
+            )
             plan = QueryPlan(
                 query=normalized_query,
                 intent="evaluation",
@@ -1063,7 +1259,22 @@ class SearchService:
                         for hit in hybrid_hits
                         if hit.metadata.get("lexical_strategy") in _TRUSTED_ENTITY_MATCHES
                     ]
-                hits.extend(hit for hit in hybrid_hits if hit.score >= semantic_threshold)
+                accepted_semantic_hits = [
+                    hit for hit in hybrid_hits if hit.score >= semantic_threshold
+                ]
+                hits.extend(accepted_semantic_hits)
+                if _execution_recorder is not None:
+                    if not generation_aware:
+                        raise RuntimeError(
+                            "pinned semantic execution is not generation-aware"
+                        )
+                    _execution_recorder.record(
+                        "text_vectors",
+                        input_count=len(text_vector_bindings),
+                        output_count=len(generation_hits),
+                        evidence_count=len(accepted_semantic_hits),
+                        owner=_pinned_session,
+                    )
             except Exception as error:
                 logger.exception("Semantic text search failed")
                 if raise_on_provider_error:
@@ -1083,6 +1294,7 @@ class SearchService:
             key=lambda item: item[1],
             reverse=True,
         )[: max(limit * 2, 20)]
+        lexical_evidence_count = 0
         for segment, score in lexical_matches:
             if score <= 0:
                 continue
@@ -1098,22 +1310,35 @@ class SearchService:
             if named_entity_query and match.strategy not in _TRUSTED_ENTITY_MATCHES:
                 continue
             lexical_hit = EvidenceHit(
-                    video_id=segment.video_id,
-                    segment_id=segment.id,
-                    start=segment.start,
-                    end=segment.end,
-                    modality=segment.modality,
-                    score=score,
-                    text=segment.text,
-                    metadata={
-                        **segment.metadata,
-                        "thumbnail_path": segment.thumbnail_path,
-                        "source": f"lexical-{match.strategy}",
-                        "segment_confidence": segment.confidence,
-                        "matched_terms": list(match.matched_terms),
-                    },
-                )
+                video_id=segment.video_id,
+                segment_id=segment.id,
+                start=segment.start,
+                end=segment.end,
+                modality=segment.modality,
+                score=score,
+                text=segment.text,
+                metadata={
+                    **segment.metadata,
+                    "thumbnail_path": segment.thumbnail_path,
+                    "source": f"lexical-{match.strategy}",
+                    "segment_confidence": segment.confidence,
+                    "matched_terms": list(match.matched_terms),
+                },
+            )
             hits.append(refine_speech_hit(matched_variant, lexical_hit))
+            lexical_evidence_count += 1
+        if (
+            _execution_recorder is not None
+            and _evaluation_configuration is not None
+            and _evaluation_configuration.text_search != "disabled"
+        ):
+            _execution_recorder.record(
+                "lexical_text",
+                input_count=len(current_segments),
+                output_count=lexical_evidence_count,
+                evidence_count=lexical_evidence_count,
+                owner=_pinned_session,
+            )
 
         if (
             "visual" in allowed_modalities
@@ -1129,13 +1354,15 @@ class SearchService:
                     )
                     if not callable(search_generations):
                         raise RuntimeError("pinned visual search is unavailable")
+                    visual_generation_bindings = (
+                        _pinned_session.visual_bindings_for(ready_video_ids)
+                    )
                     visual_hits = search_generations(
                         normalized_query,
-                        generation_bindings=(
-                            _pinned_session.visual_bindings_for(ready_video_ids)
-                        ),
+                        generation_bindings=visual_generation_bindings,
                         limit=max(limit * 2, 20),
                     )
+                    raw_visual_output_count = len(visual_hits)
                 else:
                     visual_hits = []
                     if durable_video_ids:
@@ -1187,6 +1414,14 @@ class SearchService:
                     if hit.video_id in ready_videos
                     and hit.score >= self.visual_min_score
                 ]
+                if _execution_recorder is not None:
+                    _execution_recorder.record(
+                        "visual_dense",
+                        input_count=len(visual_generation_bindings),
+                        output_count=raw_visual_output_count,
+                        evidence_count=len(visual_hits),
+                        owner=_pinned_session,
+                    )
                 if plan.refine_temporally and self.temporal_refiner is not None:
                     if raise_on_provider_error:
                         refine = getattr(
@@ -1200,7 +1435,21 @@ class SearchService:
                             )
                     else:
                         refine = self.temporal_refiner.refine
-                    visual_hits = refine(normalized_query, visual_hits)
+                    temporal_inputs = visual_hits
+                    temporal_input_count = len(temporal_inputs)
+                    visual_hits = refine(normalized_query, temporal_inputs)
+                    if _execution_recorder is not None:
+                        _execution_recorder.record(
+                            "temporal_refinement",
+                            input_count=temporal_input_count,
+                            output_count=len(visual_hits),
+                            evidence_count=sum(
+                                1
+                                for hit in visual_hits
+                                if hit.metadata.get("temporal_refinement") is True
+                            ),
+                            owner=_pinned_session,
+                        )
                 hits.extend(visual_hits)
             except SearchDependencyError:
                 raise
@@ -1224,11 +1473,15 @@ class SearchService:
                     )
                     if not callable(search_generations):
                         raise RuntimeError("pinned Lighthouse search is unavailable")
+                    lighthouse_generation_bindings = (
+                        _pinned_session.lighthouse_bindings_for(ready_video_ids)
+                    )
                     lighthouse_hits = search_generations(
                         normalized_query,
-                        _pinned_session.lighthouse_bindings_for(ready_video_ids),
+                        lighthouse_generation_bindings,
                         limit=max(limit * 2, 20),
                     )
+                    raw_lighthouse_output_count = len(lighthouse_hits)
                 else:
                     lighthouse_hits = []
                     if durable_video_ids:
@@ -1281,7 +1534,19 @@ class SearchService:
                     and hit.score >= self.visual_min_score
                 ]
                 support = [hit for hit in hits if hit.modality in {"visual", "objects"}]
-                hits.extend(corroborate_lighthouse_hits(viable, support))
+                corroborated_lighthouse_hits = corroborate_lighthouse_hits(
+                    viable,
+                    support,
+                )
+                hits.extend(corroborated_lighthouse_hits)
+                if _execution_recorder is not None:
+                    _execution_recorder.record(
+                        "lighthouse",
+                        input_count=len(lighthouse_generation_bindings),
+                        output_count=raw_lighthouse_output_count,
+                        evidence_count=len(corroborated_lighthouse_hits),
+                        owner=_pinned_session,
+                    )
             except SearchDependencyError:
                 raise
             except Exception as error:
@@ -1351,6 +1616,26 @@ class SearchService:
                     or actual_keys != expected_keys
                 ):
                     raise ValueError("candidate reranker changed the pinned candidate set")
+                if (
+                    _execution_recorder is not None
+                    and _evaluation_configuration is not None
+                    and _evaluation_configuration.reranker == "qwen"
+                ):
+                    _execution_recorder.record(
+                        "qwen_verification",
+                        input_count=len(selected_candidates),
+                        output_count=len(reranked),
+                        evidence_count=sum(
+                            1
+                            for candidate in reranked
+                            for evidence in candidate.evidence
+                            if isinstance(evidence, EvidenceHit)
+                            and evidence.modality == "qwen_video"
+                            and evidence.metadata.get("source")
+                            == "qwen-video-verifier"
+                        ),
+                        owner=_pinned_session,
+                    )
                 fused = [*reranked, *untouched_tail]
             except Exception as error:
                 logger.exception("Candidate video reranking failed")
@@ -1621,6 +1906,8 @@ class PinnedProductSearchSession:
         self.execution_mode = execution_mode
         self._lifecycle_identity = lifecycle_identity
         self._closed = False
+        self._active_execution_recorder: _ProductSearchExecutionRecorder | None = None
+        self._last_search_execution_trace: ProductSearchExecutionTrace | None = None
         self._assets = tuple(assets)
         self._assets_by_video = {asset.video_id: asset for asset in assets}
         self._lexicon_snapshot = service.lexicon.read() if service.lexicon else {}
@@ -1813,6 +2100,26 @@ class PinnedProductSearchSession:
     def _ensure_open(self) -> None:
         if self._closed:
             raise RuntimeError("pinned product search session is closed")
+
+    def _validate_execution_recorder(
+        self,
+        recorder: _ProductSearchExecutionRecorder,
+        *,
+        configuration_identity: str,
+    ) -> None:
+        self._ensure_open()
+        if recorder is not self._active_execution_recorder:
+            raise ValueError("pinned search execution recorder is not active")
+        recorder.validate_owner(
+            owner=self,
+            configuration_identity=configuration_identity,
+        )
+
+    def last_search_execution_trace(self) -> ProductSearchExecutionTrace:
+        self._ensure_open()
+        if self._last_search_execution_trace is None:
+            raise RuntimeError("pinned search execution trace is unavailable")
+        return self._last_search_execution_trace
 
     @staticmethod
     def _stable_provider_identity(provider: object | None, *, visual: bool = False) -> str:
@@ -2779,6 +3086,9 @@ class PinnedProductSearchSession:
         limit: int,
     ) -> list[SearchResultView]:
         self._ensure_open()
+        self._last_search_execution_trace = None
+        if self._active_execution_recorder is not None:
+            raise RuntimeError("pinned product search is already active")
         if (
             type(video_ids) is not tuple
             or not video_ids
@@ -2796,19 +3106,30 @@ class PinnedProductSearchSession:
                         f"required pinned capability {capability} is unavailable"
                     )
         self._assert_current(video_ids, verify_persisted_content=False)
-        results = self._service.search(
-            query,
-            video_ids=list(video_ids),
-            limit=limit,
-            use_lighthouse=self.configuration.lighthouse,
-            mode="all",
-            raise_on_provider_error=True,
-            _evaluation_configuration=self.configuration,
-            _pinned_session=self,
+        recorder = _ProductSearchExecutionRecorder(
+            owner=self,
+            configuration_identity=self.configuration.identity,
         )
-        self._assert_current(video_ids, verify_persisted_content=False)
-        if any(result.video_id not in video_ids for result in results):
-            raise SearchDependencyError("product search returned an unpinned video")
+        self._active_execution_recorder = recorder
+        try:
+            results = self._service.search(
+                query,
+                video_ids=list(video_ids),
+                limit=limit,
+                use_lighthouse=self.configuration.lighthouse,
+                mode="all",
+                raise_on_provider_error=True,
+                _evaluation_configuration=self.configuration,
+                _pinned_session=self,
+                _execution_recorder=recorder,
+            )
+            self._assert_current(video_ids, verify_persisted_content=False)
+            if any(result.video_id not in video_ids for result in results):
+                raise SearchDependencyError("product search returned an unpinned video")
+            trace = recorder.finish(owner=self)
+        finally:
+            self._active_execution_recorder = None
+        self._last_search_execution_trace = trace
         return results
 
     def _build_identities(self) -> ProductSearchIdentities:
@@ -2961,6 +3282,7 @@ class PinnedProductSearchSession:
         if self._closed:
             return
         self._closed = True
+        self._last_search_execution_trace = None
         failures: list[Exception] = []
         for state in self._states:
             try:

@@ -9,6 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from pydantic import Field
 
 from videoscope.benchmark import environment as environment_module
 from videoscope.benchmark.environment import (
@@ -28,6 +29,29 @@ from videoscope.runtime import build_runtime
 _SHA_A = "a" * 64
 _SHA_B = "b" * 64
 _SHA_C = "c" * 64
+
+
+class _ExternalModelsSettings(AppSettings):
+    immutable_models_dir: Path = Field(exclude=True)
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls,
+        init_settings,
+        env_settings,
+        dotenv_settings,
+        file_secret_settings,
+    ):  # type: ignore[no-untyped-def]
+        del cls, settings_cls, env_settings, dotenv_settings, file_secret_settings
+        return (init_settings,)
+
+    @property
+    def models_dir(self) -> Path:
+        return self.immutable_models_dir
+
+
+_ExternalModelsSettings.model_rebuild(_types_namespace={"Path": Path})
 
 
 def _private_directory(path: Path) -> Path:
@@ -439,6 +463,189 @@ def test_opens_lexical_environment_from_verified_private_snapshots_only(
     assert not environment.scratch_root.exists()
     assert list(state.scratch_parent.iterdir()) == []
     assert _tree(Path("product/data")) == source_before
+
+
+def test_external_reviewed_fastembed_source_is_retained_exactly_and_released_after_copy(
+    environment_fakes: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    state = environment_fakes
+    immutable_models = tmp_path / "reviewed-models"
+    external_fastembed = immutable_models / "fastembed"
+    external_fastembed.mkdir(parents=True)
+    (external_fastembed / "model.sentinel").write_bytes(b"reviewed external model")
+    settings = _ExternalModelsSettings(
+        _env_file=None,
+        data_dir=state.settings.data_dir,
+        immutable_models_dir=immutable_models,
+    )
+    retained_sources: list[object] = []
+    opened_source_descriptors: list[int] = []
+    original_open_directory = environment_module._open_directory_path
+
+    def track_open_directory(path: Path, *, label: str) -> tuple[Path, int]:
+        opened = original_open_directory(path, label=label)
+        if label == "FastEmbed model source":
+            opened_source_descriptors.append(opened[1])
+        return opened
+
+    def materialize(source: object, scratch: object, _manifest: object) -> _FastSnapshot:
+        state.events.append("fastembed.snapshot")
+        retained_sources.append(source)
+        assert isinstance(source, environment_module.RetainedDirectory)
+        assert source.logical_path == external_fastembed.absolute()
+        assert source.closed is False
+        assert (source.stable_path / "model.sentinel").read_bytes() == (
+            b"reviewed external model"
+        )
+        output = getattr(scratch, "stable_path") / "fastembed-copy"
+        output.mkdir(mode=0o700)
+        (output / "model").write_bytes(b"private model")
+        (output / "model").chmod(0o600)
+        return _FastSnapshot(output, state.events)
+
+    monkeypatch.setattr(
+        environment_module,
+        "materialize_fastembed_snapshot",
+        materialize,
+    )
+    monkeypatch.setattr(
+        environment_module,
+        "_open_directory_path",
+        track_open_directory,
+    )
+
+    environment = open_product_benchmark_environment(
+        settings,
+        state.scratch_parent,
+    )
+
+    assert len(retained_sources) == 1
+    assert getattr(retained_sources[0], "closed") is True
+    assert len(opened_source_descriptors) == 1
+    with pytest.raises(OSError):
+        os.fstat(opened_source_descriptors[0])
+    assert (
+        state.settings.models_dir / "fastembed" / "model.sentinel"
+    ).read_bytes() == b"model"
+
+    environment.close()
+    assert state.product.close_calls == 1
+    assert list(state.scratch_parent.iterdir()) == []
+
+
+def test_external_fastembed_source_capability_is_released_when_snapshot_fails(
+    environment_fakes: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    state = environment_fakes
+    immutable_models = tmp_path / "reviewed-models"
+    external_fastembed = immutable_models / "fastembed"
+    external_fastembed.mkdir(parents=True)
+    (external_fastembed / "model.sentinel").write_bytes(b"reviewed external model")
+    settings = _ExternalModelsSettings(
+        _env_file=None,
+        data_dir=state.settings.data_dir,
+        immutable_models_dir=immutable_models,
+    )
+    retained_sources: list[object] = []
+
+    def fail_snapshot(source: object, _scratch: object, _manifest: object) -> None:
+        state.events.append("fastembed.snapshot")
+        retained_sources.append(source)
+        assert isinstance(source, environment_module.RetainedDirectory)
+        assert source.closed is False
+        raise RuntimeError("snapshot failed")
+
+    monkeypatch.setattr(
+        environment_module,
+        "materialize_fastembed_snapshot",
+        fail_snapshot,
+    )
+
+    with pytest.raises(RuntimeError, match="snapshot failed"):
+        open_product_benchmark_environment(settings, state.scratch_parent)
+
+    assert len(retained_sources) == 1
+    assert getattr(retained_sources[0], "closed") is True
+    assert state.product.close_calls == 1
+    assert list(state.scratch_parent.iterdir()) == []
+
+
+def test_external_fastembed_retention_failure_closes_the_opened_source_descriptor(
+    environment_fakes: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    state = environment_fakes
+    immutable_models = tmp_path / "reviewed-models"
+    external_fastembed = immutable_models / "fastembed"
+    external_fastembed.mkdir(parents=True)
+    settings = _ExternalModelsSettings(
+        _env_file=None,
+        data_dir=state.settings.data_dir,
+        immutable_models_dir=immutable_models,
+    )
+    original_retain = environment_module.RetainedDirectory.retain
+    source_descriptors: list[int] = []
+
+    def fail_external_retain(
+        _cls: type[object],
+        path: Path,
+        descriptor: int,
+    ) -> object:
+        if path == external_fastembed.absolute():
+            source_descriptors.append(descriptor)
+            raise RuntimeError("retention failed")
+        return original_retain(path, descriptor)
+
+    monkeypatch.setattr(
+        environment_module.RetainedDirectory,
+        "retain",
+        classmethod(fail_external_retain),
+    )
+
+    with pytest.raises(BenchmarkEnvironmentError, match="could not be retained"):
+        open_product_benchmark_environment(settings, state.scratch_parent)
+
+    assert len(source_descriptors) == 1
+    with pytest.raises(OSError):
+        os.fstat(source_descriptors[0])
+    assert state.product.close_calls == 1
+    assert list(state.scratch_parent.iterdir()) == []
+
+
+def test_external_fastembed_source_symlink_is_rejected_without_following_it(
+    environment_fakes: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    state = environment_fakes
+    immutable_models = tmp_path / "reviewed-models"
+    immutable_models.mkdir()
+    outside = tmp_path / "outside-fastembed"
+    outside.mkdir()
+    (outside / "model.sentinel").write_bytes(b"outside")
+    (immutable_models / "fastembed").symlink_to(outside, target_is_directory=True)
+    settings = _ExternalModelsSettings(
+        _env_file=None,
+        data_dir=state.settings.data_dir,
+        immutable_models_dir=immutable_models,
+    )
+    monkeypatch.setattr(
+        environment_module,
+        "materialize_fastembed_snapshot",
+        lambda *_args, **_kwargs: pytest.fail("unsafe source must not be copied"),
+    )
+
+    with pytest.raises(BenchmarkEnvironmentError, match="FastEmbed model source"):
+        open_product_benchmark_environment(settings, state.scratch_parent)
+
+    assert (outside / "model.sentinel").read_bytes() == b"outside"
+    assert state.product.close_calls == 1
+    assert list(state.scratch_parent.iterdir()) == []
 
 
 def test_glossary_is_frozen_and_environment_identity_is_pathless(

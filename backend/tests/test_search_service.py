@@ -11,6 +11,7 @@ from videoscope.artifacts import (
 from videoscope.repository import Repository, SegmentRecord
 from videoscope.search.service import (
     EvaluationSearchConfiguration,
+    ProductSearchExecutionTrace,
     SearchDependencyError,
     SearchAssetBinding,
     SearchService,
@@ -1001,6 +1002,81 @@ def test_pinned_evaluation_bypasses_router_and_uses_exact_text_generations(
     assert len(generation_ids) == 1
     assert modalities == {"objects", "ocr", "speech"}
     assert exhaustive is False
+    assert session.last_search_execution_trace() == ProductSearchExecutionTrace(
+        schema_version=1,
+        configuration_identity=_text_evaluation_configuration().identity,
+        invoked_component_ids=("text_vectors", "lexical_text"),
+        component_input_counts=(
+            ("text_vectors", 1),
+            ("lexical_text", 1),
+            ("visual_dense", 0),
+            ("temporal_refinement", 0),
+            ("lighthouse", 0),
+            ("qwen_verification", 0),
+        ),
+        component_output_counts=(
+            ("text_vectors", 1),
+            ("lexical_text", 1),
+            ("visual_dense", 0),
+            ("temporal_refinement", 0),
+            ("lighthouse", 0),
+            ("qwen_verification", 0),
+        ),
+        component_evidence_counts=(
+            ("text_vectors", 1),
+            ("lexical_text", 1),
+            ("visual_dense", 0),
+            ("temporal_refinement", 0),
+            ("lighthouse", 0),
+            ("qwen_verification", 0),
+        ),
+    )
+
+
+def test_failed_pinned_search_clears_previous_execution_trace(tmp_path) -> None:
+    _repository, _specifications, index, service = (
+        _ready_generation_search_service(tmp_path)
+    )
+    session = service.open_pinned_evaluation(
+        _text_evaluation_configuration(),
+        (_pinned_asset_binding(),),
+    )
+    assert session.search("winning basket", ("video-1",), limit=20)
+    assert session.last_search_execution_trace().invoked_component_ids
+
+    def fail_search(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        raise RuntimeError("synthetic search failure")
+
+    index.search_generations = fail_search  # type: ignore[method-assign]
+    with pytest.raises(SearchDependencyError, match="Semantic text search failed"):
+        session.search("winning basket", ("video-1",), limit=20)
+    with pytest.raises(RuntimeError, match="execution trace is unavailable"):
+        session.last_search_execution_trace()
+
+
+def test_product_search_execution_trace_rejects_counts_above_signed_64_bit() -> None:
+    component_ids = (
+        "text_vectors",
+        "lexical_text",
+        "visual_dense",
+        "temporal_refinement",
+        "lighthouse",
+        "qwen_verification",
+    )
+    zero_counts = tuple((component_id, 0) for component_id in component_ids)
+
+    with pytest.raises(ValueError, match="input counts are invalid"):
+        ProductSearchExecutionTrace(
+            schema_version=1,
+            configuration_identity=_text_evaluation_configuration().identity,
+            invoked_component_ids=("text_vectors",),
+            component_input_counts=(
+                ("text_vectors", 1 << 63),
+                *zero_counts[1:],
+            ),
+            component_output_counts=zero_counts,
+            component_evidence_counts=zero_counts,
+        )
 
 
 def test_pinned_evaluation_invalidates_instead_of_following_new_active_pointer(
@@ -1092,6 +1168,46 @@ class _PinnedVisualProvider:
         ]
 
 
+def test_visual_only_trace_does_not_claim_text_execution(tmp_path) -> None:
+    repository, specifications, index, _service = _ready_generation_search_service(
+        tmp_path
+    )
+    visual = _PinnedVisualProvider()
+    service = SearchService(
+        repository,
+        index,
+        visual_search=visual,
+        query_router=_ForbiddenQueryRouter(),  # type: ignore[arg-type]
+        specification_resolver=lambda: specifications,
+        media_root=tmp_path,
+    )
+    configuration = EvaluationSearchConfiguration(
+        modalities=("visual",),
+        modality_weights=(("visual", 1.0),),
+        text_search="disabled",
+        visual_search="dense_siglip",
+        temporal_refinement=False,
+        lighthouse=False,
+        reranker="none",
+        reranker_trigger="disabled",
+        reranker_candidate_limit=0,
+        result_limit=20,
+    )
+    session = service.open_pinned_evaluation(
+        configuration,
+        (_pinned_asset_binding(),),
+    )
+
+    assert session.search("winning basket", ("video-1",), limit=20)
+    trace = session.last_search_execution_trace()
+
+    assert trace.invoked_component_ids == ("visual_dense",)
+    for component_id in ("text_vectors", "lexical_text"):
+        assert trace.component_input_count(component_id) == 0
+        assert trace.component_output_count(component_id) == 0
+        assert trace.component_evidence_count(component_id) == 0
+
+
 class _PinnedLighthouseProvider:
     id = "lighthouse"
 
@@ -1165,8 +1281,9 @@ class _PinnedLighthouseProvider:
 class _PinnedTemporalRefiner:
     identity = {"implementation": "pinned-refiner-v1"}
 
-    def __init__(self) -> None:
+    def __init__(self, *, mark_outputs: bool = False) -> None:
         self.called = False
+        self.mark_outputs = mark_outputs
 
     @staticmethod
     def benchmark_attestation() -> dict[str, object]:
@@ -1186,13 +1303,28 @@ class _PinnedTemporalRefiner:
         hits: list[EvidenceHit],
     ) -> list[EvidenceHit]:
         self.called = True
-        return hits
+        if not self.mark_outputs:
+            return hits
+        return [
+            replace(
+                hit,
+                metadata={**hit.metadata, "temporal_refinement": True},
+            )
+            for hit in hits
+        ]
 
 
 class _PinnedReranker:
-    def __init__(self, provider_id: str, top_candidates: int) -> None:
+    def __init__(
+        self,
+        provider_id: str,
+        top_candidates: int,
+        *,
+        add_qwen_evidence: bool = False,
+    ) -> None:
         self.id = provider_id
         self.top_candidates = top_candidates
+        self.add_qwen_evidence = add_qwen_evidence
         self.called = False
         self.last_candidate_count = 0
 
@@ -1217,7 +1349,32 @@ class _PinnedReranker:
     def rerank_strict(self, _query: str, candidates):  # type: ignore[no-untyped-def]
         self.called = True
         self.last_candidate_count = len(candidates)
-        return list(reversed(candidates))
+        reranked = list(reversed(candidates))
+        if not self.add_qwen_evidence:
+            return reranked
+        return [
+            replace(
+                candidate,
+                modalities=sorted({*candidate.modalities, "qwen_video"}),
+                evidence=[
+                    EvidenceHit(
+                        video_id=candidate.video_id,
+                        segment_id=f"qwen:{index}",
+                        start=candidate.start,
+                        end=candidate.end,
+                        modality="qwen_video",
+                        score=0.95,
+                        text="verified",
+                        metadata={
+                            "model_evidence": "observed judgement",
+                            "source": "qwen-video-verifier",
+                        },
+                    ),
+                    *candidate.evidence,
+                ],
+            )
+            for index, candidate in enumerate(reranked)
+        ]
 
 
 def _full_evaluation_configuration(
@@ -1320,6 +1477,96 @@ def test_pinned_evaluation_uses_exact_weights_and_only_selected_reranker(
 
     assert visual.forced_descriptor_calls == 1
     assert lighthouse.forced_descriptor_calls == 1
+
+
+def test_pinned_evaluation_traces_all_strict_stage_calls_before_final_view_loss(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    repository, specifications, index, _service = _ready_generation_search_service(
+        tmp_path
+    )
+    visual = _PinnedVisualProvider()
+    lighthouse = _PinnedLighthouseProvider()
+    refiner = _PinnedTemporalRefiner(mark_outputs=True)
+    qwen = _PinnedReranker(
+        "qwen-video",
+        12,
+        add_qwen_evidence=True,
+    )
+    service = SearchService(
+        repository,
+        index,
+        moment_search=lighthouse,
+        visual_search=visual,
+        query_router=_ForbiddenQueryRouter(),  # type: ignore[arg-type]
+        temporal_refiner=refiner,
+        evaluation_rerankers={"qwen": qwen},
+        specification_resolver=lambda: specifications,
+        media_root=tmp_path,
+    )
+    configuration = _full_evaluation_configuration("qwen")
+    session = service.open_pinned_evaluation(
+        configuration,
+        (_pinned_asset_binding(),),
+    )
+
+    assert session.search("winning basket", ("video-1",), limit=20)
+    qwen_count = qwen.last_candidate_count
+    assert qwen_count > 0
+    assert session.last_search_execution_trace() == ProductSearchExecutionTrace(
+        schema_version=1,
+        configuration_identity=configuration.identity,
+        invoked_component_ids=(
+            "text_vectors",
+            "lexical_text",
+            "visual_dense",
+            "temporal_refinement",
+            "lighthouse",
+            "qwen_verification",
+        ),
+        component_input_counts=(
+            ("text_vectors", 1),
+            ("lexical_text", 1),
+            ("visual_dense", 1),
+            ("temporal_refinement", 1),
+            ("lighthouse", 1),
+            ("qwen_verification", qwen_count),
+        ),
+        component_output_counts=(
+            ("text_vectors", 1),
+            ("lexical_text", 1),
+            ("visual_dense", 1),
+            ("temporal_refinement", 1),
+            ("lighthouse", 1),
+            ("qwen_verification", qwen_count),
+        ),
+        component_evidence_counts=(
+            ("text_vectors", 1),
+            ("lexical_text", 1),
+            ("visual_dense", 1),
+            ("temporal_refinement", 1),
+            ("lighthouse", 1),
+            ("qwen_verification", qwen_count),
+        ),
+    )
+
+    import videoscope.search.service as service_module
+
+    monkeypatch.setattr(service_module, "fuse_hits", lambda *_args, **_kwargs: [])
+    assert session.search("winning basket", ("video-1",), limit=20) == []
+    empty_reranker_trace = session.last_search_execution_trace()
+    assert empty_reranker_trace.invoked_component_ids == (
+        "text_vectors",
+        "lexical_text",
+        "visual_dense",
+        "temporal_refinement",
+        "lighthouse",
+        "qwen_verification",
+    )
+    assert empty_reranker_trace.component_input_count("qwen_verification") == 0
+    assert empty_reranker_trace.component_output_count("qwen_verification") == 0
+    assert empty_reranker_trace.component_evidence_count("qwen_verification") == 0
 
 
 def test_pinned_evaluation_marks_visual_pointer_drift_stale(tmp_path) -> None:
