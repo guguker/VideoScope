@@ -1,15 +1,20 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from hashlib import sha256
+import importlib.metadata
 import importlib.util
 from ipaddress import ip_address
 import json
 import logging
 import os
+import platform
 from pathlib import Path, PurePosixPath
 import re
 import secrets
 import stat
+import sys
+import tempfile
 from threading import BoundedSemaphore, Lock
 from time import monotonic
 from typing import Any, Literal, Protocol, Self
@@ -35,6 +40,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from videoscope.model_manifest import model_identity, model_revision
 from videoscope.providers.qwen_video import (
     QWEN_INFERENCE_RUNTIME_IDENTITY,
+    QWEN_PROMPT_PROTOCOL_SHA256,
     QwenInferenceStatus,
     QwenVideoJudgement,
     QwenVideoReranker,
@@ -44,7 +50,7 @@ from videoscope.providers.qwen_video import (
 
 logger = logging.getLogger(__name__)
 
-QWEN_WORKER_SCHEMA_VERSION = "qwen-worker-v1"
+QWEN_WORKER_SCHEMA_VERSION = "qwen-worker-v4"
 MAX_REQUEST_BYTES = 64 * 1024
 MAX_RESPONSE_BYTES = 64 * 1024
 MAX_QUERY_CHARS = 500
@@ -54,6 +60,356 @@ _REQUEST_ID_RE = r"^[0-9a-f]{32}$"
 _TOKEN_RE = re.compile(r"^[A-Za-z0-9._~-]{32,256}$")
 _VIDEO_SUFFIXES = frozenset({".mp4"})
 _STORYBOARD_SUFFIXES = frozenset({".jpg", ".jpeg"})
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _project_path(*parts: str) -> Path:
+    source = Path(__file__).resolve()
+    candidates = [Path.cwd().joinpath(*parts)]
+    if len(source.parents) > 4:
+        candidates.append(source.parents[4].joinpath(*parts))
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return candidates[-1]
+
+
+DEFAULT_QWEN_RUNTIME_MANIFEST = _project_path("workers", "qwen", "runtime.lock.json")
+DEFAULT_QWEN_MODEL_MANIFEST = _project_path(
+    "workers", "qwen", "model-artifacts.lock.json"
+)
+DEFAULT_BACKEND_LOCK = _project_path("backend", "uv.lock")
+QWEN_RUNTIME_MANIFEST_SHA256 = (
+    "0481dda4b0aef9927d5f9adb1a5f7292f997cac39a6d59ecef0087913d80335f"
+)
+QWEN_MODEL_MANIFEST_SHA256 = (
+    "abaeb6d14ccbdc1741cccea700edd3385eb7cb3d215796b465c4d5a1a0504fe0"
+)
+
+
+def _canonical_json_sha256(payload: object) -> str:
+    try:
+        encoded = json.dumps(
+            payload,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError, RecursionError) as error:
+        raise RuntimeError("Qwen worker manifest is invalid") from error
+    return sha256(encoded).hexdigest()
+
+
+def _qwen_source_bundle_sha256() -> str:
+    source_dir = Path(__file__).resolve().parent
+    files: list[dict[str, str]] = []
+    for name in ("qwen_video.py", "qwen_worker.py"):
+        try:
+            digest = sha256((source_dir / name).read_bytes()).hexdigest()
+        except OSError as error:
+            raise RuntimeError("Qwen worker source bundle is unavailable") from error
+        files.append(
+            {
+                "logical_path": f"videoscope/providers/{name}",
+                "sha256": digest,
+            }
+        )
+    return _canonical_json_sha256({"files": files, "schema_version": 1})
+
+
+QWEN_SOURCE_BUNDLE_SHA256 = _qwen_source_bundle_sha256()
+
+
+def _input_root_identity(path: Path) -> str:
+    try:
+        resolved = Path(path).resolve(strict=True)
+        descriptor = os.open(
+            resolved,
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+    except (OSError, RuntimeError) as error:
+        raise RuntimeError("Qwen worker input root is unavailable or unsafe") from error
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISDIR(metadata.st_mode):
+            raise RuntimeError("Qwen worker input root is not a directory")
+        return _canonical_json_sha256(
+            {
+                "device": metadata.st_dev,
+                "group": metadata.st_gid,
+                "inode": metadata.st_ino,
+                "mode": stat.S_IMODE(metadata.st_mode),
+                "owner": metadata.st_uid,
+                "schema_version": 1,
+            }
+        )
+    finally:
+        os.close(descriptor)
+
+
+def _load_manifest(path: Path) -> dict[str, object]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise RuntimeError("Qwen worker manifest is unavailable or invalid") from error
+    if not isinstance(payload, dict):
+        raise RuntimeError("Qwen worker manifest is invalid")
+    return payload
+
+
+def _normalized_distribution_name(value: str) -> str:
+    return re.sub(r"[-_.]+", "-", value).casefold()
+
+
+def _installed_distributions() -> dict[str, str]:
+    installed: dict[str, str] = {}
+    for distribution in importlib.metadata.distributions():
+        name = distribution.metadata.get("Name")
+        if not isinstance(name, str) or not name:
+            raise RuntimeError("Qwen worker installed distribution has no name")
+        normalized = _normalized_distribution_name(name)
+        if normalized in installed:
+            raise RuntimeError("Qwen worker has duplicate installed distributions")
+        installed[normalized] = distribution.version
+    return installed
+
+
+def _host_matches_qwen_contract(
+    *,
+    python_version: tuple[int, int, int],
+    system: str,
+    machine: str,
+    macos_version: str,
+) -> bool:
+    try:
+        macos_major = int(macos_version.split(".", 1)[0])
+    except (TypeError, ValueError):
+        return False
+    return (
+        python_version == (3, 12, 13)
+        and system == "Darwin"
+        and machine.casefold() in {"arm64", "aarch64"}
+        and macos_major >= 14
+    )
+
+
+def _verify_model_artifact(path: Path, *, size: int, digest: str, root: Path) -> None:
+    try:
+        resolved_root = root.resolve(strict=True)
+        resolved = path.resolve(strict=True)
+        resolved.relative_to(resolved_root)
+        descriptor = os.open(
+            resolved,
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+    except (OSError, RuntimeError, ValueError) as error:
+        raise RuntimeError("Qwen model artifact is missing or unsafe") from error
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode) or before.st_size != size:
+            raise RuntimeError("Qwen model artifact size mismatch")
+        checksum = sha256()
+        total = 0
+        while True:
+            chunk = os.read(descriptor, min(1024 * 1024, size - total + 1))
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > size:
+                raise RuntimeError("Qwen model artifact size mismatch")
+            checksum.update(chunk)
+        after = os.fstat(descriptor)
+        before_fingerprint = (
+            before.st_dev,
+            before.st_ino,
+            before.st_mode,
+            before.st_size,
+            before.st_mtime_ns,
+            before.st_ctime_ns,
+        )
+        after_fingerprint = (
+            after.st_dev,
+            after.st_ino,
+            after.st_mode,
+            after.st_size,
+            after.st_mtime_ns,
+            after.st_ctime_ns,
+        )
+        if (
+            total != size
+            or before_fingerprint != after_fingerprint
+            or checksum.hexdigest() != digest
+        ):
+            raise RuntimeError("Qwen model artifact SHA-256 mismatch")
+    finally:
+        os.close(descriptor)
+
+
+def attest_qwen_worker_startup(
+    model_name: str,
+    revision: str,
+    *,
+    runtime_manifest_path: Path = DEFAULT_QWEN_RUNTIME_MANIFEST,
+    model_manifest_path: Path = DEFAULT_QWEN_MODEL_MANIFEST,
+    backend_lock_path: Path = DEFAULT_BACKEND_LOCK,
+    expected_runtime_manifest_sha256: str = QWEN_RUNTIME_MANIFEST_SHA256,
+    expected_model_manifest_sha256: str = QWEN_MODEL_MANIFEST_SHA256,
+    expected_source_bundle_sha256: str = QWEN_SOURCE_BUNDLE_SHA256,
+    expected_prompt_protocol_sha256: str = QWEN_PROMPT_PROTOCOL_SHA256,
+    python_version: tuple[int, int, int] | None = None,
+    system: str | None = None,
+    machine: str | None = None,
+    macos_version: str | None = None,
+    installed_distributions: dict[str, str] | None = None,
+    snapshot_resolver: Any | None = None,
+) -> dict[str, str]:
+    """Fail closed unless runtime, packages and every model file are reviewed."""
+    if (
+        expected_source_bundle_sha256 != QWEN_SOURCE_BUNDLE_SHA256
+        or expected_prompt_protocol_sha256 != QWEN_PROMPT_PROTOCOL_SHA256
+    ):
+        raise RuntimeError("Qwen worker executable protocol identity mismatch")
+    runtime = _load_manifest(runtime_manifest_path)
+    model = _load_manifest(model_manifest_path)
+    if (
+        _canonical_json_sha256(runtime) != expected_runtime_manifest_sha256
+        or _canonical_json_sha256(model) != expected_model_manifest_sha256
+    ):
+        raise RuntimeError("Qwen worker manifest identity mismatch")
+    if (
+        set(runtime)
+        != {
+            "backend_lock_sha256",
+            "distributions",
+            "platform",
+            "python",
+            "schema_version",
+        }
+        or runtime.get("schema_version") != 1
+        or runtime.get("python") != "3.12.13"
+        or runtime.get("platform") != "aarch64-apple-darwin-macos14plus"
+        or not isinstance(runtime.get("distributions"), dict)
+        or not runtime["distributions"]
+        or set(model)
+        != {
+            "artifacts",
+            "license",
+            "model",
+            "revision",
+            "schema_version",
+        }
+        or model.get("schema_version") != 1
+        or model.get("license") != "apache-2.0"
+        or model.get("model") != model_name
+        or model.get("revision") != revision
+        or not isinstance(model.get("artifacts"), list)
+        or not model["artifacts"]
+    ):
+        raise RuntimeError("Qwen worker manifest contract mismatch")
+    lock_digest = runtime.get("backend_lock_sha256")
+    try:
+        actual_lock_digest = sha256(backend_lock_path.read_bytes()).hexdigest()
+    except OSError as error:
+        raise RuntimeError("Qwen worker dependency lock is unavailable") from error
+    if (
+        type(lock_digest) is not str
+        or _SHA256_RE.fullmatch(lock_digest) is None
+        or actual_lock_digest != lock_digest
+    ):
+        raise RuntimeError("Qwen worker dependency lock mismatch")
+
+    actual_python = python_version or tuple(sys.version_info[:3])
+    actual_system = system or platform.system()
+    actual_machine = machine or platform.machine()
+    actual_macos = macos_version if macos_version is not None else platform.mac_ver()[0]
+    if not _host_matches_qwen_contract(
+        python_version=actual_python,
+        system=actual_system,
+        machine=actual_machine,
+        macos_version=actual_macos,
+    ):
+        raise RuntimeError("Qwen worker requires the reviewed Apple Silicon runtime")
+    distributions = runtime["distributions"]
+    assert isinstance(distributions, dict)
+    expected_distributions = {
+        _normalized_distribution_name(str(name)): str(version)
+        for name, version in distributions.items()
+    }
+    actual_distributions = (
+        {
+            _normalized_distribution_name(str(name)): str(version)
+            for name, version in installed_distributions.items()
+        }
+        if installed_distributions is not None
+        else _installed_distributions()
+    )
+    if actual_distributions != expected_distributions:
+        raise RuntimeError("Qwen worker installed distributions mismatch")
+
+    if snapshot_resolver is None:
+        from huggingface_hub import snapshot_download
+
+        def snapshot_resolver(selected_model: str, selected_revision: str) -> Path:
+            return Path(
+                snapshot_download(
+                    selected_model,
+                    revision=selected_revision,
+                    local_files_only=True,
+                )
+            )
+
+    try:
+        snapshot = Path(snapshot_resolver(model_name, revision))
+        snapshot_root = snapshot.resolve(strict=True).parent.parent
+    except Exception as error:
+        raise RuntimeError("reviewed local Qwen snapshot is unavailable") from error
+    artifacts = model["artifacts"]
+    assert isinstance(artifacts, list)
+    names: set[str] = set()
+    for raw in artifacts:
+        if not isinstance(raw, dict) or set(raw) != {"name", "sha256", "size"}:
+            raise RuntimeError("Qwen model artifact contract is invalid")
+        name = raw.get("name")
+        digest = raw.get("sha256")
+        size = raw.get("size")
+        if (
+            type(name) is not str
+            or not name
+            or name in {".", ".."}
+            or "/" in name
+            or "\\" in name
+            or name in names
+            or type(digest) is not str
+            or _SHA256_RE.fullmatch(digest) is None
+            or type(size) is not int
+            or size <= 0
+        ):
+            raise RuntimeError("Qwen model artifact contract is invalid")
+        names.add(name)
+        _verify_model_artifact(
+            snapshot / name,
+            size=size,
+            digest=digest,
+            root=snapshot_root,
+        )
+    try:
+        actual_names = {path.name for path in snapshot.iterdir()}
+    except OSError as error:
+        raise RuntimeError("reviewed local Qwen snapshot is unavailable") from error
+    if actual_names != names:
+        raise RuntimeError("Qwen model artifact set mismatch")
+    return {
+        "model_identity": model_identity(model_name, revision),
+        "prompt_protocol_sha256": QWEN_PROMPT_PROTOCOL_SHA256,
+        "runtime_identity": QWEN_INFERENCE_RUNTIME_IDENTITY,
+        "source_bundle_sha256": QWEN_SOURCE_BUNDLE_SHA256,
+    }
 
 
 class _ContractModel(BaseModel):
@@ -70,8 +426,13 @@ class QwenJudgeRequest(_ContractModel):
     request_id: str = Field(pattern=_REQUEST_ID_RE)
     model_identity: str = Field(min_length=1, max_length=300)
     runtime_identity: Literal[QWEN_INFERENCE_RUNTIME_IDENTITY]
+    source_bundle_sha256: str = Field(pattern=_SHA256_RE.pattern)
+    prompt_protocol_sha256: str = Field(pattern=_SHA256_RE.pattern)
+    input_root_sha256: str = Field(pattern=_SHA256_RE.pattern)
     input_kind: Literal["video", "storyboard"]
     relative_path: str = Field(min_length=1, max_length=240)
+    expected_sha256: str = Field(pattern=_SHA256_RE.pattern)
+    expected_byte_size: int = Field(gt=0, le=DEFAULT_MAX_INPUT_BYTES)
     prompt_kind: Literal["basketball_facts", "generic_query"]
     query: str | None = Field(default=None, max_length=MAX_QUERY_CHARS)
     fps: float | None = Field(default=None, ge=0.5, le=8)
@@ -98,12 +459,15 @@ class QwenJudgeRequest(_ContractModel):
     @model_validator(mode="after")
     def validate_prompt(self) -> Self:
         if self.input_kind == "video":
-            if (
-                self.prompt_kind != "basketball_facts"
-                or self.query is not None
-                or self.fps is None
-            ):
-                raise ValueError("video input requires the fixed basketball-facts prompt")
+            if self.fps is None:
+                raise ValueError("video input requires fps")
+            if self.prompt_kind == "basketball_facts":
+                if self.query is not None:
+                    raise ValueError(
+                        "basketball-facts video requires the fixed prompt"
+                    )
+            elif not self.query:
+                raise ValueError("generic-query video requires a non-empty query")
         elif self.prompt_kind != "generic_query" or not self.query or self.fps is not None:
             raise ValueError("storyboard input requires a non-empty generic query")
         return self
@@ -139,6 +503,11 @@ class QwenJudgeResponse(_ContractModel):
     request_id: str = Field(pattern=_REQUEST_ID_RE)
     model_identity: str = Field(min_length=1, max_length=300)
     runtime_identity: Literal[QWEN_INFERENCE_RUNTIME_IDENTITY]
+    source_bundle_sha256: str = Field(pattern=_SHA256_RE.pattern)
+    prompt_protocol_sha256: str = Field(pattern=_SHA256_RE.pattern)
+    input_root_sha256: str = Field(pattern=_SHA256_RE.pattern)
+    source_sha256: str = Field(pattern=_SHA256_RE.pattern)
+    byte_size: int = Field(gt=0, le=DEFAULT_MAX_INPUT_BYTES)
     judgement: QwenJudgementPayload
 
 
@@ -147,6 +516,9 @@ class QwenHealthResponse(_ContractModel):
     status: Literal["ok", "unavailable"]
     model_identity: str = Field(min_length=1, max_length=300)
     runtime_identity: Literal[QWEN_INFERENCE_RUNTIME_IDENTITY]
+    source_bundle_sha256: str = Field(pattern=_SHA256_RE.pattern)
+    prompt_protocol_sha256: str = Field(pattern=_SHA256_RE.pattern)
+    input_root_sha256: str = Field(pattern=_SHA256_RE.pattern)
     loaded: bool
     input_kinds: list[Literal["video", "storyboard"]] = Field(
         min_length=2,
@@ -166,6 +538,37 @@ class QwenHealthResponse(_ContractModel):
         if value != ["video", "storyboard"]:
             raise ValueError("input_kinds do not match the contract")
         return value
+
+
+class QwenProbeRequest(_ContractModel):
+    schema_version: Literal[QWEN_WORKER_SCHEMA_VERSION]
+    request_id: str = Field(pattern=_REQUEST_ID_RE)
+    model_identity: str = Field(min_length=1, max_length=300)
+    runtime_identity: Literal[QWEN_INFERENCE_RUNTIME_IDENTITY]
+    source_bundle_sha256: str = Field(pattern=_SHA256_RE.pattern)
+    prompt_protocol_sha256: str = Field(pattern=_SHA256_RE.pattern)
+    input_root_sha256: str = Field(pattern=_SHA256_RE.pattern)
+    relative_path: str = Field(min_length=1, max_length=240)
+    expected_sha256: str = Field(pattern=_SHA256_RE.pattern)
+    expected_byte_size: int = Field(gt=0, le=DEFAULT_MAX_INPUT_BYTES)
+
+    @field_validator("relative_path")
+    @classmethod
+    def validate_relative_path(cls, value: str) -> str:
+        return QwenJudgeRequest.validate_relative_path(value)
+
+
+class QwenProbeResponse(_ContractModel):
+    schema_version: Literal[QWEN_WORKER_SCHEMA_VERSION]
+    request_id: str = Field(pattern=_REQUEST_ID_RE)
+    model_identity: str = Field(min_length=1, max_length=300)
+    runtime_identity: Literal[QWEN_INFERENCE_RUNTIME_IDENTITY]
+    source_bundle_sha256: str = Field(pattern=_SHA256_RE.pattern)
+    prompt_protocol_sha256: str = Field(pattern=_SHA256_RE.pattern)
+    input_root_sha256: str = Field(pattern=_SHA256_RE.pattern)
+    source_sha256: str = Field(pattern=_SHA256_RE.pattern)
+    byte_size: int = Field(gt=0, le=DEFAULT_MAX_INPUT_BYTES)
+    verified: Literal[True]
 
 
 class WorkerRuntime(Protocol):
@@ -189,9 +592,137 @@ class WorkerRuntime(Protocol):
 class _SourceFingerprint:
     device: int
     inode: int
+    mode: int
     size: int
     modified_ns: int
     changed_ns: int
+
+
+@dataclass(frozen=True, slots=True)
+class _DirectoryFingerprint:
+    device: int
+    inode: int
+    mode: int
+    size: int
+    modified_ns: int
+    changed_ns: int
+
+
+class _WorkerInputValidationError(ValueError):
+    pass
+
+
+class _WorkerInputIdentityError(ValueError):
+    pass
+
+
+@dataclass(slots=True)
+class _OpenedWorkerInput:
+    descriptor: int
+    directory_descriptors: tuple[int, ...]
+    directory_fingerprints: tuple[_DirectoryFingerprint, ...]
+    source_fingerprint: _SourceFingerprint
+    entry_name: str
+    expected_sha256: str
+    expected_byte_size: int
+    _closed: bool = False
+
+    def verify_current(self) -> None:
+        if self._closed:
+            raise _WorkerInputIdentityError("input descriptor is closed")
+        try:
+            source_metadata = os.fstat(self.descriptor)
+            directory_metadata = tuple(
+                os.fstat(descriptor) for descriptor in self.directory_descriptors
+            )
+            namespace_metadata = os.stat(
+                self.entry_name,
+                dir_fd=self.directory_descriptors[-1],
+                follow_symlinks=False,
+            )
+        except OSError as error:
+            raise _WorkerInputIdentityError("input namespace changed") from error
+        if (
+            _source_fingerprint(source_metadata) != self.source_fingerprint
+            or _source_fingerprint(namespace_metadata) != self.source_fingerprint
+            or tuple(_directory_fingerprint(item) for item in directory_metadata)
+            != self.directory_fingerprints
+        ):
+            raise _WorkerInputIdentityError("input namespace changed")
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        errors: list[OSError] = []
+        try:
+            os.close(self.descriptor)
+        except OSError as error:
+            errors.append(error)
+        for descriptor in reversed(self.directory_descriptors):
+            try:
+                os.close(descriptor)
+            except OSError as error:
+                errors.append(error)
+        if errors:
+            raise errors[0]
+
+
+@dataclass(slots=True)
+class _MaterializedWorkerInput:
+    source: _OpenedWorkerInput
+    directory: tempfile.TemporaryDirectory[str]
+    directory_descriptor: int
+    directory_fingerprint: _DirectoryFingerprint
+    descriptor: int
+    fingerprint: _SourceFingerprint
+    path: Path
+    _closed: bool = False
+
+    def verify_current(self) -> None:
+        self.source.verify_current()
+        try:
+            metadata = os.fstat(self.descriptor)
+            directory_metadata = os.fstat(self.directory_descriptor)
+            namespace_metadata = os.stat(
+                self.path.name,
+                dir_fd=self.directory_descriptor,
+                follow_symlinks=False,
+            )
+            digest, byte_size = _descriptor_identity(
+                self.descriptor,
+                maximum=self.source.expected_byte_size,
+            )
+        except (OSError, _WorkerInputValidationError) as error:
+            raise _WorkerInputIdentityError("materialized input changed") from error
+        if (
+            _source_fingerprint(metadata) != self.fingerprint
+            or _source_fingerprint(namespace_metadata) != self.fingerprint
+            or _directory_fingerprint(directory_metadata) != self.directory_fingerprint
+            or digest != self.source.expected_sha256
+            or byte_size != self.source.expected_byte_size
+        ):
+            raise _WorkerInputIdentityError("materialized input changed")
+
+    def close(self) -> bool:
+        if self._closed:
+            return True
+        self._closed = True
+        success = True
+        for descriptor in (self.descriptor, self.directory_descriptor):
+            try:
+                os.close(descriptor)
+            except OSError:
+                success = False
+        try:
+            self.source.close()
+        except OSError:
+            success = False
+        try:
+            self.directory.cleanup()
+        except OSError:
+            success = False
+        return success
 
 
 class HTTPClient(Protocol):
@@ -402,45 +933,310 @@ class _WorkerBoundaryMiddleware:
         await self.app(scope, replay_receive, send)
 
 
-def _validate_worker_input(
+def _source_fingerprint(metadata: os.stat_result) -> _SourceFingerprint:
+    return _SourceFingerprint(
+        device=metadata.st_dev,
+        inode=metadata.st_ino,
+        mode=metadata.st_mode,
+        size=metadata.st_size,
+        modified_ns=metadata.st_mtime_ns,
+        changed_ns=metadata.st_ctime_ns,
+    )
+
+
+def _directory_fingerprint(metadata: os.stat_result) -> _DirectoryFingerprint:
+    return _DirectoryFingerprint(
+        device=metadata.st_dev,
+        inode=metadata.st_ino,
+        mode=metadata.st_mode,
+        size=metadata.st_size,
+        modified_ns=metadata.st_mtime_ns,
+        changed_ns=metadata.st_ctime_ns,
+    )
+
+
+def _descriptor_identity(descriptor: int, *, maximum: int) -> tuple[str, int]:
+    try:
+        os.lseek(descriptor, 0, os.SEEK_SET)
+    except OSError as error:
+        raise _WorkerInputValidationError("input cannot be read") from error
+    checksum = sha256()
+    total = 0
+    while True:
+        try:
+            chunk = os.read(descriptor, min(1024 * 1024, maximum - total + 1))
+        except OSError as error:
+            raise _WorkerInputValidationError("input cannot be read") from error
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > maximum:
+            raise OverflowError("input exceeds the configured size limit")
+        checksum.update(chunk)
+    return checksum.hexdigest(), total
+
+
+def _open_worker_input(
+    *,
+    input_root: Path,
+    relative_path: str,
+    allowed_suffixes: frozenset[str] | None,
+    max_input_bytes: int,
+    expected_sha256: str | None = None,
+    expected_byte_size: int | None = None,
+) -> _OpenedWorkerInput:
+    relative = PurePosixPath(relative_path)
+    if (
+        allowed_suffixes is not None
+        and relative.suffix.casefold() not in allowed_suffixes
+    ):
+        raise _WorkerInputValidationError("input extension is not supported")
+    directory_descriptors: list[int] = []
+    source_descriptor: int | None = None
+    try:
+        root_descriptor = os.open(
+            input_root,
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+        directory_descriptors.append(root_descriptor)
+        for part in relative.parts[:-1]:
+            descriptor = os.open(
+                part,
+                os.O_RDONLY
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=directory_descriptors[-1],
+            )
+            directory_descriptors.append(descriptor)
+            metadata = os.fstat(descriptor)
+            if not stat.S_ISDIR(metadata.st_mode):
+                raise _WorkerInputValidationError("input parent is not a directory")
+        source_descriptor = os.open(
+            relative.parts[-1],
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=directory_descriptors[-1],
+        )
+        before = os.fstat(source_descriptor)
+    except (OSError, IndexError, _WorkerInputValidationError) as error:
+        if source_descriptor is not None:
+            try:
+                os.close(source_descriptor)
+            except OSError:
+                pass
+        for descriptor in reversed(directory_descriptors):
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        raise _WorkerInputValidationError(
+            "input is not a file under the configured root"
+        ) from error
+
+    try:
+        if not stat.S_ISREG(before.st_mode) or before.st_size <= 0:
+            raise _WorkerInputValidationError(
+                "input must be a non-empty regular file"
+            )
+        if before.st_size > max_input_bytes:
+            raise OverflowError("input exceeds the configured size limit")
+        if expected_byte_size is not None and before.st_size != expected_byte_size:
+            raise _WorkerInputIdentityError("input size does not match request")
+        digest, byte_size = _descriptor_identity(
+            source_descriptor,
+            maximum=max_input_bytes,
+        )
+        after = os.fstat(source_descriptor)
+        if _source_fingerprint(after) != _source_fingerprint(before):
+            raise _WorkerInputIdentityError("input changed while being read")
+        if expected_sha256 is not None and digest != expected_sha256:
+            raise _WorkerInputIdentityError("input digest does not match request")
+        directory_fingerprints = tuple(
+            _directory_fingerprint(os.fstat(descriptor))
+            for descriptor in directory_descriptors
+        )
+        opened = _OpenedWorkerInput(
+            descriptor=source_descriptor,
+            directory_descriptors=tuple(directory_descriptors),
+            directory_fingerprints=directory_fingerprints,
+            source_fingerprint=_source_fingerprint(before),
+            entry_name=relative.parts[-1],
+            expected_sha256=digest,
+            expected_byte_size=byte_size,
+        )
+        opened.verify_current()
+        return opened
+    except BaseException:
+        try:
+            os.close(source_descriptor)
+        except OSError:
+            pass
+        for descriptor in reversed(directory_descriptors):
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        raise
+
+
+def _write_all(descriptor: int, payload: bytes) -> None:
+    offset = 0
+    while offset < len(payload):
+        try:
+            written = os.write(descriptor, payload[offset:])
+        except OSError as error:
+            raise _WorkerInputValidationError(
+                "materialized input cannot be written"
+            ) from error
+        if written <= 0:
+            raise _WorkerInputValidationError("materialized input cannot be written")
+        offset += written
+
+
+def _materialize_worker_input(
     *,
     input_root: Path,
     request: QwenJudgeRequest,
     max_input_bytes: int,
-) -> tuple[Path, _SourceFingerprint]:
-    relative = PurePosixPath(request.relative_path)
-    lexical_path = input_root.joinpath(*relative.parts)
-    current = input_root
-    for part in relative.parts:
-        current = current / part
-        if current.is_symlink():
-            raise ValueError("symlink inputs are not allowed")
-    try:
-        source = lexical_path.resolve(strict=True)
-        source.relative_to(input_root)
-        metadata = source.stat()
-    except (OSError, ValueError) as error:
-        raise ValueError("input is not a file under the configured root") from error
-    if not stat.S_ISREG(metadata.st_mode):
-        raise ValueError("input is not a regular file")
-    if metadata.st_size <= 0:
-        raise ValueError("input file must not be empty")
+) -> _MaterializedWorkerInput:
     allowed = (
         _VIDEO_SUFFIXES
         if request.input_kind == "video"
         else _STORYBOARD_SUFFIXES
     )
-    if source.suffix.casefold() not in allowed:
-        raise ValueError("input extension is not supported")
-    if metadata.st_size > max_input_bytes:
-        raise OverflowError("input exceeds the configured size limit")
-    return source, _SourceFingerprint(
-        device=metadata.st_dev,
-        inode=metadata.st_ino,
-        size=metadata.st_size,
-        modified_ns=metadata.st_mtime_ns,
-        changed_ns=metadata.st_ctime_ns,
+    opened = _open_worker_input(
+        input_root=input_root,
+        relative_path=request.relative_path,
+        allowed_suffixes=allowed,
+        max_input_bytes=max_input_bytes,
+        expected_sha256=request.expected_sha256,
+        expected_byte_size=request.expected_byte_size,
     )
+    private_directory: tempfile.TemporaryDirectory[str] | None = None
+    private_directory_descriptor: int | None = None
+    materialized_descriptor: int | None = None
+    try:
+        private_directory = tempfile.TemporaryDirectory(
+            prefix="videoscope-qwen-input-",
+        )
+        private_root = Path(private_directory.name)
+        private_directory_descriptor = os.open(
+            private_root,
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+        destination_name = (
+            "input" + PurePosixPath(request.relative_path).suffix.casefold()
+        )
+        writable_descriptor = os.open(
+            destination_name,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+            dir_fd=private_directory_descriptor,
+        )
+        try:
+            os.lseek(opened.descriptor, 0, os.SEEK_SET)
+            copied = 0
+            while copied < opened.expected_byte_size:
+                chunk = os.read(
+                    opened.descriptor,
+                    min(1024 * 1024, opened.expected_byte_size - copied),
+                )
+                if not chunk:
+                    break
+                _write_all(writable_descriptor, chunk)
+                copied += len(chunk)
+            if copied != opened.expected_byte_size or os.read(opened.descriptor, 1):
+                raise _WorkerInputIdentityError("input changed during materialization")
+            os.fsync(writable_descriptor)
+            os.fchmod(writable_descriptor, 0o400)
+        finally:
+            os.close(writable_descriptor)
+        opened.verify_current()
+        materialized_descriptor = os.open(
+            destination_name,
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=private_directory_descriptor,
+        )
+        materialized_metadata = os.fstat(materialized_descriptor)
+        materialized_fingerprint = _source_fingerprint(materialized_metadata)
+        if (
+            not stat.S_ISREG(materialized_metadata.st_mode)
+            or stat.S_IMODE(materialized_metadata.st_mode) != 0o400
+            or materialized_metadata.st_size != opened.expected_byte_size
+        ):
+            raise _WorkerInputIdentityError("materialized input is invalid")
+        digest, byte_size = _descriptor_identity(
+            materialized_descriptor,
+            maximum=opened.expected_byte_size,
+        )
+        if (
+            digest != opened.expected_sha256
+            or byte_size != opened.expected_byte_size
+        ):
+            raise _WorkerInputIdentityError("materialized input identity mismatch")
+        return _MaterializedWorkerInput(
+            source=opened,
+            directory=private_directory,
+            directory_descriptor=private_directory_descriptor,
+            directory_fingerprint=_directory_fingerprint(
+                os.fstat(private_directory_descriptor)
+            ),
+            descriptor=materialized_descriptor,
+            fingerprint=materialized_fingerprint,
+            path=private_root / destination_name,
+        )
+    except BaseException:
+        if materialized_descriptor is not None:
+            try:
+                os.close(materialized_descriptor)
+            except OSError:
+                pass
+        if private_directory_descriptor is not None:
+            try:
+                os.close(private_directory_descriptor)
+            except OSError:
+                pass
+        try:
+            opened.close()
+        except OSError:
+            pass
+        if private_directory is not None:
+            private_directory.cleanup()
+        raise
+
+
+def _probe_worker_input(
+    *,
+    input_root: Path,
+    request: QwenProbeRequest,
+    max_input_bytes: int,
+) -> None:
+    opened = _open_worker_input(
+        input_root=input_root,
+        relative_path=request.relative_path,
+        allowed_suffixes=None,
+        max_input_bytes=max_input_bytes,
+        expected_sha256=request.expected_sha256,
+        expected_byte_size=request.expected_byte_size,
+    )
+    try:
+        opened.verify_current()
+    finally:
+        opened.close()
 
 
 def create_qwen_worker_app(
@@ -461,6 +1257,7 @@ def create_qwen_worker_app(
     resolved_root = Path(input_root).resolve(strict=True)
     if not resolved_root.is_dir():
         raise ValueError("Qwen worker input root must be a directory")
+    input_root_sha256 = _input_root_identity(resolved_root)
     if not runtime.model_identity.strip():
         raise ValueError("Qwen worker model identity must not be empty")
 
@@ -472,13 +1269,34 @@ def create_qwen_worker_app(
     )
     capacity = BoundedSemaphore(max_concurrency)
 
+    def input_root_is_current() -> bool:
+        try:
+            return _input_root_identity(resolved_root) == input_root_sha256
+        except RuntimeError:
+            return False
+
+    def validate_execution_identity(request: object) -> None:
+        if (
+            getattr(request, "model_identity", None) != runtime.model_identity
+            or getattr(request, "source_bundle_sha256", None)
+            != QWEN_SOURCE_BUNDLE_SHA256
+            or getattr(request, "prompt_protocol_sha256", None)
+            != QWEN_PROMPT_PROTOCOL_SHA256
+            or getattr(request, "input_root_sha256", None) != input_root_sha256
+            or not input_root_is_current()
+        ):
+            raise HTTPException(409, "Qwen worker execution identity does not match")
+
     @app.get("/v1/health", response_model=QwenHealthResponse)
     def health() -> QwenHealthResponse:
         return QwenHealthResponse(
             schema_version=QWEN_WORKER_SCHEMA_VERSION,
-            status="ok" if runtime.available else "unavailable",
+            status="ok" if runtime.available and input_root_is_current() else "unavailable",
             model_identity=runtime.model_identity,
             runtime_identity=QWEN_INFERENCE_RUNTIME_IDENTITY,
+            source_bundle_sha256=QWEN_SOURCE_BUNDLE_SHA256,
+            prompt_protocol_sha256=QWEN_PROMPT_PROTOCOL_SHA256,
+            input_root_sha256=input_root_sha256,
             loaded=runtime.loaded,
             input_kinds=["video", "storyboard"],
             max_input_bytes=max_input_bytes,
@@ -489,45 +1307,84 @@ def create_qwen_worker_app(
 
     @app.post("/v1/judge", response_model=QwenJudgeResponse)
     async def judge(request: QwenJudgeRequest) -> QwenJudgeResponse:
-        if request.model_identity != runtime.model_identity:
-            raise HTTPException(409, "Qwen worker model identity does not match")
-        try:
-            source, before = _validate_worker_input(
-                input_root=resolved_root,
-                request=request,
-                max_input_bytes=max_input_bytes,
-            )
-        except OverflowError as error:
-            raise HTTPException(413, "Qwen worker input is too large") from error
-        except ValueError as error:
-            raise HTTPException(400, "Invalid Qwen worker input") from error
+        validate_execution_identity(request)
         if not capacity.acquire(blocking=False):
             raise HTTPException(429, "Qwen worker is busy")
+        materialized: _MaterializedWorkerInput | None = None
+        cleanup_ok = True
         try:
             try:
-                judgement = await run_in_threadpool(runtime.judge, request, source)
+                materialized = _materialize_worker_input(
+                    input_root=resolved_root,
+                    request=request,
+                    max_input_bytes=max_input_bytes,
+                )
+            except OverflowError as error:
+                raise HTTPException(413, "Qwen worker input is too large") from error
+            except _WorkerInputIdentityError as error:
+                raise HTTPException(
+                    409,
+                    "Qwen worker input identity mismatch",
+                ) from error
+            except _WorkerInputValidationError as error:
+                raise HTTPException(400, "Invalid Qwen worker input") from error
+            try:
+                judgement = await run_in_threadpool(
+                    runtime.judge,
+                    request,
+                    materialized.path,
+                )
                 payload = QwenJudgementPayload.model_validate(asdict(judgement))
             except Exception as error:
                 logger.exception("Qwen worker inference failed")
                 raise HTTPException(503, "Qwen worker inference failed") from error
             try:
-                verified_source, after = _validate_worker_input(
-                    input_root=resolved_root,
-                    request=request,
-                    max_input_bytes=max_input_bytes,
-                )
-            except (ValueError, OverflowError) as error:
+                materialized.verify_current()
+            except (_WorkerInputIdentityError, OverflowError) as error:
                 raise HTTPException(409, "Qwen worker input changed during inference") from error
-            if verified_source != source or after != before:
-                raise HTTPException(409, "Qwen worker input changed during inference")
         finally:
+            if materialized is not None:
+                cleanup_ok = materialized.close()
             capacity.release()
+        if not cleanup_ok:
+            raise HTTPException(503, "Qwen worker input cleanup failed")
         return QwenJudgeResponse(
             schema_version=QWEN_WORKER_SCHEMA_VERSION,
             request_id=request.request_id,
             model_identity=runtime.model_identity,
             runtime_identity=QWEN_INFERENCE_RUNTIME_IDENTITY,
+            source_bundle_sha256=QWEN_SOURCE_BUNDLE_SHA256,
+            prompt_protocol_sha256=QWEN_PROMPT_PROTOCOL_SHA256,
+            input_root_sha256=input_root_sha256,
+            source_sha256=request.expected_sha256,
+            byte_size=request.expected_byte_size,
             judgement=payload,
+        )
+
+    @app.post("/v1/probe", response_model=QwenProbeResponse)
+    def probe(request: QwenProbeRequest) -> QwenProbeResponse:
+        validate_execution_identity(request)
+        try:
+            _probe_worker_input(
+                input_root=resolved_root,
+                request=request,
+                max_input_bytes=max_input_bytes,
+            )
+        except OverflowError as error:
+            raise HTTPException(413, "Qwen worker probe input is too large") from error
+        except (_WorkerInputValidationError, _WorkerInputIdentityError) as error:
+            raise HTTPException(409, "Qwen worker probe input identity mismatch") from error
+        return QwenProbeResponse(
+            schema_version=QWEN_WORKER_SCHEMA_VERSION,
+            request_id=request.request_id,
+            model_identity=runtime.model_identity,
+            runtime_identity=QWEN_INFERENCE_RUNTIME_IDENTITY,
+            source_bundle_sha256=QWEN_SOURCE_BUNDLE_SHA256,
+            prompt_protocol_sha256=QWEN_PROMPT_PROTOCOL_SHA256,
+            input_root_sha256=input_root_sha256,
+            source_sha256=request.expected_sha256,
+            byte_size=request.expected_byte_size,
+            verified=True,
         )
 
     app.add_middleware(
@@ -578,6 +1435,8 @@ class QwenWorkerClient:
         api_key: str,
         input_root: Path,
         expected_model_identity: str,
+        expected_source_bundle_sha256: str = QWEN_SOURCE_BUNDLE_SHA256,
+        expected_prompt_protocol_sha256: str = QWEN_PROMPT_PROTOCOL_SHA256,
         timeout: float = 180.0,
         client: HTTPClient | None = None,
     ) -> None:
@@ -586,11 +1445,24 @@ class QwenWorkerClient:
             raise ValueError("Qwen worker API key must be 32-256 URL-safe characters")
         if not expected_model_identity.strip():
             raise ValueError("expected Qwen model identity must not be empty")
+        if (
+            _SHA256_RE.fullmatch(expected_source_bundle_sha256) is None
+            or _SHA256_RE.fullmatch(expected_prompt_protocol_sha256) is None
+        ):
+            raise ValueError("expected Qwen executable identity is invalid")
         if not 0 < timeout <= 600:
             raise ValueError("Qwen worker timeout must be between 0 and 600 seconds")
         self._api_key = api_key
-        self.input_root = Path(input_root).resolve()
+        try:
+            self.input_root = Path(input_root).resolve(strict=True)
+            self.input_root_sha256 = _input_root_identity(self.input_root)
+        except (OSError, RuntimeError):
+            raise ValueError("Qwen worker input root is unavailable or unsafe") from None
+        if not self.input_root.is_dir():
+            raise ValueError("Qwen worker input root must be a directory")
         self.expected_model_identity = expected_model_identity
+        self.expected_source_bundle_sha256 = expected_source_bundle_sha256
+        self.expected_prompt_protocol_sha256 = expected_prompt_protocol_sha256
         self.timeout = timeout
         self.client = client
         self._client_lock = Lock()
@@ -605,7 +1477,30 @@ class QwenWorkerClient:
             "endpoint": self.endpoint,
             "model": self.expected_model_identity,
             "runtime_identity": QWEN_INFERENCE_RUNTIME_IDENTITY,
+            "source_bundle_sha256": self.expected_source_bundle_sha256,
+            "prompt_protocol_sha256": self.expected_prompt_protocol_sha256,
+            "input_root_sha256": self.input_root_sha256,
         }
+
+    def _input_root_is_current(self) -> bool:
+        try:
+            return _input_root_identity(self.input_root) == self.input_root_sha256
+        except RuntimeError:
+            return False
+
+    def _response_identity_matches(self, payload: object) -> bool:
+        return (
+            getattr(payload, "model_identity", None) == self.expected_model_identity
+            and getattr(payload, "runtime_identity", None)
+            == QWEN_INFERENCE_RUNTIME_IDENTITY
+            and getattr(payload, "source_bundle_sha256", None)
+            == self.expected_source_bundle_sha256
+            and getattr(payload, "prompt_protocol_sha256", None)
+            == self.expected_prompt_protocol_sha256
+            and getattr(payload, "input_root_sha256", None)
+            == self.input_root_sha256
+            and self._input_root_is_current()
+        )
 
     def _http_client(self) -> HTTPClient:
         if self.client is None:
@@ -641,8 +1536,8 @@ class QwenWorkerClient:
             return status
         if capability.status != "ok":
             status = QwenInferenceStatus(False, "Qwen worker model is unavailable")
-        elif capability.model_identity != self.expected_model_identity:
-            status = QwenInferenceStatus(False, "Qwen worker model identity does not match")
+        elif not self._response_identity_matches(capability):
+            status = QwenInferenceStatus(False, "Qwen worker execution identity does not match")
         else:
             status = QwenInferenceStatus(True, "Qwen worker is ready")
         with self._status_lock:
@@ -666,15 +1561,28 @@ class QwenWorkerClient:
         query: str | None,
         fps: float | None,
         max_tokens: int,
+        expected_sha256: str | None,
+        expected_byte_size: int | None,
     ) -> QwenVideoJudgement:
+        relative_path, source_sha256, source_byte_size = self._source_contract(
+            source,
+            input_kind=input_kind,
+            expected_sha256=expected_sha256,
+            expected_byte_size=expected_byte_size,
+        )
         request_id = uuid4().hex
         request = QwenJudgeRequest(
             schema_version=QWEN_WORKER_SCHEMA_VERSION,
             request_id=request_id,
             model_identity=self.expected_model_identity,
             runtime_identity=QWEN_INFERENCE_RUNTIME_IDENTITY,
+            source_bundle_sha256=self.expected_source_bundle_sha256,
+            prompt_protocol_sha256=self.expected_prompt_protocol_sha256,
+            input_root_sha256=self.input_root_sha256,
             input_kind=input_kind,
-            relative_path=self._relative_source(source),
+            relative_path=relative_path,
+            expected_sha256=source_sha256,
+            expected_byte_size=source_byte_size,
             prompt_kind=prompt_kind,
             query=query,
             fps=fps,
@@ -695,13 +1603,106 @@ class QwenWorkerClient:
             payload = QwenJudgeResponse.model_validate(raw_payload)
             if (
                 payload.request_id != request_id
-                or payload.model_identity != self.expected_model_identity
-                or payload.runtime_identity != QWEN_INFERENCE_RUNTIME_IDENTITY
+                or payload.source_sha256 != source_sha256
+                or payload.byte_size != source_byte_size
+                or not self._response_identity_matches(payload)
             ):
                 raise ValueError("Qwen worker response identity mismatch")
             return QwenVideoJudgement(**payload.judgement.model_dump())
         except (TypeError, ValueError, ValidationError):
             raise RuntimeError("Qwen worker response contract violation") from None
+
+    def _source_contract(
+        self,
+        source: Path,
+        *,
+        input_kind: Literal["video", "storyboard"] | None,
+        expected_sha256: str | None = None,
+        expected_byte_size: int | None = None,
+    ) -> tuple[str, str, int]:
+        relative_path = self._relative_source(source)
+        if (expected_sha256 is None) != (expected_byte_size is None):
+            raise RuntimeError("Qwen worker source identity is incomplete")
+        if expected_sha256 is not None and (
+            _SHA256_RE.fullmatch(expected_sha256) is None
+            or type(expected_byte_size) is not int
+            or expected_byte_size <= 0
+            or expected_byte_size > DEFAULT_MAX_INPUT_BYTES
+        ):
+            raise RuntimeError("Qwen worker source identity is invalid")
+        allowed = (
+            _VIDEO_SUFFIXES
+            if input_kind == "video"
+            else _STORYBOARD_SUFFIXES
+            if input_kind == "storyboard"
+            else None
+        )
+        try:
+            opened = _open_worker_input(
+                input_root=self.input_root,
+                relative_path=relative_path,
+                allowed_suffixes=allowed,
+                max_input_bytes=DEFAULT_MAX_INPUT_BYTES,
+                expected_sha256=expected_sha256,
+                expected_byte_size=expected_byte_size,
+            )
+        except (OSError, ValueError, OverflowError):
+            raise RuntimeError("Qwen worker source is unavailable or changed") from None
+        try:
+            opened.verify_current()
+            result = (
+                relative_path,
+                opened.expected_sha256,
+                opened.expected_byte_size,
+            )
+        finally:
+            try:
+                opened.close()
+            except OSError:
+                raise RuntimeError("Qwen worker source cleanup failed") from None
+        return result
+
+    def probe_source(self, source: Path) -> bool:
+        try:
+            relative_path, expected_sha256, expected_byte_size = self._source_contract(
+                source,
+                input_kind=None,
+            )
+        except RuntimeError:
+            raise RuntimeError("Qwen worker probe source is unavailable") from None
+        request_id = uuid4().hex
+        request = QwenProbeRequest(
+            schema_version=QWEN_WORKER_SCHEMA_VERSION,
+            request_id=request_id,
+            model_identity=self.expected_model_identity,
+            runtime_identity=QWEN_INFERENCE_RUNTIME_IDENTITY,
+            source_bundle_sha256=self.expected_source_bundle_sha256,
+            prompt_protocol_sha256=self.expected_prompt_protocol_sha256,
+            input_root_sha256=self.input_root_sha256,
+            relative_path=relative_path,
+            expected_sha256=expected_sha256,
+            expected_byte_size=expected_byte_size,
+        )
+        try:
+            response = self._http_client().post(
+                f"{self.endpoint}/v1/probe",
+                json=request.model_dump(mode="json"),
+                headers=self._headers(json_request=True),
+                timeout=min(self.timeout, 10.0),
+            )
+            response.raise_for_status()
+            payload = QwenProbeResponse.model_validate(response.json())
+            if (
+                payload.request_id != request_id
+                or payload.verified is not True
+                or payload.source_sha256 != expected_sha256
+                or payload.byte_size != expected_byte_size
+                or not self._response_identity_matches(payload)
+            ):
+                raise ValueError("Qwen worker probe response identity mismatch")
+        except Exception:
+            raise RuntimeError("Qwen worker probe failed") from None
+        return True
 
     def judge_video(
         self,
@@ -709,6 +1710,8 @@ class QwenWorkerClient:
         *,
         fps: float,
         max_tokens: int,
+        expected_sha256: str | None = None,
+        expected_byte_size: int | None = None,
     ) -> QwenVideoJudgement:
         return self._judge(
             source=source,
@@ -717,6 +1720,29 @@ class QwenWorkerClient:
             query=None,
             fps=fps,
             max_tokens=max_tokens,
+            expected_sha256=expected_sha256,
+            expected_byte_size=expected_byte_size,
+        )
+
+    def judge_video_query(
+        self,
+        source: Path,
+        query: str,
+        *,
+        fps: float,
+        max_tokens: int,
+        expected_sha256: str | None = None,
+        expected_byte_size: int | None = None,
+    ) -> QwenVideoJudgement:
+        return self._judge(
+            source=source,
+            input_kind="video",
+            prompt_kind="generic_query",
+            query=query,
+            fps=fps,
+            max_tokens=max_tokens,
+            expected_sha256=expected_sha256,
+            expected_byte_size=expected_byte_size,
         )
 
     def judge_storyboard(
@@ -725,6 +1751,8 @@ class QwenWorkerClient:
         query: str,
         *,
         max_tokens: int,
+        expected_sha256: str | None = None,
+        expected_byte_size: int | None = None,
     ) -> QwenVideoJudgement:
         return self._judge(
             source=source,
@@ -733,6 +1761,8 @@ class QwenWorkerClient:
             query=query,
             fps=None,
             max_tokens=max_tokens,
+            expected_sha256=expected_sha256,
+            expected_byte_size=expected_byte_size,
         )
 
 
@@ -808,11 +1838,17 @@ class MLXQwenWorkerRuntime:
     def _generate_video(self, source: Path, request: QwenJudgeRequest) -> str:
         from mlx_vlm import apply_chat_template, generate
 
+        if request.prompt_kind == "basketball_facts":
+            prompt_text = QwenVideoReranker._fact_prompt()
+        else:
+            if request.query is None:
+                raise ValueError("generic-query video requires a query")
+            prompt_text = QwenVideoReranker._generic_prompt(request.query)
         model, processor = self._load()
         prompt = apply_chat_template(
             processor,
             model.config,
-            [QwenVideoReranker._fact_prompt()],
+            [prompt_text],
             video=str(source),
             fps=request.fps,
             enable_thinking=False,
@@ -895,6 +1931,10 @@ class QwenWorkerSettings(BaseSettings):
         default=Path("data"),
         validation_alias="VIDEOSCOPE_DATA_DIR",
     )
+    worker_input_root: Path | None = Field(
+        default=None,
+        validation_alias="VIDEOSCOPE_QWEN_WORKER_INPUT_ROOT",
+    )
     port: int = Field(
         default=8781,
         ge=1,
@@ -916,7 +1956,11 @@ class QwenWorkerSettings(BaseSettings):
 
     @property
     def input_root(self) -> Path:
-        return self.data_dir / "tmp"
+        return (
+            self.worker_input_root
+            if self.worker_input_root is not None
+            else self.data_dir / "tmp"
+        )
 
 
 def main() -> None:
@@ -927,6 +1971,7 @@ def main() -> None:
     revision = model_revision(settings.model_name)
     if revision is None:
         raise RuntimeError("Qwen worker model must have a pinned revision")
+    attest_qwen_worker_startup(settings.model_name, revision)
     try:
         settings.input_root.mkdir(parents=True, exist_ok=True)
     except OSError:

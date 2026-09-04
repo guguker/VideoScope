@@ -232,11 +232,26 @@ platform:
 
 Cases support zero, one or multiple relevant intervals, hard negatives, domain
 and modality slices, gold/silver provenance and complete-video split groups.
-The current core records auditable retrieval quality and per-case latency.
-Process-tree memory and contained artifact/storage growth require the future
-concrete runner and measurement protocol; they must not be claimed before that
-boundary exists. Dataset and promotion thresholds are frozen before model
-comparison.
+The current core records auditable retrieval quality, per-case latency, bounded
+raw process-tree RSS samples, and contained artifact/storage snapshots. The
+warm, read-only product runner accepts every frozen profile, emits a complete
+per-asset capability matrix during preflight, and binds profile identities to
+the selected plan. Existing external workers are not measurable merely because
+an HTTP health probe succeeds: without PID/start-token/executable binding their
+profiles fail measurement with
+`external_worker_process_binding_unavailable`. InternVideo is accepted as a
+profile but remains explicitly `not_configured`. Dataset and promotion
+thresholds are frozen before model comparison.
+
+The separate offline full-ML smoke self-starts Vision, Whisper, Lighthouse and
+Qwen as measured descendants, runs OCR as a child, and exercises the production
+path from synthetic upload and durable indexing through five generation-bound
+search profiles, inspectable evidence and an FFprobe-verified MP4 export. Its
+receipt includes raw process-tree RSS plus system-wide Metal and VM samples;
+system-wide Metal is standalone and non-additive with process RSS, not a
+per-worker attribution. The smoke implementation is present, but Phase 0 remains
+open until the exact clean-checkout artifacts and target M4 Pro produce and pass
+the retained evidence gate.
 
 ## Model direction
 

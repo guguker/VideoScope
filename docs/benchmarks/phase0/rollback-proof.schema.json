@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:videoscope:phase0:rollback-proof:v1",
+  "title": "VideoScope generated Phase-0 rollback proof",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "proof_id",
+    "code_sha",
+    "forced_failure",
+    "semantic_assertions",
+    "status",
+    "test_node_id",
+    "test_result",
+    "test_source_sha256"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "proof_id": {"const": "phase0-persisted-generation-rollback-v1"},
+    "code_sha": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
+    "forced_failure": {"const": "injected_pre_commit_publication_failure"},
+    "semantic_assertions": {
+      "type": "array",
+      "prefixItems": [
+        {"const": "candidate_release_not_activated_after_forced_failure"},
+        {"const": "prior_release_active_after_process_restart"},
+        {"const": "prior_release_searchable_after_process_restart"},
+        {"const": "candidate_generation_addressable_but_inactive"},
+        {"const": "source_asset_identity_unchanged"},
+        {"const": "source_reindex_not_required"}
+      ],
+      "items": false,
+      "minItems": 6,
+      "maxItems": 6
+    },
+    "status": {"const": "verified"},
+    "test_node_id": {
+      "const": "backend/tests/test_video_index_jobs_repository.py::test_failed_full_job_publish_keeps_prior_release_searchable_after_restart"
+    },
+    "test_result": {"const": "passed"},
+    "test_source_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

@@ -21,14 +21,23 @@ from .environment import (
     ProductBenchmarkEnvironment,
     open_product_benchmark_environment,
 )
+from .measurements import (
+    DeclaredStorageRoot,
+    ManagedProcessBinding,
+    MeasurementError,
+    MeasurementUnavailableError,
+    SystemMeasurementFactory,
+    create_native_process_snapshot_provider,
+)
 from .policy import load_policy
 from .product_runtime import ProductSnapshotCleanupError, ProductSnapshotError
-from .profiles import get_profile
+from .profiles import BenchmarkProfile, get_profile
 from .runner import (
     EXECUTION_LIFECYCLE_COMPONENT_ID,
     BenchmarkExecutionError,
     BenchmarkRunner,
     ExecutionIdentities,
+    _validate_profile_execution_identities,
     audit_run_manifest,
 )
 from .schema import (
@@ -105,6 +114,11 @@ def _main(argv: Sequence[str] | None = None) -> int:
             sys.stdout.write("\n")
         else:
             _write_json(sys.stdout, value)
+        if (
+            arguments.command == "run"
+            and getattr(arguments, "preflight", False)
+        ):
+            return _preflight_exit_code(value)
         return EXIT_SUCCESS
     except _CliUsageError:
         return _fail(
@@ -133,6 +147,18 @@ def _main(argv: Sequence[str] | None = None) -> int:
             EXIT_EXECUTION,
             "execution_failed",
             "benchmark execution or preflight failed",
+        )
+    except MeasurementUnavailableError as error:
+        return _fail(
+            EXIT_MEASUREMENT,
+            error.code,
+            "benchmark measurement is unavailable",
+        )
+    except MeasurementError as error:
+        return _fail(
+            EXIT_MEASUREMENT,
+            error.code,
+            "benchmark measurement failed",
         )
     except BenchmarkExecutionError:
         if arguments is not None and arguments.command == "run":
@@ -176,6 +202,23 @@ def _main(argv: Sequence[str] | None = None) -> int:
             "internal_error",
             "benchmark command failed",
         )
+
+
+def _preflight_exit_code(value: object) -> int:
+    if not isinstance(value, dict):
+        raise BenchmarkExecutionError("benchmark preflight result is invalid")
+    status = value.get("status")
+    measurement = value.get("measurement")
+    if not isinstance(measurement, dict):
+        raise BenchmarkExecutionError("benchmark preflight result is invalid")
+    measurement_status = measurement.get("status")
+    if status == "ready" and measurement_status == "ready":
+        return EXIT_SUCCESS
+    if measurement_status != "ready":
+        return EXIT_MEASUREMENT
+    if status == "not_ready":
+        return EXIT_EXECUTION
+    raise BenchmarkExecutionError("benchmark preflight result is invalid")
 
 
 def _install_termination_handler():  # type: ignore[no-untyped-def]
@@ -285,17 +328,20 @@ def _dispatch(arguments: argparse.Namespace) -> dict[str, object] | str:
     raise _CliUsageError("unsupported command")
 
 
-def _execute_product_run(arguments: argparse.Namespace) -> dict[str, object]:
-    if (
-        arguments.profile != _RUN_PROFILE_ID
-        or arguments.execution_mode != _RUN_EXECUTION_MODE
-    ):
+def _execute_product_run(
+    arguments: argparse.Namespace,
+    *,
+    managed_workers: tuple[ManagedProcessBinding, ...] = (),
+    explicit_settings: AppSettings | None = None,
+    expected_code_sha: str | None = None,
+) -> dict[str, object]:
+    if arguments.execution_mode != _RUN_EXECUTION_MODE:
         raise BenchmarkExecutionError(
-            "only lexical_qdrant warm benchmark execution is supported"
+            "only warm benchmark execution is supported"
         )
     _require_id(arguments.run_id, "run_id")
     dataset = load_dataset(arguments.dataset)
-    profile = get_profile(_RUN_PROFILE_ID)
+    profile = get_profile(arguments.profile)
     registry = _existing_registry(arguments.registry)
     run_path = registry.runs_path / arguments.run_id
     if (
@@ -310,19 +356,39 @@ def _execute_product_run(arguments: argparse.Namespace) -> dict[str, object]:
         else _load_exact_bindings(arguments.bindings, dataset)
     )
     code_sha = _current_code_sha()
+    if expected_code_sha is not None and code_sha != expected_code_sha:
+        raise _CodeIdentityError(
+            "Git HEAD identity differs from the batch identity"
+        )
     hardware = _current_hardware_profile()
-    try:
-        settings = AppSettings(data_dir=arguments.data_dir)
-    except Exception as error:
-        raise BenchmarkExecutionError(
-            "validated product benchmark settings are unavailable"
-        ) from error
+    if explicit_settings is None:
+        try:
+            settings = AppSettings(data_dir=arguments.data_dir)
+        except Exception as error:
+            raise BenchmarkExecutionError(
+                "validated product benchmark settings are unavailable"
+            ) from error
+    else:
+        if not isinstance(explicit_settings, AppSettings):
+            raise BenchmarkExecutionError(
+                "explicit product benchmark settings are invalid"
+            )
+        expected_data_dir = Path(os.path.abspath(arguments.data_dir))
+        actual_data_dir = Path(os.path.abspath(explicit_settings.data_dir))
+        if expected_data_dir != actual_data_dir:
+            raise BenchmarkExecutionError(
+                "explicit product benchmark data root differs from the request"
+            )
+        settings = explicit_settings
     environment = _open_environment(
         settings,
         arguments.scratch_parent,
+        profile_id=profile.profile_id,
+        execution_mode=arguments.execution_mode,
     )
     try:
         resolver = _environment_resolver(environment, bindings)
+        source_bound_workers = environment.probe_worker_sources()
         if arguments.preflight:
             summary = _preflight_environment(
                 environment,
@@ -331,27 +397,64 @@ def _execute_product_run(arguments: argparse.Namespace) -> dict[str, object]:
                 profile=profile,
                 run_id=arguments.run_id,
                 code_sha=code_sha,
+                execution_mode=arguments.execution_mode,
             )
+            if managed_workers:
+                measurement_summary = _preflight_measurement(
+                    settings,
+                    environment,
+                    profile,
+                    managed_workers=managed_workers,
+                )
+            else:
+                measurement_summary = _preflight_measurement(
+                    settings,
+                    environment,
+                    profile,
+                )
+            summary["measurement"] = measurement_summary
+            if source_bound_workers:
+                summary["source_bound_worker_probes"] = list(
+                    source_bound_workers
+                )
+            if measurement_summary["status"] != "ready":
+                summary["status"] = "not_ready"
         else:
+            if managed_workers:
+                measurement = _create_product_measurement_factory(
+                    settings,
+                    environment,
+                    profile,
+                    managed_workers=managed_workers,
+                )
+            else:
+                measurement = _create_product_measurement_factory(
+                    settings,
+                    environment,
+                    profile,
+                )
             runner = BenchmarkRunner(
                 registry=registry,
                 asset_resolver=resolver,
                 search=environment.search_adapter,
                 hardware=hardware,
                 code_sha=code_sha,
+                measurement=measurement,
             )
             run = runner.run(
                 dataset,
-                profile_id=_RUN_PROFILE_ID,
+                profile_id=profile.profile_id,
                 run_id=arguments.run_id,
-                execution_mode=_RUN_EXECUTION_MODE,
+                execution_mode=arguments.execution_mode,
                 publish=False,
             )
     except BaseException as error:
         _raise_after_environment_cleanup(environment, error)
     _close_environment_fully(environment)
     if arguments.preflight:
-        if _current_code_sha() != code_sha:
+        if _current_code_sha() != code_sha or (
+            expected_code_sha is not None and code_sha != expected_code_sha
+        ):
             raise _CodeIdentityError(
                 "Git HEAD identity changed during benchmark preflight"
             )
@@ -360,12 +463,12 @@ def _execute_product_run(arguments: argparse.Namespace) -> dict[str, object]:
         raise BenchmarkExecutionError(
             "only a complete benchmark run may be published"
         )
-    if run.measurement_status not in {"not_measured", "complete"}:
-        raise BenchmarkExecutionError(
-            "a failed benchmark measurement may not be published"
-        )
+    if run.measurement_status != "complete":
+        raise MeasurementError("benchmark_measurement_incomplete")
     audit_run_manifest(dataset, run)
-    if _current_code_sha() != code_sha:
+    if _current_code_sha() != code_sha or (
+        expected_code_sha is not None and code_sha != expected_code_sha
+    ):
         raise _CodeIdentityError(
             "Git HEAD identity changed during benchmark execution"
         )
@@ -374,8 +477,8 @@ def _execute_product_run(arguments: argparse.Namespace) -> dict[str, object]:
         "status": "published",
         "run_id": run.run_id,
         "run_status": run.run_status,
-        "profile_id": _RUN_PROFILE_ID,
-        "execution_mode": _RUN_EXECUTION_MODE,
+        "profile_id": profile.profile_id,
+        "execution_mode": arguments.execution_mode,
         "dataset_revision": run.dataset_revision,
         "case_count": len(run.case_outcomes),
     }
@@ -390,14 +493,178 @@ def _environment_resolver(
     return LocalAssetResolver(environment.repository, bindings=bindings)
 
 
+def _external_worker_roles(profile: BenchmarkProfile) -> tuple[str, ...]:
+    roles: set[str] = set()
+    plan = profile.search_plan
+    if plan.visual_search != "disabled":
+        roles.add("vision")
+    if plan.lighthouse:
+        roles.add("lighthouse")
+    if plan.reranker == "qwen":
+        roles.add("qwen")
+    elif plan.reranker == "internvideo":
+        roles.add("internvideo")
+    return tuple(sorted(roles))
+
+
+def _create_product_measurement_factory(
+    settings: AppSettings,
+    environment: ProductBenchmarkEnvironment,
+    profile: BenchmarkProfile,
+    *,
+    managed_workers: tuple[ManagedProcessBinding, ...] = (),
+) -> SystemMeasurementFactory:
+    external_roles = _external_worker_roles(profile)
+    managed_roles = {
+        worker.role
+        for worker in managed_workers
+        if isinstance(worker, ManagedProcessBinding)
+    }
+    if not set(external_roles) <= managed_roles:
+        raise MeasurementUnavailableError(
+            "external_worker_process_binding_unavailable"
+        )
+    data_root = Path(os.path.abspath(os.fspath(settings.data_dir)))
+    scratch_root = Path(environment.scratch_root)
+    provider = create_native_process_snapshot_provider(root_pid=os.getpid())
+    return SystemMeasurementFactory(
+        storage_roots=(
+            DeclaredStorageRoot(
+                root_id="active-text-vector-storage",
+                path=data_root / "qdrant" / "text",
+                purpose="active_immutable_artifacts",
+            ),
+            DeclaredStorageRoot(
+                root_id="benchmark-private-scratch",
+                path=scratch_root,
+                purpose="benchmark_scratch",
+            ),
+        ),
+        execution_mode="warm",
+        cache_policy_identity="process-cache-preserved@1",
+        process_provider=provider,
+        process_root_pid=os.getpid(),
+        managed_workers=managed_workers,
+    )
+
+
+def _measurement_preflight_failure(
+    *,
+    status: str,
+    reason_code: str,
+    external_roles: tuple[str, ...],
+) -> dict[str, object]:
+    return {
+        "external_worker_roles": list(external_roles),
+        "measurement_protocol_identity": None,
+        "metal_telemetry_status": "unavailable",
+        "process_provider_identity": None,
+        "reason_code": reason_code,
+        "status": status,
+        "storage_root_ids": [],
+    }
+
+
+def _preflight_measurement(
+    settings: AppSettings,
+    environment: ProductBenchmarkEnvironment,
+    profile: BenchmarkProfile,
+    *,
+    managed_workers: tuple[ManagedProcessBinding, ...] = (),
+) -> dict[str, object]:
+    external_roles = _external_worker_roles(profile)
+    try:
+        factory = _create_product_measurement_factory(
+            settings,
+            environment,
+            profile,
+            managed_workers=managed_workers,
+        )
+    except MeasurementUnavailableError as error:
+        return _measurement_preflight_failure(
+            status="not_configured" if external_roles else "unavailable",
+            reason_code=error.code,
+            external_roles=external_roles,
+        )
+    except MeasurementError as error:
+        return _measurement_preflight_failure(
+            status="failed",
+            reason_code=error.code,
+            external_roles=external_roles,
+        )
+
+    session = None
+    evidence = None
+    failure: dict[str, object] | None = None
+    try:
+        session = factory.open_session()
+        session.start()
+        evidence = session.finish()
+    except MeasurementUnavailableError as error:
+        failure = _measurement_preflight_failure(
+            status="unavailable",
+            reason_code=error.code,
+            external_roles=external_roles,
+        )
+    except MeasurementError as error:
+        failure = _measurement_preflight_failure(
+            status="failed",
+            reason_code=error.code,
+            external_roles=external_roles,
+        )
+    except (KeyboardInterrupt, SystemExit, _TerminationRequested):
+        raise
+    except Exception:
+        failure = _measurement_preflight_failure(
+            status="failed",
+            reason_code="measurement_probe_failed",
+            external_roles=external_roles,
+        )
+    if session is not None:
+        try:
+            session.close()
+        except (KeyboardInterrupt, SystemExit, _TerminationRequested):
+            raise
+        except Exception:
+            return _measurement_preflight_failure(
+                status="failed",
+                reason_code="measurement_probe_cleanup_failed",
+                external_roles=external_roles,
+            )
+    if failure is not None:
+        return failure
+    if evidence is None:
+        return _measurement_preflight_failure(
+            status="failed",
+            reason_code="measurement_probe_failed",
+            external_roles=external_roles,
+        )
+
+    provider = factory.process_provider
+    provider_identity = getattr(provider, "identity", None)
+    return {
+        "external_worker_roles": list(external_roles),
+        "managed_worker_roles": [
+            item.role for item in sorted(managed_workers, key=lambda value: value.role)
+        ],
+        "measurement_protocol_identity": factory.protocol_identity().identity,
+        "metal_telemetry_status": evidence.metal_telemetry_status,
+        "process_provider_identity": provider_identity,
+        "reason_code": None,
+        "status": "ready",
+        "storage_root_ids": [root.root_id for root in factory.storage_roots],
+    }
+
+
 def _preflight_environment(
     environment: ProductBenchmarkEnvironment,
     resolver: LocalAssetResolver,
     dataset: BenchmarkDataset,
     *,
-    profile,  # type: ignore[no-untyped-def]
+    profile: BenchmarkProfile,
     run_id: str,
     code_sha: str,
+    execution_mode: str,
 ) -> dict[str, object]:
     try:
         assets = tuple(
@@ -413,7 +680,7 @@ def _preflight_environment(
         session = environment.search_adapter.open_session(
             profile,
             assets,
-            execution_mode=_RUN_EXECUTION_MODE,
+            execution_mode=execution_mode,
         )
         required_methods = (
             "identities",
@@ -435,9 +702,9 @@ def _preflight_environment(
         if (
             not isinstance(lifecycle, ComponentIdentity)
             or lifecycle.component_id != EXECUTION_LIFECYCLE_COMPONENT_ID
-            or not lifecycle.identity.startswith(f"{_RUN_EXECUTION_MODE}:")
+            or not lifecycle.identity.startswith(f"{execution_mode}:")
             or not lifecycle.identity.removeprefix(
-                f"{_RUN_EXECUTION_MODE}:"
+                f"{execution_mode}:"
             ).strip()
         ):
             raise BenchmarkExecutionError(
@@ -448,13 +715,37 @@ def _preflight_environment(
             lifecycle=lifecycle,
             environment=environment,
             profile=profile,
+            execution_mode=execution_mode,
         )
+        capability_matrix: list[dict[str, object]] = []
+        all_ready = True
         for asset in assets:
+            states: dict[str, str] = {}
             for capability in profile.required_capabilities:
-                if session.capability_state(asset, capability) != "complete":
+                state = session.capability_state(asset, capability)
+                if state not in {
+                    "cancelled",
+                    "complete",
+                    "failed",
+                    "missing",
+                    "not_configured",
+                    "queued",
+                    "running",
+                    "stale",
+                }:
                     raise BenchmarkExecutionError(
-                        "benchmark preflight capability is incomplete"
+                        "benchmark preflight capability state is invalid"
                     )
+                states[capability] = state
+            asset_ready = all(state == "complete" for state in states.values())
+            all_ready = all_ready and asset_ready
+            capability_matrix.append(
+                {
+                    "asset_id": asset.asset_id,
+                    "capabilities": states,
+                    "status": "ready" if asset_ready else "not_ready",
+                }
+            )
     except BenchmarkExecutionError:
         raise
     except Exception as error:
@@ -468,15 +759,16 @@ def _preflight_environment(
                     "benchmark preflight session could not be closed"
                 ) from error
     return {
-        "status": "ready",
+        "status": "ready" if all_ready else "not_ready",
         "run_id": run_id,
-        "profile_id": _RUN_PROFILE_ID,
-        "execution_mode": _RUN_EXECUTION_MODE,
+        "profile_id": profile.profile_id,
+        "execution_mode": execution_mode,
         "dataset_revision": dataset_revision(dataset),
         "code_sha": code_sha,
         "environment_identity": environment.identity.identity,
         "asset_count": len(assets),
         "capability_count": len(assets) * len(profile.required_capabilities),
+        "capability_matrix": capability_matrix,
     }
 
 
@@ -485,51 +777,21 @@ def _validate_preflight_identities(
     *,
     lifecycle: ComponentIdentity,
     environment: ProductBenchmarkEnvironment,
-    profile,  # type: ignore[no-untyped-def]
+    profile: BenchmarkProfile,
+    execution_mode: str,
 ) -> None:
-    model = {
-        identity.component_id: identity.identity
-        for identity in identities.model_identities
-    }
-    index = {
-        identity.component_id: identity.identity
-        for identity in identities.index_identities
-    }
-    config = {
-        identity.component_id: identity.identity
-        for identity in identities.config_identities
-    }
-    expected_evaluation = profile.search_plan.identity.replace(
-        "evaluation-search-plan",
-        "evaluation-search-configuration",
-        1,
-    )
-    expected_config_ids = {
-        "benchmark_product_environment",
-        "evaluation_search_configuration",
-        "product_search_lifecycle",
-        "product_search_runtime",
-    }
-    text_generations = index.get("text_vector_generations", "")
-    product_runtime = config.get("product_search_runtime", "")
-    if (
-        set(model) != {"text_embedding"}
-        or set(index) != {"text_vector_index", "text_vector_generations"}
-        or set(config) != expected_config_ids
-        or not model["text_embedding"].startswith("fastembed@")
-        or not _is_sha256(index["text_vector_index"])
-        or not text_generations.startswith("sha256:")
-        or not _is_sha256(text_generations.removeprefix("sha256:"))
-        or config["benchmark_product_environment"]
-        != environment.identity.identity
-        or config["evaluation_search_configuration"] != expected_evaluation
-        or config["product_search_lifecycle"] != lifecycle.identity
-        or not product_runtime.startswith("sha256:")
-        or not _is_sha256(product_runtime.removeprefix("sha256:"))
-    ):
+    try:
+        _validate_profile_execution_identities(
+            identities,
+            profile=profile,
+            lifecycle=lifecycle,
+            execution_mode=execution_mode,
+            expected_environment_identity=environment.identity.identity,
+        )
+    except BenchmarkExecutionError:
         raise BenchmarkExecutionError(
             "benchmark preflight product identities are invalid"
-        )
+        ) from None
 
 
 def _is_sha256(value: object) -> bool:
@@ -543,13 +805,16 @@ def _is_sha256(value: object) -> bool:
 def _open_environment(
     settings: AppSettings,
     scratch_parent: Path,
+    *,
+    profile_id: str,
+    execution_mode: str,
 ) -> ProductBenchmarkEnvironment:
     try:
         return open_product_benchmark_environment(
             settings,
             scratch_parent,
-            profile_id=_RUN_PROFILE_ID,
-            execution_mode=_RUN_EXECUTION_MODE,
+            profile_id=profile_id,
+            execution_mode=execution_mode,
         )
     except BenchmarkEnvironmentCleanupError as error:
         try:
@@ -734,49 +999,8 @@ def _current_code_sha() -> str:
         state = record[:2]
         if state != b"??":
             raise _CodeIdentityError("tracked Git worktree changes are not allowed")
-        path = record[3:].decode("utf-8", errors="surrogateescape")
-        if _relevant_untracked_path(path):
-            raise _CodeIdentityError(
-                "untracked source, configuration, or lock files are not allowed"
-            )
+        raise _CodeIdentityError("untracked Git worktree files are not allowed")
     return head
-
-
-def _relevant_untracked_path(path: str) -> bool:
-    normalized = path.replace("\\", "/")
-    if normalized.startswith(
-        (
-            "backend/src/",
-            "backend/scripts/",
-            "backend/workers/",
-            "backend/config/",
-            "src/",
-            "scripts/",
-            "workers/",
-            "config/",
-        )
-    ):
-        return True
-    name = normalized.rsplit("/", 1)[-1]
-    lower_name = name.casefold()
-    if lower_name.endswith(".lock") or lower_name.startswith("requirements"):
-        return True
-    if lower_name.startswith(("dockerfile", "compose.")):
-        return True
-    if name in {
-        "Makefile",
-        "pyproject.toml",
-        "uv.lock",
-        "poetry.lock",
-        "Pipfile.lock",
-        "package.json",
-        "package-lock.json",
-        "pnpm-workspace.yaml",
-    }:
-        return True
-    return normalized.count("/") <= 1 and lower_name.endswith(
-        (".toml", ".yaml", ".yml")
-    )
 
 
 def _current_hardware_profile() -> HardwareProfile:

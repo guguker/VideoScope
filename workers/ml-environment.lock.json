@@ -1,0 +1,254 @@
+{
+  "attestation_id": "videoscope-phase0-ml-environment-v1",
+  "capabilities": [
+    {
+      "contract_ids": [
+        "backend-lock"
+      ],
+      "environment_ids": [
+        "base"
+      ],
+      "id": "base_text_search",
+      "model_identities": [
+        "xenova/paraphrase-multilingual-mpnet-base-v2@e5d116277351513fd260955ece953ecddde7046e"
+      ],
+      "runtime_identity": "fastembed==0.8.0|algorithm==mean-pooling-v1|python==3.12.13|platform==aarch64-apple-darwin-macos14plus|lock-sha256:797d9e4824bd3d71c6ff7c1624abfaa3d6b6d2d126236f23fb7037dcf845d457"
+    },
+    {
+      "contract_ids": [
+        "vision-lock"
+      ],
+      "environment_ids": [
+        "vision"
+      ],
+      "id": "dense_siglip",
+      "model_identities": [
+        "google/siglip2-base-patch16-224@75de2d55ec2d0b4efc50b3e9ad70dba96a7b2fa2",
+        "google/siglip2-base-patch16-384@f775b65a79762255128c981547af89addcfe0f88"
+      ],
+      "runtime_identity": "videoscope-vision-worker-v1|python==3.12.13|platform==aarch64-apple-darwin|macos-major>=14|siglip-backend==mps|siglip-dtype==float32|rfdetr-backend==mps|rfdetr-dtype==float32|lock-sha256:261be2a4694b09e0b0e4a9b1919feb05a6d5fa334f46bfb2b7d261cb5e3487c6"
+    },
+    {
+      "contract_ids": [
+        "vision-lock"
+      ],
+      "environment_ids": [
+        "vision"
+      ],
+      "id": "object_detection",
+      "model_identities": [
+        "rfdetr-small@sha256:d81979a9213a2109345158ce9232668df4c1ae52e9b8db3f2ec0a8cbad959b33"
+      ],
+      "runtime_identity": "videoscope-vision-worker-v1|python==3.12.13|platform==aarch64-apple-darwin|macos-major>=14|siglip-backend==mps|siglip-dtype==float32|rfdetr-backend==mps|rfdetr-dtype==float32|lock-sha256:261be2a4694b09e0b0e4a9b1919feb05a6d5fa334f46bfb2b7d261cb5e3487c6"
+    },
+    {
+      "contract_ids": [
+        "whisper-lock"
+      ],
+      "environment_ids": [
+        "whisper"
+      ],
+      "id": "speech_transcription",
+      "model_identities": [
+        "mlx-community/whisper-large-v3-turbo@a4aaeec0636e6fef84abdcbe3544cb2bf7e9f6fb"
+      ],
+      "runtime_identity": "mlx-whisper-worker-v2:mlx-whisper==0.4.3:python==3.12.13:platform=darwin-arm64-macos14plus:model-artifacts=v1"
+    },
+    {
+      "contract_ids": [
+        "ocr-lock",
+        "ocr-model-manifest",
+        "ocr-source-manifest"
+      ],
+      "environment_ids": [
+        "ocr"
+      ],
+      "id": "ocr_text",
+      "model_identities": [
+        "paddleocr-models-v1:sha256:623ad4bd1fa38f07332e5b1a6fd0a6f691b98c8d38153b9d4f32e1b9df6c9b80"
+      ],
+      "runtime_identity": "videoscope-paddleocr-worker-v1|python==3.12.13|platform==aarch64-apple-darwin-macos14plus|lock-sha256:f1d9979471ad0a051576e9cdd0e5de25ca20f1e67ed48d284f0f904353c356a0"
+    },
+    {
+      "contract_ids": [
+        "lighthouse-lock"
+      ],
+      "environment_ids": [
+        "lighthouse"
+      ],
+      "id": "temporal_refinement",
+      "model_identities": [
+        "lighthouse/qd-detr-qvhighlight@sha256:42798d352dde089a835cb4995eb9c8084a2e97337166abbbb09c12856aec2c55",
+        "lighthouse/source@d095eaa552cecef240897a8b750306b3b2a08740",
+        "openai/clip@d05afc436d78f1c48dc0dbf8e5980a9d471f35f6",
+        "openai/clip-vit-b-32@sha256:40d365715913c9da98579312b702a82c18be219cc2a73407c4526f58eba950af"
+      ],
+      "runtime_identity": "videoscope-lighthouse-worker-v2|python==3.11.14|platform==aarch64-apple-darwin|lock-sha256:c0fb00e3f7b106bf063b2b31e1dacda66a36ad51153258d2a5cdf0407fa25235"
+    },
+    {
+      "contract_ids": [
+        "backend-lock",
+        "qwen-model-manifest",
+        "qwen-runtime-manifest"
+      ],
+      "environment_ids": [
+        "qwen"
+      ],
+      "id": "qwen_verification",
+      "model_identities": [
+        "mlx-community/Qwen3.5-9B-MLX-4bit@938d8919941c6e7efd3c7150eff7fe9d12afa631"
+      ],
+      "runtime_identity": "videoscope-qwen-worker-v4|python==3.12.13|platform==aarch64-apple-darwin-macos14plus|runtime-manifest-sha256:0481dda4b0aef9927d5f9adb1a5f7292f997cac39a6d59ecef0087913d80335f|model-manifest-sha256:abaeb6d14ccbdc1741cccea700edd3385eb7cb3d215796b465c4d5a1a0504fe0"
+    }
+  ],
+  "contracts": [
+    {
+      "id": "backend-lock",
+      "kind": "dependency_lock",
+      "path": "backend/uv.lock",
+      "sha256": "797d9e4824bd3d71c6ff7c1624abfaa3d6b6d2d126236f23fb7037dcf845d457"
+    },
+    {
+      "id": "vision-lock",
+      "kind": "dependency_lock",
+      "path": "workers/vision/requirements.lock",
+      "sha256": "261be2a4694b09e0b0e4a9b1919feb05a6d5fa334f46bfb2b7d261cb5e3487c6"
+    },
+    {
+      "id": "whisper-lock",
+      "kind": "dependency_lock",
+      "path": "workers/whisper/requirements.lock",
+      "sha256": "23000652063f4e3e9fbbb66cfa80f2ec252b3bfb7df517f89ede1283c7af4212"
+    },
+    {
+      "id": "ocr-lock",
+      "kind": "dependency_lock",
+      "path": "workers/ocr/requirements.lock",
+      "sha256": "f1d9979471ad0a051576e9cdd0e5de25ca20f1e67ed48d284f0f904353c356a0"
+    },
+    {
+      "canonical_json_sha256": "623ad4bd1fa38f07332e5b1a6fd0a6f691b98c8d38153b9d4f32e1b9df6c9b80",
+      "id": "ocr-model-manifest",
+      "kind": "model_manifest",
+      "path": "workers/ocr/model-artifacts.lock.json",
+      "sha256": "9b5004e5c4d1ac4fd5e18322c3ce1fc4b45465d91affdc82e9f830edd01e0168"
+    },
+    {
+      "canonical_json_sha256": "7f20cf852ed4af67a12042d75b47d24b8e44b666b3e3d90e40e888523db85fe0",
+      "id": "ocr-source-manifest",
+      "kind": "model_source_manifest",
+      "path": "workers/ocr/model-sources.lock.json",
+      "sha256": "eac7d1d9f9cce656ceb9ec0f8b8d48c01cd2e0620e8d4892be7b64828465c2fb"
+    },
+    {
+      "id": "lighthouse-lock",
+      "kind": "dependency_lock",
+      "path": "workers/lighthouse/requirements.lock",
+      "sha256": "c0fb00e3f7b106bf063b2b31e1dacda66a36ad51153258d2a5cdf0407fa25235"
+    },
+    {
+      "canonical_json_sha256": "0481dda4b0aef9927d5f9adb1a5f7292f997cac39a6d59ecef0087913d80335f",
+      "id": "qwen-runtime-manifest",
+      "kind": "worker_manifest",
+      "path": "workers/qwen/runtime.lock.json",
+      "sha256": "84a46848ffec3ab4f259647af3a56bf72d131fe772be1738299d00dc6b5ac8e3"
+    },
+    {
+      "canonical_json_sha256": "abaeb6d14ccbdc1741cccea700edd3385eb7cb3d215796b465c4d5a1a0504fe0",
+      "id": "qwen-model-manifest",
+      "kind": "model_manifest",
+      "path": "workers/qwen/model-artifacts.lock.json",
+      "sha256": "92b21a3f5b48a18365e8152cd4a22d838321639a1a4fa210ec02931a692167c5"
+    }
+  ],
+  "environments": [
+    {
+      "dependency_contract_id": "backend-lock",
+      "directory": ".venv",
+      "distribution_source": {
+        "kind": "frozen_identity",
+        "sha256": "5eacdec87f15e2ae18a02d4be46c1c8021098a9d9b04e807c491380012b1b8cf"
+      },
+      "id": "base",
+      "python": "3.12.13"
+    },
+    {
+      "dependency_contract_id": "vision-lock",
+      "directory": ".venv-vision",
+      "distribution_source": {
+        "contract_id": "vision-lock",
+        "kind": "requirements_lock"
+      },
+      "id": "vision",
+      "python": "3.12.13"
+    },
+    {
+      "dependency_contract_id": "whisper-lock",
+      "directory": ".venv-whisper",
+      "distribution_source": {
+        "contract_id": "whisper-lock",
+        "kind": "requirements_lock"
+      },
+      "id": "whisper",
+      "python": "3.12.13"
+    },
+    {
+      "dependency_contract_id": "ocr-lock",
+      "directory": ".venv-ocr",
+      "distribution_source": {
+        "contract_id": "ocr-lock",
+        "kind": "requirements_lock"
+      },
+      "id": "ocr",
+      "python": "3.12.13"
+    },
+    {
+      "dependency_contract_id": "backend-lock",
+      "directory": ".venv-qwen",
+      "distribution_source": {
+        "contract_id": "qwen-runtime-manifest",
+        "field": "distributions",
+        "kind": "json_mapping"
+      },
+      "id": "qwen",
+      "python": "3.12.13"
+    },
+    {
+      "dependency_contract_id": "lighthouse-lock",
+      "directory": ".venv-lighthouse",
+      "distribution_source": {
+        "contract_id": "lighthouse-lock",
+        "direct_distributions": {
+          "clip": "1.0",
+          "lighthouse": "0.1"
+        },
+        "kind": "requirements_lock"
+      },
+      "id": "lighthouse",
+      "python": "3.11.14"
+    }
+  ],
+  "host": {
+    "chip": "Apple M4 Pro",
+    "machine": "arm64",
+    "memory_gib": 24,
+    "minimum_macos_major": 14,
+    "system": "Darwin"
+  },
+  "offline_environment": {
+    "HF_DATASETS_OFFLINE": "1",
+    "HF_HUB_OFFLINE": "1",
+    "PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK": "True",
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "PYTHONNOUSERSITE": "1",
+    "TRANSFORMERS_OFFLINE": "1",
+    "UV_OFFLINE": "1"
+  },
+  "schema_version": 1,
+  "uv": {
+    "environment_id": "base",
+    "path": ".venv/bin/uv",
+    "sha256": "2b4ccdac26598ca8c300e5c36d24297fa1471c350c46d2f34c835bf06be303ab",
+    "version": "0.12.3"
+  }
+}

@@ -110,3 +110,53 @@ def test_refine_strict_surfaces_candidate_failure(tmp_path) -> None:
     assert refiner.refine("query", [hit]) == [hit]
     with pytest.raises(RuntimeError, match="frame extraction failed"):
         refiner.refine_strict("query", [hit])
+
+
+def test_benchmark_attestation_requires_explicit_runtime_identities(tmp_path) -> None:
+    unpinned = TemporalRefiner(
+        repository=_repository(tmp_path),
+        extractor=FakeExtractor(),
+        scorer=FakeScorer([0.9]),
+        temp_dir=tmp_path / "frames",
+    )
+    pinned = TemporalRefiner(
+        repository=unpinned.repository,
+        extractor=FakeExtractor(),
+        scorer=FakeScorer([0.9]),
+        temp_dir=tmp_path / "benchmark-frames",
+        top_candidates=3,
+        sample_step=1.25,
+        ffmpeg_identity="sha256:" + "a" * 64,
+        scorer_identity="siglip2@test-revision#sha256:" + "b" * 64,
+        runtime_identity="vision-worker:sha256:" + "c" * 64,
+    )
+
+    assert unpinned.benchmark_attestation is None
+    assert pinned.benchmark_attestation == {
+        "ffmpeg_identity": "sha256:" + "a" * 64,
+        "implementation_identity": pinned.implementation_identity,
+        "runtime_identity": "vision-worker:sha256:" + "c" * 64,
+        "scorer_identity": "siglip2@test-revision#sha256:" + "b" * 64,
+        "scratch_policy_identity": "private-temporary-directory-delete-on-exit-v1",
+        "source_bound": True,
+        "strict_complete": True,
+        "top_candidates": 3,
+    }
+
+
+def test_benchmark_attestation_rejects_symlinked_scratch_root(tmp_path) -> None:
+    target = tmp_path / "real"
+    target.mkdir()
+    scratch = tmp_path / "scratch"
+    scratch.symlink_to(target, target_is_directory=True)
+    refiner = TemporalRefiner(
+        repository=_repository(tmp_path),
+        extractor=FakeExtractor(),
+        scorer=FakeScorer([0.9]),
+        temp_dir=scratch,
+        ffmpeg_identity="sha256:" + "a" * 64,
+        scorer_identity="siglip2@test",
+        runtime_identity="vision-worker:test",
+    )
+
+    assert refiner.benchmark_attestation is None

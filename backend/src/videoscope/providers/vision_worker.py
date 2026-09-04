@@ -44,6 +44,7 @@ from videoscope.providers.vision_worker_contract import (
     MAX_IMAGE_DIMENSION,
     MAX_IMAGE_PIXELS,
     MAX_IMAGES,
+    MAX_PROBE_BYTES,
     MAX_REQUEST_BYTES,
     MAX_RESPONSE_BYTES,
     MAX_TEXTS,
@@ -59,6 +60,7 @@ from videoscope.providers.vision_worker_contract import (
     VISION_WORKER_LOCK_SHA256,
     VISION_WORKER_MINIMUM_MACOS_MAJOR,
     VISION_WORKER_PYTHON_VERSION,
+    VISION_WORKER_RUNTIME_IDENTITY,
     VisionDetectRequest,
     VisionDetectionPayload,
     VisionDetectionResponse,
@@ -67,10 +69,13 @@ from videoscope.providers.vision_worker_contract import (
     VisionEmbedTextsRequest,
     VisionHealthResponse,
     VisionImageItem,
+    VisionSourceProbeRequest,
+    VisionSourceProbeResponse,
     VisionVectorItem,
     VisionWorkerSpecification,
     identity_fields,
     siglip_profile_is_reviewed,
+    worker_input_root_identity_from_metadata,
 )
 
 
@@ -254,6 +259,56 @@ def _open_contained_source(input_root: _RetainedInputRoot, relative_path: str) -
         os.close(current_descriptor)
 
 
+def _read_probe_source(
+    input_root: _RetainedInputRoot,
+    request: VisionSourceProbeRequest,
+    *,
+    allowed_subdirectories: frozenset[str] | None,
+    allowed_subdirectory_prefixes: tuple[str, ...],
+) -> tuple[str, int]:
+    if not _input_subdirectory_is_allowed(
+        request.relative_path,
+        allowed_subdirectories=allowed_subdirectories,
+        allowed_prefixes=allowed_subdirectory_prefixes,
+    ):
+        raise ValueError("input is outside allowlisted worker subdirectories")
+    try:
+        descriptor = _open_contained_source(input_root, request.relative_path)
+    except OSError as error:
+        raise ValueError("probe source cannot be opened safely") from error
+    try:
+        before = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_nlink != 1
+            or before.st_size <= 0
+            or before.st_size > MAX_PROBE_BYTES
+        ):
+            raise ValueError("probe source must be a bounded single-link file")
+        digest = sha256()
+        size_bytes = 0
+        while True:
+            chunk = os.read(descriptor, min(4096, MAX_PROBE_BYTES + 1 - size_bytes))
+            if not chunk:
+                break
+            size_bytes += len(chunk)
+            if size_bytes > MAX_PROBE_BYTES:
+                raise ValueError("probe source exceeds its bound")
+            digest.update(chunk)
+        after = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+    value = digest.hexdigest()
+    if _fingerprint(before) != _fingerprint(after) or size_bytes != after.st_size:
+        raise ValueError("probe source changed while it was read")
+    if (
+        size_bytes != request.expected_size_bytes
+        or not hmac.compare_digest(value, request.expected_sha256)
+    ):
+        raise _SourceIdentityMismatch("probe source identity does not match")
+    return value, size_bytes
+
+
 def _copy_and_hash_regular_file(
     source_descriptor: int,
     destination: Path,
@@ -378,12 +433,17 @@ def _prepare_image(
     item: VisionImageItem,
     destination: Path,
     allowed_subdirectories: frozenset[str] | None,
+    allowed_subdirectory_prefixes: tuple[str, ...],
     max_image_bytes: int,
     max_image_dimension: int,
     max_image_pixels: int,
 ) -> _PreparedImage:
     relative = PurePosixPath(item.relative_path)
-    if allowed_subdirectories is not None and relative.parts[0] not in allowed_subdirectories:
+    if not _input_subdirectory_is_allowed(
+        item.relative_path,
+        allowed_subdirectories=allowed_subdirectories,
+        allowed_prefixes=allowed_subdirectory_prefixes,
+    ):
         raise ValueError("input is outside allowlisted worker subdirectories")
     source_suffix = relative.suffix.casefold()
     if source_suffix not in _IMAGE_FORMATS:
@@ -599,6 +659,8 @@ class _WorkerBoundaryMiddleware:
 def _request_identity_matches(
     runtime: VisionWorkerRuntime,
     request: object,
+    *,
+    input_root_identity: str,
 ) -> bool:
     specification = runtime.specification
     return all(
@@ -613,6 +675,7 @@ def _request_identity_matches(
             == specification.siglip_model_identity,
             getattr(request, "detector_model_identity", None)
             == specification.detector_model_identity,
+            getattr(request, "input_root_identity", None) == input_root_identity,
         )
     )
 
@@ -633,12 +696,45 @@ def _validated_allowed_subdirectories(
     return normalized
 
 
+def _validated_allowed_subdirectory_prefixes(
+    values: tuple[str, ...] | None,
+) -> tuple[str, ...]:
+    if values is None:
+        return ()
+    if not values or len(values) > 8 or len(set(values)) != len(values):
+        raise ValueError("Vision worker input subdirectory prefix allowlist is invalid")
+    if any(
+        not value
+        or len(value) > 48
+        or _SAFE_SUBDIRECTORY_RE.fullmatch(value) is None
+        or value in {".", ".."}
+        for value in values
+    ):
+        raise ValueError("Vision worker input subdirectory prefix allowlist is invalid")
+    return values
+
+
+def _input_subdirectory_is_allowed(
+    relative_path: str,
+    *,
+    allowed_subdirectories: frozenset[str] | None,
+    allowed_prefixes: tuple[str, ...],
+) -> bool:
+    if allowed_subdirectories is None and not allowed_prefixes:
+        return True
+    first = PurePosixPath(relative_path).parts[0]
+    return (
+        allowed_subdirectories is not None and first in allowed_subdirectories
+    ) or any(first.startswith(prefix) for prefix in allowed_prefixes)
+
+
 def create_vision_worker_app(
     *,
     runtime: VisionWorkerRuntime,
     input_root: Path,
     api_key: str,
     allowed_input_subdirectories: tuple[str, ...] | None = None,
+    allowed_input_subdirectory_prefixes: tuple[str, ...] | None = None,
     max_request_bytes: int = MAX_REQUEST_BYTES,
     max_image_bytes: int = MAX_IMAGE_BYTES,
     max_image_dimension: int = MAX_IMAGE_DIMENSION,
@@ -664,10 +760,20 @@ def create_vision_worker_app(
     if not 1 <= max_concurrency <= 4:
         raise ValueError("Vision worker concurrency must be between 1 and 4")
     allowed = _validated_allowed_subdirectories(allowed_input_subdirectories)
+    allowed_prefixes = _validated_allowed_subdirectory_prefixes(
+        allowed_input_subdirectory_prefixes
+    )
     specification = runtime.specification
-    if specification.runtime_identity != identity_fields(specification)["runtime_identity"]:
+    if specification.runtime_identity != VISION_WORKER_RUNTIME_IDENTITY:
         raise ValueError("Vision worker runtime and specification identities disagree")
     retained_root = _RetainedInputRoot.open(input_root)
+    input_root_identity = worker_input_root_identity_from_metadata(
+        os.fstat(retained_root.descriptor)
+    )
+    exact_identity = identity_fields(
+        specification,
+        input_root_identity=input_root_identity,
+    )
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -700,11 +806,11 @@ def create_vision_worker_app(
     @app.get("/v1/health", response_model=VisionHealthResponse)
     def health() -> VisionHealthResponse:
         return VisionHealthResponse(
-            **identity_fields(specification),
+            **exact_identity,
             status="ok" if runtime.available else "unavailable",
             siglip_loaded=runtime.siglip_loaded,
             detector_loaded=runtime.detector_loaded,
-            operations=["embed_images", "embed_texts", "detect"],
+            operations=["probe", "embed_images", "embed_texts", "detect"],
             embedding_dimensions=specification.embedding_dimensions,
             max_images=MAX_IMAGES,
             max_texts=MAX_TEXTS,
@@ -717,10 +823,43 @@ def create_vision_worker_app(
             max_concurrency=max_concurrency,
         )
 
+    @app.post("/v1/probe", response_model=VisionSourceProbeResponse)
+    def probe(request: VisionSourceProbeRequest) -> VisionSourceProbeResponse:
+        if not _request_identity_matches(
+            runtime,
+            request,
+            input_root_identity=input_root_identity,
+        ):
+            raise HTTPException(409, "Vision worker identity does not match")
+        try:
+            digest, size_bytes = _read_probe_source(
+                retained_root,
+                request,
+                allowed_subdirectories=allowed,
+                allowed_subdirectory_prefixes=allowed_prefixes,
+            )
+        except _SourceIdentityMismatch as error:
+            raise HTTPException(
+                409,
+                "Vision worker source identity does not match",
+            ) from error
+        except (OSError, ValueError) as error:
+            raise HTTPException(400, "Invalid Vision worker input") from error
+        return VisionSourceProbeResponse(
+            **exact_identity,
+            request_id=request.request_id,
+            source_sha256=digest,
+            source_size_bytes=size_bytes,
+        )
+
     async def embed_images_impl(
         request: VisionEmbedImagesRequest,
     ) -> VisionEmbeddingResponse:
-        if not _request_identity_matches(runtime, request):
+        if not _request_identity_matches(
+            runtime,
+            request,
+            input_root_identity=input_root_identity,
+        ):
             raise HTTPException(409, "Vision worker identity does not match")
         if sum(item.expected_size_bytes for item in request.items) > max_batch_image_bytes:
             raise HTTPException(413, "Vision worker input exceeds configured limits")
@@ -741,6 +880,7 @@ def create_vision_worker_app(
                                     / f"image-{index:04d}{Path(item.relative_path).suffix.casefold()}"
                                 ),
                                 allowed_subdirectories=allowed,
+                                allowed_subdirectory_prefixes=allowed_prefixes,
                                 max_image_bytes=max_image_bytes,
                                 max_image_dimension=max_image_dimension,
                                 max_image_pixels=max_image_pixels,
@@ -762,7 +902,7 @@ def create_vision_worker_app(
                     if len(raw_vectors) != len(prepared):
                         raise ValueError("runtime returned wrong vector count")
                     response = VisionEmbeddingResponse(
-                        **identity_fields(specification),
+                        **exact_identity,
                         request_id=request.request_id,
                         embedding_dimensions=specification.embedding_dimensions,
                         items=[
@@ -797,7 +937,11 @@ def create_vision_worker_app(
 
     @app.post("/v1/embed/texts", response_model=VisionEmbeddingResponse)
     async def embed_texts(request: VisionEmbedTextsRequest) -> VisionEmbeddingResponse:
-        if not _request_identity_matches(runtime, request):
+        if not _request_identity_matches(
+            runtime,
+            request,
+            input_root_identity=input_root_identity,
+        ):
             raise HTTPException(409, "Vision worker identity does not match")
         if not capacity.acquire(blocking=False):
             raise HTTPException(429, "Vision worker is busy")
@@ -810,7 +954,7 @@ def create_vision_worker_app(
                 if len(raw_vectors) != len(request.items):
                     raise ValueError("runtime returned wrong vector count")
                 response = VisionEmbeddingResponse(
-                    **identity_fields(specification),
+                    **exact_identity,
                     request_id=request.request_id,
                     embedding_dimensions=specification.embedding_dimensions,
                     items=[
@@ -829,7 +973,11 @@ def create_vision_worker_app(
 
     @app.post("/v1/detect", response_model=VisionDetectionResponse)
     async def detect(request: VisionDetectRequest) -> VisionDetectionResponse:
-        if not _request_identity_matches(runtime, request):
+        if not _request_identity_matches(
+            runtime,
+            request,
+            input_root_identity=input_root_identity,
+        ):
             raise HTTPException(409, "Vision worker identity does not match")
         if not math.isclose(
             request.minimum_confidence,
@@ -851,6 +999,7 @@ def create_vision_worker_app(
                             / f"detect{Path(request.source.relative_path).suffix.casefold()}"
                         ),
                         allowed_subdirectories=allowed,
+                        allowed_subdirectory_prefixes=allowed_prefixes,
                         max_image_bytes=max_image_bytes,
                         max_image_dimension=max_image_dimension,
                         max_image_pixels=max_image_pixels,
@@ -870,7 +1019,7 @@ def create_vision_worker_app(
                     if len(raw_detections) > MAX_DETECTIONS:
                         raise ValueError("runtime returned too many detections")
                     response = VisionDetectionResponse(
-                        **identity_fields(specification),
+                        **exact_identity,
                         request_id=request.request_id,
                         source_id=request.source.item_id,
                         image_width=prepared.width,
@@ -1721,6 +1870,7 @@ def main() -> None:
         input_root=settings.input_root,
         api_key=settings.api_key,
         allowed_input_subdirectories=("visual-index", "thumbnails", "tmp"),
+        allowed_input_subdirectory_prefixes=("benchmark-environment-",),
         max_concurrency=settings.max_concurrency,
     )
     import uvicorn

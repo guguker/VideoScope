@@ -10,8 +10,12 @@ from urllib.parse import urlsplit
 
 
 DATASET_SCHEMA_VERSION = 1
-RUN_SCHEMA_VERSION = 2
+CRITICAL_SLICE_LABELS_SCHEMA_VERSION = 1
+RUN_SCHEMA_VERSION = 3
+MEASUREMENT_EVIDENCE_SCHEMA_VERSION = 1
 MAX_RESULT_EVIDENCE_PER_CASE = 100
+MAX_MEASUREMENT_RSS_SAMPLES = 250_000
+MAX_MEASUREMENT_STORAGE_ROOTS = 16
 MAX_DATASET_ASSETS = 128
 MAX_ASSET_BYTES = 16 * 1024**3
 MAX_DATASET_MEDIA_BYTES = 128 * 1024**3
@@ -26,6 +30,10 @@ _MAX_TEXT_LENGTH = 10_000
 _PORTABLE_URI_SCHEMES = frozenset({"http", "https", "urn"})
 _NONPUBLIC_HOST_SUFFIXES = (".internal", ".lan", ".local")
 _LOCAL_PATH_RE = re.compile(r"^(?:/|~[/\\]|[A-Za-z]:[/\\]|\\\\)")
+_MAX_MEASUREMENT_BYTES = (1 << 63) - 1
+_MEASUREMENT_STORAGE_PURPOSES = frozenset(
+    {"active_immutable_artifacts", "benchmark_scratch"}
+)
 
 
 class BenchmarkDataError(ValueError):
@@ -286,6 +294,40 @@ class HardNegative:
 
 
 @dataclass(frozen=True, slots=True)
+class CriticalSliceLabels:
+    schema_version: int
+    event_class: tuple[str, ...]
+    capture_condition: tuple[str, ...]
+    distribution_shift: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.schema_version) is not int
+            or self.schema_version != CRITICAL_SLICE_LABELS_SCHEMA_VERSION
+        ):
+            raise BenchmarkDataError(
+                "critical_slices.schema_version must be the supported version "
+                f"{CRITICAL_SLICE_LABELS_SCHEMA_VERSION}"
+            )
+        for field_name in (
+            "event_class",
+            "capture_condition",
+            "distribution_shift",
+        ):
+            values = _require_tuple(
+                getattr(self, field_name),
+                f"critical_slices.{field_name}",
+            )
+            if not values:
+                raise BenchmarkDataError(
+                    f"critical_slices.{field_name} must not be empty"
+                )
+            for value in values:
+                _require_id(value, f"critical_slices.{field_name} item")
+            _require_unique(values, f"critical_slices.{field_name}")
+
+
+@dataclass(frozen=True, slots=True)
 class QueryCase:
     case_id: str
     query: str
@@ -297,6 +339,7 @@ class QueryCase:
     relevant_intervals: tuple[BenchmarkInterval, ...] = ()
     hard_negatives: tuple[HardNegative, ...] = ()
     notes: str = ""
+    critical_slices: CriticalSliceLabels | None = None
 
     def __post_init__(self) -> None:
         _require_id(self.case_id, "case_id")
@@ -340,6 +383,13 @@ class QueryCase:
                     f"interval asset {interval.asset_id!r} is not present in asset_ids"
                 )
         _require_string(self.notes, "notes", allow_empty=True)
+        if self.critical_slices is not None and not isinstance(
+            self.critical_slices,
+            CriticalSliceLabels,
+        ):
+            raise BenchmarkDataError(
+                "critical_slices must be versioned critical-slice labels or null"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -498,6 +548,135 @@ class BenchmarkResultEvidence:
 
 
 @dataclass(frozen=True, slots=True)
+class BenchmarkStorageSnapshot:
+    """Portable aggregate for one declared measurement root.
+
+    The descriptor identity used while sampling is deliberately excluded: a
+    persisted snapshot contains neither a local path nor device/inode values.
+    """
+
+    root_id: str
+    purpose: Literal["active_immutable_artifacts", "benchmark_scratch"]
+    file_count: int
+    directory_count: int
+    logical_bytes: int
+    allocated_bytes: int
+    tree_digest: str
+
+    def __post_init__(self) -> None:
+        _require_id(self.root_id, "measurement storage root_id")
+        if self.purpose not in _MEASUREMENT_STORAGE_PURPOSES:
+            raise BenchmarkDataError("measurement storage purpose is invalid")
+        for field_name in (
+            "file_count",
+            "logical_bytes",
+            "allocated_bytes",
+        ):
+            value = _require_nonnegative_int(
+                getattr(self, field_name),
+                f"measurement storage {field_name}",
+            )
+            if value > _MAX_MEASUREMENT_BYTES:
+                raise BenchmarkDataError(
+                    f"measurement storage {field_name} exceeds the portable bound"
+                )
+        directories = _require_positive_int(
+            self.directory_count,
+            "measurement storage directory_count",
+        )
+        if directories > _MAX_MEASUREMENT_BYTES:
+            raise BenchmarkDataError(
+                "measurement storage directory_count exceeds the portable bound"
+            )
+        if not isinstance(self.tree_digest, str) or not _SHA256_RE.fullmatch(
+            self.tree_digest
+        ):
+            raise BenchmarkDataError(
+                "measurement storage tree_digest must be a lowercase SHA-256"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class BenchmarkMeasurementEvidence:
+    """Portable raw evidence sufficient to recompute every system metric."""
+
+    schema_version: int
+    rss_samples_bytes: tuple[int, ...]
+    storage_before: tuple[BenchmarkStorageSnapshot, ...]
+    storage_after: tuple[BenchmarkStorageSnapshot, ...]
+    metal_telemetry_status: Literal["unavailable"]
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.schema_version) is not int
+            or self.schema_version != MEASUREMENT_EVIDENCE_SCHEMA_VERSION
+        ):
+            raise BenchmarkDataError(
+                "measurement evidence schema_version is unsupported"
+            )
+        samples = _require_tuple(
+            self.rss_samples_bytes,
+            "measurement RSS samples",
+        )
+        if not samples:
+            raise BenchmarkDataError("measurement RSS samples must not be empty")
+        if len(samples) > MAX_MEASUREMENT_RSS_SAMPLES:
+            raise BenchmarkDataError("measurement RSS samples exceed the portable bound")
+        for value in samples:
+            if (
+                type(value) is not int
+                or value < 0
+                or value > _MAX_MEASUREMENT_BYTES
+            ):
+                raise BenchmarkDataError(
+                    "measurement RSS samples must contain bounded non-negative integers"
+                )
+
+        before = self._validate_storage(self.storage_before, "storage_before")
+        after = self._validate_storage(self.storage_after, "storage_after")
+        before_roots = tuple((item.root_id, item.purpose) for item in before)
+        after_roots = tuple((item.root_id, item.purpose) for item in after)
+        if before_roots != after_roots:
+            raise BenchmarkDataError(
+                "measurement storage snapshots must describe the same roots"
+            )
+        before_active = tuple(
+            item for item in before if item.purpose == "active_immutable_artifacts"
+        )
+        after_active = tuple(
+            item for item in after if item.purpose == "active_immutable_artifacts"
+        )
+        if before_active != after_active:
+            raise BenchmarkDataError(
+                "measurement active immutable storage snapshots must remain unchanged"
+            )
+        if self.metal_telemetry_status != "unavailable":
+            raise BenchmarkDataError(
+                "measurement Metal telemetry must be explicitly unavailable"
+            )
+
+    @staticmethod
+    def _validate_storage(
+        values: object,
+        field: str,
+    ) -> tuple[BenchmarkStorageSnapshot, ...]:
+        snapshots = _validate_typed_tuple(values, BenchmarkStorageSnapshot, field)
+        if not snapshots:
+            raise BenchmarkDataError(f"measurement {field} must not be empty")
+        if len(snapshots) > MAX_MEASUREMENT_STORAGE_ROOTS:
+            raise BenchmarkDataError(
+                f"measurement {field} exceeds the portable root bound"
+            )
+        root_ids = tuple(item.root_id for item in snapshots)
+        _require_unique(root_ids, f"measurement {field}")
+        if root_ids != tuple(sorted(root_ids)):
+            raise BenchmarkDataError(
+                f"measurement {field} must use canonical root order"
+            )
+        return snapshots
+
+
+@dataclass(frozen=True, slots=True)
 class BenchmarkCaseOutcome:
     case_id: str
     status: Literal["complete", "failed", "skipped"]
@@ -587,6 +766,10 @@ class BenchmarkRunManifest:
     measurement_started_at: str | None
     measurement_finished_at: str | None
     case_outcomes: tuple[BenchmarkCaseOutcome, ...]
+    measurement_evidence_status: Literal[
+        "not_applicable", "complete", "legacy_unavailable"
+    ] = "not_applicable"
+    measurement_evidence: BenchmarkMeasurementEvidence | None = None
 
     def __post_init__(self) -> None:
         if type(self.schema_version) is not int or self.schema_version != RUN_SCHEMA_VERSION:
@@ -658,6 +841,12 @@ class BenchmarkRunManifest:
             raise BenchmarkDataError(
                 "measurement_status must be not_measured, complete or failed"
             )
+        if self.measurement_evidence_status not in {
+            "not_applicable",
+            "complete",
+            "legacy_unavailable",
+        }:
+            raise BenchmarkDataError("measurement_evidence_status is invalid")
         measurement_times = (
             self.measurement_started_at,
             self.measurement_finished_at,
@@ -674,6 +863,13 @@ class BenchmarkRunManifest:
                 raise BenchmarkDataError(
                     "not_measured runs must not contain measurement timestamps or "
                     "system_metrics"
+                )
+            if (
+                self.measurement_evidence_status != "not_applicable"
+                or self.measurement_evidence is not None
+            ):
+                raise BenchmarkDataError(
+                    "not_measured runs must not contain measurement evidence"
                 )
         else:
             if self.measurement_protocol.identity in {
@@ -711,6 +907,31 @@ class BenchmarkRunManifest:
             if self.measurement_status == "failed" and system_metrics:
                 raise BenchmarkDataError(
                     "a failed measurement must not publish partial system_metrics"
+                )
+            if self.measurement_status == "failed":
+                if (
+                    self.measurement_evidence_status != "not_applicable"
+                    or self.measurement_evidence is not None
+                ):
+                    raise BenchmarkDataError(
+                        "a failed measurement must not publish partial evidence"
+                    )
+            elif self.measurement_evidence_status == "complete":
+                if not isinstance(
+                    self.measurement_evidence,
+                    BenchmarkMeasurementEvidence,
+                ):
+                    raise BenchmarkDataError(
+                        "a complete measurement requires portable raw evidence"
+                    )
+            elif self.measurement_evidence_status == "legacy_unavailable":
+                if self.measurement_evidence is not None:
+                    raise BenchmarkDataError(
+                        "legacy measurement evidence must be unavailable"
+                    )
+            else:
+                raise BenchmarkDataError(
+                    "a complete measurement requires an explicit evidence status"
                 )
         outcomes = _validate_typed_tuple(
             self.case_outcomes,

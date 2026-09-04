@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from hashlib import sha256
 import json
 import os
 from pathlib import Path
@@ -14,21 +15,135 @@ import pytest
 
 import videoscope.providers.qwen_worker as qwen_worker_module
 from videoscope.model_manifest import QWEN_VIDEO_MODEL
-from videoscope.providers.qwen_video import QwenVideoJudgement
+from videoscope.providers.qwen_video import QWEN_PROMPT_PROTOCOL_SHA256, QwenVideoJudgement
 from videoscope.providers.qwen_worker import (
     MAX_RESPONSE_BYTES,
     MLXQwenWorkerRuntime,
     QWEN_INFERENCE_RUNTIME_IDENTITY,
+    QWEN_SOURCE_BUNDLE_SHA256,
     QWEN_WORKER_SCHEMA_VERSION,
     QwenJudgeRequest,
     QwenWorkerClient,
     QwenWorkerSettings,
+    attest_qwen_worker_startup,
     create_qwen_worker_app,
 )
 
 
 TOKEN = "q" * 32
 MODEL_IDENTITY = "organization/qwen@" + "a" * 40
+
+
+def _canonical_sha256(payload: object) -> str:
+    return sha256(
+        json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def test_source_bundle_identity_is_deterministic_and_path_free() -> None:
+    assert qwen_worker_module._qwen_source_bundle_sha256() == (
+        QWEN_SOURCE_BUNDLE_SHA256
+    )
+    assert len(QWEN_SOURCE_BUNDLE_SHA256) == 64
+    assert "/Users/" not in QWEN_SOURCE_BUNDLE_SHA256
+
+
+def test_worker_startup_attests_exact_environment_and_complete_model(
+    tmp_path: Path,
+) -> None:
+    lock = tmp_path / "uv.lock"
+    lock.write_bytes(b"reviewed-lock")
+    runtime_manifest = {
+        "backend_lock_sha256": sha256(lock.read_bytes()).hexdigest(),
+        "distributions": {"demo-runtime": "1.2.3"},
+        "platform": "aarch64-apple-darwin-macos14plus",
+        "python": "3.12.13",
+        "schema_version": 1,
+    }
+    artifact = b"reviewed-safe-weights"
+    model_manifest = {
+        "artifacts": [
+            {
+                "name": "model.safetensors",
+                "sha256": sha256(artifact).hexdigest(),
+                "size": len(artifact),
+            }
+        ],
+        "license": "apache-2.0",
+        "model": "organization/qwen",
+        "revision": "a" * 40,
+        "schema_version": 1,
+    }
+    runtime_path = tmp_path / "runtime.json"
+    model_path = tmp_path / "models.json"
+    runtime_path.write_text(json.dumps(runtime_manifest), encoding="utf-8")
+    model_path.write_text(json.dumps(model_manifest), encoding="utf-8")
+    snapshot = tmp_path / "cache" / "snapshots" / ("a" * 40)
+    snapshot.mkdir(parents=True)
+    (snapshot / "model.safetensors").write_bytes(artifact)
+
+    attestation = attest_qwen_worker_startup(
+        "organization/qwen",
+        "a" * 40,
+        runtime_manifest_path=runtime_path,
+        model_manifest_path=model_path,
+        backend_lock_path=lock,
+        expected_runtime_manifest_sha256=_canonical_sha256(runtime_manifest),
+        expected_model_manifest_sha256=_canonical_sha256(model_manifest),
+        python_version=(3, 12, 13),
+        system="Darwin",
+        machine="arm64",
+        macos_version="14.4",
+        installed_distributions={"demo-runtime": "1.2.3"},
+        snapshot_resolver=lambda _model, _revision: snapshot,
+    )
+
+    assert attestation["model_identity"] == "organization/qwen@" + "a" * 40
+    assert attestation["runtime_identity"] == QWEN_INFERENCE_RUNTIME_IDENTITY
+    assert attestation["source_bundle_sha256"] == QWEN_SOURCE_BUNDLE_SHA256
+    assert attestation["prompt_protocol_sha256"] == QWEN_PROMPT_PROTOCOL_SHA256
+    assert str(tmp_path) not in json.dumps(attestation)
+
+    with pytest.raises(RuntimeError, match="executable protocol identity"):
+        attest_qwen_worker_startup(
+            "organization/qwen",
+            "a" * 40,
+            runtime_manifest_path=runtime_path,
+            model_manifest_path=model_path,
+            backend_lock_path=lock,
+            expected_runtime_manifest_sha256=_canonical_sha256(runtime_manifest),
+            expected_model_manifest_sha256=_canonical_sha256(model_manifest),
+            expected_source_bundle_sha256="0" * 64,
+            python_version=(3, 12, 13),
+            system="Darwin",
+            machine="arm64",
+            macos_version="14.4",
+            installed_distributions={"demo-runtime": "1.2.3"},
+            snapshot_resolver=lambda _model, _revision: snapshot,
+        )
+
+    (snapshot / "model.safetensors").write_bytes(b"tampered-safe-weights")
+    with pytest.raises(RuntimeError, match="model artifact"):
+        attest_qwen_worker_startup(
+            "organization/qwen",
+            "a" * 40,
+            runtime_manifest_path=runtime_path,
+            model_manifest_path=model_path,
+            backend_lock_path=lock,
+            expected_runtime_manifest_sha256=_canonical_sha256(runtime_manifest),
+            expected_model_manifest_sha256=_canonical_sha256(model_manifest),
+            python_version=(3, 12, 13),
+            system="Darwin",
+            machine="arm64",
+            macos_version="14.4",
+            installed_distributions={"demo-runtime": "1.2.3"},
+            snapshot_resolver=lambda _model, _revision: snapshot,
+        )
 
 
 class FakeWorkerRuntime:
@@ -76,14 +191,27 @@ def _worker_client(
     )
 
 
-def _request(relative_path: str = "candidate.mp4") -> dict[str, object]:
+def _request(
+    input_root: Path,
+    relative_path: str = "candidate.mp4",
+) -> dict[str, object]:
+    source = input_root / relative_path
+    try:
+        payload = source.read_bytes()
+    except OSError:
+        payload = b"unavailable"
     return {
         "schema_version": QWEN_WORKER_SCHEMA_VERSION,
         "request_id": "a" * 32,
         "model_identity": MODEL_IDENTITY,
         "runtime_identity": QWEN_INFERENCE_RUNTIME_IDENTITY,
+        "source_bundle_sha256": QWEN_SOURCE_BUNDLE_SHA256,
+        "prompt_protocol_sha256": QWEN_PROMPT_PROTOCOL_SHA256,
+        "input_root_sha256": qwen_worker_module._input_root_identity(input_root),
         "input_kind": "video",
         "relative_path": relative_path,
+        "expected_sha256": sha256(payload).hexdigest(),
+        "expected_byte_size": len(payload),
         "prompt_kind": "basketball_facts",
         "query": None,
         "fps": 2.0,
@@ -164,6 +292,9 @@ def test_health_exposes_bounded_capability_without_loading_model(tmp_path: Path)
         "status": "ok",
         "model_identity": MODEL_IDENTITY,
         "runtime_identity": QWEN_INFERENCE_RUNTIME_IDENTITY,
+        "source_bundle_sha256": QWEN_SOURCE_BUNDLE_SHA256,
+        "prompt_protocol_sha256": QWEN_PROMPT_PROTOCOL_SHA256,
+        "input_root_sha256": qwen_worker_module._input_root_identity(tmp_path),
         "loaded": False,
         "input_kinds": ["video", "storyboard"],
         "max_input_bytes": 4096,
@@ -188,19 +319,59 @@ def test_worker_contract_is_strict_and_bounds_request_before_inference(
     client = _worker_client(tmp_path, runtime, max_input_bytes=4)
     headers = {"Authorization": f"Bearer {TOKEN}"}
 
-    extra = {**_request(), "unexpected": True}
+    extra = {**_request(tmp_path), "unexpected": True}
     assert client.post("/v1/judge", json=extra, headers=headers).status_code == 422
 
-    oversized = client.post("/v1/judge", json=_request(), headers=headers)
+    oversized = client.post("/v1/judge", json=_request(tmp_path), headers=headers)
     assert oversized.status_code == 413
     assert oversized.json() == {"detail": "Qwen worker input is too large"}
     assert runtime.calls == []
 
 
+def test_judge_request_supports_only_versioned_prompt_input_combinations(
+    tmp_path: Path,
+) -> None:
+    generic_video = {
+        **_request(tmp_path),
+        "prompt_kind": "generic_query",
+        "query": "a person waves",
+    }
+
+    parsed = QwenJudgeRequest.model_validate(generic_video)
+    assert parsed.input_kind == "video"
+    assert parsed.prompt_kind == "generic_query"
+    assert parsed.query == "a person waves"
+    assert parsed.fps == 2.0
+
+    invalid_requests = (
+        {**generic_video, "query": None},
+        {**generic_video, "query": "   "},
+        {**generic_video, "fps": None},
+        {**_request(tmp_path), "query": "must stay fixed"},
+        {
+            **generic_video,
+            "relative_path": "candidate.jpg",
+            "input_kind": "storyboard",
+            "fps": 2.0,
+        },
+        {
+            **_request(tmp_path, "candidate.jpg"),
+            "input_kind": "storyboard",
+            "fps": None,
+        },
+    )
+    for request in invalid_requests:
+        with pytest.raises(ValueError):
+            QwenJudgeRequest.model_validate(request)
+
+
 def test_worker_rejects_model_mismatch_before_reading_input(tmp_path: Path) -> None:
     runtime = FakeWorkerRuntime()
     client = _worker_client(tmp_path, runtime)
-    request = {**_request("missing.mp4"), "model_identity": "wrong/model"}
+    request = {
+        **_request(tmp_path, "missing.mp4"),
+        "model_identity": "wrong/model",
+    }
 
     response = client.post(
         "/v1/judge",
@@ -209,7 +380,7 @@ def test_worker_rejects_model_mismatch_before_reading_input(tmp_path: Path) -> N
     )
 
     assert response.status_code == 409
-    assert response.json() == {"detail": "Qwen worker model identity does not match"}
+    assert response.json() == {"detail": "Qwen worker execution identity does not match"}
     assert runtime.calls == []
 
 
@@ -232,7 +403,7 @@ def test_worker_rejects_unsafe_or_unsupported_input_paths(
 
     response = client.post(
         "/v1/judge",
-        json=_request(relative_path),
+        json=_request(tmp_path, relative_path),
         headers={"Authorization": f"Bearer {TOKEN}"},
     )
 
@@ -251,7 +422,7 @@ def test_worker_rejects_symlink_even_when_target_stays_under_input_root(
 
     response = client.post(
         "/v1/judge",
-        json=_request(),
+        json=_request(tmp_path),
         headers={"Authorization": f"Bearer {TOKEN}"},
     )
 
@@ -269,37 +440,76 @@ def test_worker_returns_strict_judgement_and_sanitizes_runtime_errors(
     client = _worker_client(tmp_path, runtime)
     headers = {"Authorization": f"Bearer {TOKEN}"}
 
-    response = client.post("/v1/judge", json=_request(), headers=headers)
+    response = client.post("/v1/judge", json=_request(tmp_path), headers=headers)
 
     assert response.status_code == 200
     assert response.json()["request_id"] == "a" * 32
     assert response.json()["model_identity"] == MODEL_IDENTITY
+    assert response.json()["source_sha256"] == sha256(b"video").hexdigest()
+    assert response.json()["byte_size"] == len(b"video")
     assert response.json()["judgement"]["confidence"] == 0.91
-    assert runtime.calls[0][1] == source.resolve()
+    materialized = runtime.calls[0][1]
+    assert materialized != source.resolve()
+    assert materialized.name == "input.mp4"
+    assert not materialized.exists()
 
     runtime.error = RuntimeError("secret path: /private/model/token")
-    failed = client.post("/v1/judge", json=_request(), headers=headers)
+    failed = client.post("/v1/judge", json=_request(tmp_path), headers=headers)
 
     assert failed.status_code == 503
     assert failed.json() == {"detail": "Qwen worker inference failed"}
     assert "/private/model/token" not in failed.text
 
 
+def test_worker_executes_generic_query_on_native_video(tmp_path: Path) -> None:
+    runtime = FakeWorkerRuntime()
+    source = tmp_path / "candidate.mp4"
+    source.write_bytes(b"video")
+    client = _worker_client(tmp_path, runtime)
+    request = {
+        **_request(tmp_path),
+        "prompt_kind": "generic_query",
+        "query": "a person waves",
+    }
+
+    response = client.post(
+        "/v1/judge",
+        json=request,
+        headers={"Authorization": f"Bearer {TOKEN}"},
+    )
+
+    assert response.status_code == 200
+    assert len(runtime.calls) == 1
+    received, received_source = runtime.calls[0]
+    assert isinstance(received, QwenJudgeRequest)
+    assert received.prompt_kind == "generic_query"
+    assert received.query == "a person waves"
+    assert received.fps == 2.0
+    assert received_source != source.resolve()
+    assert received_source.name == "input.mp4"
+    assert not received_source.exists()
+
+
 class MutatingRuntime(FakeWorkerRuntime):
+    def __init__(self, exposed_source: Path) -> None:
+        super().__init__()
+        self.exposed_source = exposed_source
+
     def judge(self, request: object, source: Path) -> QwenVideoJudgement:
         result = super().judge(request, source)
-        source.write_bytes(b"changed during inference")
+        self.exposed_source.write_bytes(b"changed during inference")
         return result
 
 
 def test_worker_fails_closed_when_input_changes_during_inference(tmp_path: Path) -> None:
-    runtime = MutatingRuntime()
-    (tmp_path / "candidate.mp4").write_bytes(b"video")
+    source = tmp_path / "candidate.mp4"
+    source.write_bytes(b"video")
+    runtime = MutatingRuntime(source)
     client = _worker_client(tmp_path, runtime)
 
     response = client.post(
         "/v1/judge",
-        json=_request(),
+        json=_request(tmp_path),
         headers={"Authorization": f"Bearer {TOKEN}"},
     )
 
@@ -308,32 +518,103 @@ def test_worker_fails_closed_when_input_changes_during_inference(tmp_path: Path)
 
 
 class RestoringMetadataRuntime(FakeWorkerRuntime):
+    def __init__(self, exposed_source: Path) -> None:
+        super().__init__()
+        self.exposed_source = exposed_source
+
     def judge(self, request: object, source: Path) -> QwenVideoJudgement:
         result = super().judge(request, source)
-        before = source.stat()
+        before = self.exposed_source.stat()
         time.sleep(0.002)
-        original = source.read_bytes()
-        source.write_bytes(bytes([original[0] ^ 1]) + original[1:])
-        os.utime(source, ns=(before.st_atime_ns, before.st_mtime_ns))
-        assert source.stat().st_ctime_ns != before.st_ctime_ns
+        original = self.exposed_source.read_bytes()
+        self.exposed_source.write_bytes(bytes([original[0] ^ 1]) + original[1:])
+        os.utime(
+            self.exposed_source,
+            ns=(before.st_atime_ns, before.st_mtime_ns),
+        )
+        assert self.exposed_source.stat().st_ctime_ns != before.st_ctime_ns
         return result
 
 
 def test_worker_detects_in_place_change_even_when_size_and_mtime_are_restored(
     tmp_path: Path,
 ) -> None:
-    runtime = RestoringMetadataRuntime()
-    (tmp_path / "candidate.mp4").write_bytes(b"video")
+    source = tmp_path / "candidate.mp4"
+    source.write_bytes(b"video")
+    runtime = RestoringMetadataRuntime(source)
     client = _worker_client(tmp_path, runtime)
 
     response = client.post(
         "/v1/judge",
-        json=_request(),
+        json=_request(tmp_path),
         headers={"Authorization": f"Bearer {TOKEN}"},
     )
 
     assert response.status_code == 409
     assert response.json() == {"detail": "Qwen worker input changed during inference"}
+
+
+class RenameSwapRestoringRuntime(FakeWorkerRuntime):
+    def __init__(self, exposed_source: Path, replacement: Path) -> None:
+        super().__init__()
+        self.exposed_source = exposed_source
+        self.replacement = replacement
+        self.materialized_source: Path | None = None
+
+    def judge(self, request: object, source: Path) -> QwenVideoJudgement:
+        self.materialized_source = source
+        assert source != self.exposed_source
+        assert source.read_bytes() == b"original-video"
+        backup = self.exposed_source.with_suffix(".original")
+        os.replace(self.exposed_source, backup)
+        os.replace(self.replacement, self.exposed_source)
+        assert self.exposed_source.read_bytes() == b"substitute-vid"
+        os.replace(self.exposed_source, self.replacement)
+        os.replace(backup, self.exposed_source)
+        return super().judge(request, source)
+
+
+def test_worker_fails_closed_on_rename_swap_restore_and_uses_private_copy(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "candidate.mp4"
+    source.write_bytes(b"original-video")
+    replacement = tmp_path / "candidate.replacement"
+    replacement.write_bytes(b"substitute-vid")
+    runtime = RenameSwapRestoringRuntime(source, replacement)
+    client = _worker_client(tmp_path, runtime)
+
+    response = client.post(
+        "/v1/judge",
+        json=_request(tmp_path),
+        headers={"Authorization": f"Bearer {TOKEN}"},
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "Qwen worker input changed during inference"}
+    assert source.read_bytes() == b"original-video"
+    assert runtime.materialized_source is not None
+    assert not runtime.materialized_source.exists()
+
+
+def test_worker_rejects_wrong_judge_content_identity_before_inference(
+    tmp_path: Path,
+) -> None:
+    runtime = FakeWorkerRuntime()
+    source = tmp_path / "candidate.mp4"
+    source.write_bytes(b"video")
+    client = _worker_client(tmp_path, runtime)
+    request = {**_request(tmp_path), "expected_sha256": "0" * 64}
+
+    response = client.post(
+        "/v1/judge",
+        json=request,
+        headers={"Authorization": f"Bearer {TOKEN}"},
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "Qwen worker input identity mismatch"}
+    assert runtime.calls == []
 
 
 class BlockingRuntime(FakeWorkerRuntime):
@@ -355,9 +636,14 @@ def test_worker_rejects_work_above_configured_concurrency(tmp_path: Path) -> Non
     headers = {"Authorization": f"Bearer {TOKEN}"}
 
     with ThreadPoolExecutor(max_workers=2) as executor:
-        first = executor.submit(client.post, "/v1/judge", json=_request(), headers=headers)
+        first = executor.submit(
+            client.post,
+            "/v1/judge",
+            json=_request(tmp_path),
+            headers=headers,
+        )
         assert runtime.entered.wait(timeout=1)
-        second = client.post("/v1/judge", json=_request(), headers=headers)
+        second = client.post("/v1/judge", json=_request(tmp_path), headers=headers)
         runtime.release.set()
         first_response = first.result(timeout=2)
 
@@ -380,13 +666,17 @@ class FakeResponse:
 
 
 class RecordingHTTPClient:
-    def __init__(self) -> None:
+    def __init__(self, input_root: Path) -> None:
         self.calls: list[tuple[str, str, object | None, dict[str, str], float]] = []
+        input_root_sha256 = qwen_worker_module._input_root_identity(input_root)
         self.health_payload: object = {
             "schema_version": QWEN_WORKER_SCHEMA_VERSION,
             "status": "ok",
             "model_identity": MODEL_IDENTITY,
             "runtime_identity": QWEN_INFERENCE_RUNTIME_IDENTITY,
+            "source_bundle_sha256": QWEN_SOURCE_BUNDLE_SHA256,
+            "prompt_protocol_sha256": QWEN_PROMPT_PROTOCOL_SHA256,
+            "input_root_sha256": input_root_sha256,
             "loaded": False,
             "input_kinds": ["video", "storyboard"],
             "max_input_bytes": 1024,
@@ -399,6 +689,9 @@ class RecordingHTTPClient:
             "request_id": "b" * 32,
             "model_identity": MODEL_IDENTITY,
             "runtime_identity": QWEN_INFERENCE_RUNTIME_IDENTITY,
+            "source_bundle_sha256": QWEN_SOURCE_BUNDLE_SHA256,
+            "prompt_protocol_sha256": QWEN_PROMPT_PROTOCOL_SHA256,
+            "input_root_sha256": input_root_sha256,
             "judgement": {
                 "matches_query": True,
                 "confidence": 0.88,
@@ -429,7 +722,12 @@ class RecordingHTTPClient:
     ) -> FakeResponse:
         self.calls.append(("POST", url, json, headers, timeout))
         if isinstance(self.judge_payload, dict):
-            self.judge_payload = {**self.judge_payload, "request_id": json["request_id"]}  # type: ignore[index]
+            self.judge_payload = {
+                **self.judge_payload,
+                "request_id": json["request_id"],  # type: ignore[index]
+                "source_sha256": json["expected_sha256"],  # type: ignore[index]
+                "byte_size": json["expected_byte_size"],  # type: ignore[index]
+            }
         return FakeResponse(self.judge_payload)
 
 
@@ -439,7 +737,7 @@ def test_client_uses_relative_paths_auth_timeout_and_validates_capability(
     source = tmp_path / "nested" / "candidate.mp4"
     source.parent.mkdir()
     source.write_bytes(b"video")
-    http = RecordingHTTPClient()
+    http = RecordingHTTPClient(tmp_path)
     client = QwenWorkerClient(
         endpoint="http://127.0.0.1:8781",
         api_key=TOKEN,
@@ -467,6 +765,159 @@ def test_client_uses_relative_paths_auth_timeout_and_validates_capability(
     assert payload["relative_path"] == "nested/candidate.mp4"  # type: ignore[index]
     assert payload["model_identity"] == MODEL_IDENTITY  # type: ignore[index]
     assert payload["runtime_identity"] == QWEN_INFERENCE_RUNTIME_IDENTITY  # type: ignore[index]
+    assert payload["source_bundle_sha256"] == QWEN_SOURCE_BUNDLE_SHA256  # type: ignore[index]
+    assert payload["prompt_protocol_sha256"] == QWEN_PROMPT_PROTOCOL_SHA256  # type: ignore[index]
+    assert payload["input_root_sha256"] == client.input_root_sha256  # type: ignore[index]
+    assert payload["expected_sha256"] == sha256(b"video").hexdigest()  # type: ignore[index]
+    assert payload["expected_byte_size"] == len(b"video")  # type: ignore[index]
+
+
+def test_client_sends_explicit_generic_native_video_contract(tmp_path: Path) -> None:
+    source = tmp_path / "candidate.mp4"
+    source.write_bytes(b"video")
+    http = RecordingHTTPClient(tmp_path)
+    client = QwenWorkerClient(
+        endpoint="http://127.0.0.1:8781",
+        api_key=TOKEN,
+        input_root=tmp_path,
+        expected_model_identity=MODEL_IDENTITY,
+        client=http,
+    )
+
+    judgement = client.judge_video_query(
+        source,
+        "a person waves",
+        fps=1.5,
+        max_tokens=256,
+    )
+
+    assert judgement.matches_query is True
+    payload = http.calls[-1][2]
+    assert isinstance(payload, dict)
+    assert payload["schema_version"] == QWEN_WORKER_SCHEMA_VERSION
+    assert payload["input_kind"] == "video"
+    assert payload["prompt_kind"] == "generic_query"
+    assert payload["query"] == "a person waves"
+    assert payload["fps"] == 1.5
+    assert payload["max_tokens"] == 256
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "source_bundle_sha256",
+        "prompt_protocol_sha256",
+        "input_root_sha256",
+    ],
+)
+def test_client_fails_closed_on_stale_worker_execution_identity(
+    tmp_path: Path,
+    field: str,
+) -> None:
+    source = tmp_path / "candidate.mp4"
+    source.write_bytes(b"video")
+    http = RecordingHTTPClient(tmp_path)
+    client = QwenWorkerClient(
+        endpoint="http://127.0.0.1:8781",
+        api_key=TOKEN,
+        input_root=tmp_path,
+        expected_model_identity=MODEL_IDENTITY,
+        client=http,
+    )
+    assert isinstance(http.health_payload, dict)
+    http.health_payload = {**http.health_payload, field: "0" * 64}
+
+    assert client.status().ready is False
+
+    assert isinstance(http.judge_payload, dict)
+    http.judge_payload = {**http.judge_payload, field: "0" * 64}
+    with pytest.raises(RuntimeError, match="response contract violation"):
+        client.judge_video(source, fps=2, max_tokens=320)
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "source_bundle_sha256",
+        "prompt_protocol_sha256",
+        "input_root_sha256",
+    ],
+)
+def test_worker_rejects_stale_request_execution_identity_before_input_read(
+    tmp_path: Path,
+    field: str,
+) -> None:
+    runtime = FakeWorkerRuntime()
+    client = _worker_client(tmp_path, runtime)
+    request = {**_request(tmp_path, "missing.mp4"), field: "0" * 64}
+
+    response = client.post(
+        "/v1/judge",
+        json=request,
+        headers={"Authorization": f"Bearer {TOKEN}"},
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {
+        "detail": "Qwen worker execution identity does not match"
+    }
+    assert runtime.calls == []
+
+
+def test_probe_proves_same_source_root_and_file_without_inference(
+    tmp_path: Path,
+) -> None:
+    runtime = FakeWorkerRuntime()
+    marker = tmp_path / "private.marker"
+    marker.write_bytes(b"private source-bound marker")
+    transport = _worker_client(tmp_path, runtime)
+    client = QwenWorkerClient(
+        endpoint="http://127.0.0.1",
+        api_key=TOKEN,
+        input_root=tmp_path,
+        expected_model_identity=MODEL_IDENTITY,
+        client=transport,
+    )
+
+    assert client.probe_source(marker) is True
+    assert runtime.calls == []
+    assert str(tmp_path) not in json.dumps(client.identity)
+
+    link = tmp_path / "linked.marker"
+    link.symlink_to(marker)
+    with pytest.raises(RuntimeError, match="probe source is unavailable"):
+        client.probe_source(link)
+
+
+def test_probe_rejects_wrong_source_digest_without_inference(tmp_path: Path) -> None:
+    runtime = FakeWorkerRuntime()
+    marker = tmp_path / "marker"
+    marker.write_bytes(b"source-bound marker")
+    transport = _worker_client(tmp_path, runtime)
+    request = {
+        "schema_version": QWEN_WORKER_SCHEMA_VERSION,
+        "request_id": "c" * 32,
+        "model_identity": MODEL_IDENTITY,
+        "runtime_identity": QWEN_INFERENCE_RUNTIME_IDENTITY,
+        "source_bundle_sha256": QWEN_SOURCE_BUNDLE_SHA256,
+        "prompt_protocol_sha256": QWEN_PROMPT_PROTOCOL_SHA256,
+        "input_root_sha256": qwen_worker_module._input_root_identity(tmp_path),
+        "relative_path": "marker",
+        "expected_sha256": "0" * 64,
+        "expected_byte_size": marker.stat().st_size,
+    }
+
+    response = transport.post(
+        "/v1/probe",
+        json=request,
+        headers={"Authorization": f"Bearer {TOKEN}"},
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {
+        "detail": "Qwen worker probe input identity mismatch"
+    }
+    assert runtime.calls == []
 
 
 def test_client_fails_closed_on_model_mismatch_and_sanitizes_bad_response(
@@ -474,7 +925,7 @@ def test_client_fails_closed_on_model_mismatch_and_sanitizes_bad_response(
 ) -> None:
     source = tmp_path / "candidate.mp4"
     source.write_bytes(b"video")
-    http = RecordingHTTPClient()
+    http = RecordingHTTPClient(tmp_path)
     client = QwenWorkerClient(
         endpoint="http://127.0.0.1:8781",
         api_key=TOKEN,
@@ -490,6 +941,39 @@ def test_client_fails_closed_on_model_mismatch_and_sanitizes_bad_response(
     with pytest.raises(RuntimeError, match="Qwen worker response contract violation") as error:
         client.judge_video(source, fps=2, max_tokens=320)
     assert "/secret/model" not in str(error.value)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (("source_sha256", "0" * 64), ("byte_size", 6)),
+)
+def test_client_fails_closed_when_worker_echoes_a_different_input_identity(
+    tmp_path: Path,
+    field: str,
+    value: object,
+) -> None:
+    source = tmp_path / "candidate.mp4"
+    source.write_bytes(b"video")
+    http = RecordingHTTPClient(tmp_path)
+    client = QwenWorkerClient(
+        endpoint="http://127.0.0.1:8781",
+        api_key=TOKEN,
+        input_root=tmp_path,
+        expected_model_identity=MODEL_IDENTITY,
+        client=http,
+    )
+    original_post = http.post
+
+    def changed_post(*args: object, **kwargs: object) -> FakeResponse:
+        response = original_post(*args, **kwargs)  # type: ignore[arg-type]
+        assert isinstance(response.payload, dict)
+        response.payload = {**response.payload, field: value}
+        return response
+
+    http.post = changed_post  # type: ignore[method-assign]
+
+    with pytest.raises(RuntimeError, match="response contract violation"):
+        client.judge_video(source, fps=2, max_tokens=320)
 
 
 @pytest.mark.parametrize(
@@ -524,7 +1008,7 @@ def test_client_rejects_input_outside_shared_root(tmp_path: Path) -> None:
         api_key=TOKEN,
         input_root=tmp_path,
         expected_model_identity=MODEL_IDENTITY,
-        client=RecordingHTTPClient(),
+        client=RecordingHTTPClient(tmp_path),
     )
 
     with pytest.raises(RuntimeError, match="outside configured input root"):
@@ -585,6 +1069,9 @@ def test_default_transport_ignores_proxy_environment_and_bounds_response_body(
         "status": "ok",
         "model_identity": MODEL_IDENTITY,
         "runtime_identity": QWEN_INFERENCE_RUNTIME_IDENTITY,
+        "source_bundle_sha256": QWEN_SOURCE_BUNDLE_SHA256,
+        "prompt_protocol_sha256": QWEN_PROMPT_PROTOCOL_SHA256,
+        "input_root_sha256": qwen_worker_module._input_root_identity(tmp_path),
         "loaded": False,
         "input_kinds": ["video", "storyboard"],
         "max_input_bytes": 1024,
@@ -660,7 +1147,7 @@ def test_default_transport_ignores_proxy_environment_and_bounds_response_body(
     assert declared_oversized_response.iterated is False
 
 
-def test_mlx_runtime_stays_lazy_and_preserves_both_prompt_paths(
+def test_mlx_runtime_stays_lazy_and_preserves_all_prompt_input_paths(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -681,12 +1168,12 @@ def test_mlx_runtime_stays_lazy_and_preserves_both_prompt_paths(
         return fake_model, fake_processor
 
     def apply_chat_template(*args, **kwargs):  # type: ignore[no-untyped-def]
-        calls.append(("template", kwargs))
-        return "prompt"
+        calls.append(("template", {**kwargs, "prompts": args[2]}))
+        return args[2][0]
 
     def generate(*args, **kwargs):  # type: ignore[no-untyped-def]
         calls.append(("generate", kwargs))
-        if "video" in kwargs:
+        if "video" in kwargs and "User query" not in args[2]:
             return SimpleNamespace(
                 text='{"shot_attempt":true,"ball_through_hoop":true}'
             )
@@ -713,13 +1200,13 @@ def test_mlx_runtime_stays_lazy_and_preserves_both_prompt_paths(
     assert runtime.available is True
     assert runtime.loaded is False
     video_result = runtime.judge(
-        QwenJudgeRequest.model_validate(_request()),
+        QwenJudgeRequest.model_validate(_request(tmp_path)),
         video,
     )
     storyboard_result = runtime.judge(
         QwenJudgeRequest.model_validate(
             {
-                **_request("candidate.jpg"),
+                **_request(tmp_path, "candidate.jpg"),
                 "input_kind": "storyboard",
                 "prompt_kind": "generic_query",
                 "query": "visible dunk",
@@ -728,19 +1215,37 @@ def test_mlx_runtime_stays_lazy_and_preserves_both_prompt_paths(
         ),
         storyboard,
     )
+    generic_video_result = runtime.judge(
+        QwenJudgeRequest.model_validate(
+            {
+                **_request(tmp_path),
+                "prompt_kind": "generic_query",
+                "query": "visible dunk",
+            }
+        ),
+        video,
+    )
 
     assert runtime.loaded is True
     assert video_result.ball_through_hoop is True
     assert storyboard_result.matches_query is True
+    assert generic_video_result.matches_query is True
     assert [name for name, _ in calls].count("load") == 1
-    video_generate = next(
+    video_generates = [
         payload for name, payload in calls if name == "generate" and "video" in payload
-    )
+    ]
     image_generate = next(
         payload for name, payload in calls if name == "generate" and "image" in payload
     )
-    assert video_generate["fps"] == 2.0
+    assert len(video_generates) == 2
+    assert all(payload["fps"] == 2.0 for payload in video_generates)
     assert image_generate["image"] == [str(storyboard)]
+    template_prompts = [
+        payload["prompts"][0]
+        for name, payload in calls
+        if name == "template" and "prompts" in payload
+    ]
+    assert any("visible dunk" in prompt for prompt in template_prompts)
 
 
 def test_pinned_worker_model_cannot_be_shadowed_by_a_relative_directory(
@@ -793,6 +1298,11 @@ def test_worker_main_hardcodes_loopback_and_does_not_load_model(
     calls: list[tuple[object, dict[str, object]]] = []
     monkeypatch.setattr(qwen_worker_module, "QwenWorkerSettings", lambda: settings)
     monkeypatch.setattr(
+        qwen_worker_module,
+        "attest_qwen_worker_startup",
+        lambda *_args, **_kwargs: {},
+    )
+    monkeypatch.setattr(
         qwen_worker_module.MLXQwenWorkerRuntime,
         "_load",
         lambda _self: (_ for _ in ()).throw(AssertionError("model loaded at startup")),
@@ -835,3 +1345,19 @@ def test_worker_input_root_is_derived_from_shared_data_directory(tmp_path: Path)
     )
 
     assert settings.input_root == tmp_path / "tmp"
+
+
+def test_worker_input_root_can_be_explicitly_shared(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shared = tmp_path / "shared-qwen-spool"
+    monkeypatch.setenv("VIDEOSCOPE_QWEN_WORKER_INPUT_ROOT", str(shared))
+    settings = QwenWorkerSettings(
+        api_key=TOKEN,
+        model_name="organization/qwen",
+        data_dir=tmp_path / "other-data",
+        _env_file=None,
+    )
+
+    assert settings.input_root == shared

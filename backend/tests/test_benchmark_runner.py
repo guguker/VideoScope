@@ -14,6 +14,7 @@ from videoscope.benchmark import (
     BenchmarkInterval,
     BenchmarkRunRegistry,
     ComponentIdentity,
+    CriticalSliceLabels,
     HardNegative,
     HardwareProfile,
     LocalAssetResolver,
@@ -27,9 +28,27 @@ from videoscope.benchmark.runner import (
     BenchmarkSearchHit,
     BenchmarkSearchSession,
     ExecutionIdentities,
+    _score_ranked_hits,
     audit_run_manifest,
 )
 from videoscope.benchmark.profiles import get_profile
+from videoscope.evaluation import temporal_iou
+
+
+_TEXT_MODEL_IDENTITY = (
+    "fastembed@0.8.0:mean-pooling-v1:"
+    "sentence-transformers/paraphrase-multilingual-mpnet-base-v2:"
+    "xenova/paraphrase-multilingual-mpnet-base-v2@"
+    "e5d116277351513fd260955ece953ecddde7046e:768"
+)
+_VISUAL_MODEL_IDENTITY = (
+    "google/siglip2-base-patch16-224@"
+    "75de2d55ec2d0b4efc50b3e9ad70dba96a7b2fa2"
+)
+_QWEN_MODEL_IDENTITY = (
+    "mlx-community/Qwen3.5-9B-MLX-4bit@"
+    "938d8919941c6e7efd3c7150eff7fe9d12afa631"
+)
 
 
 def _asset(asset_id: str, digest: str, duration: float) -> BenchmarkAsset:
@@ -44,6 +63,56 @@ def _asset(asset_id: str, digest: str, duration: float) -> BenchmarkAsset:
             license_id="CC-BY-4.0",
         ),
     )
+
+
+def _overlapping_interval_case() -> QueryCase:
+    return QueryCase(
+        case_id="overlapping-gold",
+        query="two distinct events",
+        asset_ids=("asset-a",),
+        domain="basketball",
+        modalities=("visual",),
+        label_quality="gold",
+        split_group="source-a",
+        relevant_intervals=(
+            BenchmarkInterval("asset-a", 0.0, 10.0),
+            BenchmarkInterval("asset-a", 6.0, 16.0),
+        ),
+    )
+
+
+def test_one_prediction_cannot_cover_two_overlapping_gold_intervals() -> None:
+    score = _score_ranked_hits(
+        _overlapping_interval_case(),
+        (BenchmarkSearchHit("asset-a", 4.0, 12.0, 0.9),),
+        latency_ms=1.0,
+        overlap=temporal_iou,
+    )
+
+    assert score.covered_relevant_at_10 == 1
+    assert score.covered_relevant_at_20 == 1
+    assert score.covered_relevant_at_50 == 1
+    assert score.precision_at_5 == pytest.approx(0.2)
+    assert len(score.boundary_errors) == 1
+
+
+def test_rank_prefix_matching_reassigns_earlier_hit_for_maximum_gold_coverage() -> None:
+    score = _score_ranked_hits(
+        _overlapping_interval_case(),
+        (
+            BenchmarkSearchHit("asset-a", 4.0, 12.0, 0.9),
+            BenchmarkSearchHit("asset-a", 0.0, 8.0, 0.8),
+        ),
+        latency_ms=1.0,
+        overlap=temporal_iou,
+    )
+
+    assert score.covered_relevant_at_10 == 2
+    assert score.covered_relevant_at_20 == 2
+    assert score.covered_relevant_at_50 == 2
+    assert score.precision_at_5 == pytest.approx(0.4)
+    assert score.ndcg_at_10 == pytest.approx(1.0)
+    assert sorted(score.boundary_errors) == [(0.0, 2.0), (2.0, 4.0)]
 
 
 def _dataset() -> BenchmarkDataset:
@@ -131,6 +200,96 @@ class FakeAssetRepository:
         )
 
 
+def _valid_product_identities(
+    profile_id: str,
+    *,
+    execution_mode: str = "warm",
+) -> ExecutionIdentities:
+    profile = get_profile(profile_id)
+    model = [
+        ComponentIdentity("text_embedding", _TEXT_MODEL_IDENTITY),
+    ]
+    index = [
+        ComponentIdentity("text_vector_index", "1" * 64),
+        ComponentIdentity("text_vector_generations", "sha256:" + "2" * 64),
+    ]
+    if profile.search_plan.visual_search != "disabled":
+        model.append(
+            ComponentIdentity("visual_embedding", _VISUAL_MODEL_IDENTITY)
+        )
+        index.append(
+            ComponentIdentity("visual_generations", "sha256:" + "4" * 64)
+        )
+    if profile.search_plan.lighthouse:
+        model.append(
+            ComponentIdentity("lighthouse_model", "sha256:" + "5" * 64)
+        )
+        index.append(
+            ComponentIdentity("lighthouse_generations", "sha256:" + "6" * 64)
+        )
+    if profile.search_plan.reranker != "none":
+        model.append(
+            ComponentIdentity(
+                f"{profile.search_plan.reranker}_reranker",
+                (
+                    _QWEN_MODEL_IDENTITY
+                    if profile.search_plan.reranker == "qwen"
+                    else "not-configured"
+                ),
+            )
+        )
+    return ExecutionIdentities(
+        model_identities=tuple(model),
+        index_identities=tuple(index),
+        config_identities=(
+            ComponentIdentity(
+                "benchmark_product_environment",
+                "benchmark-product-environment@2:" + "8" * 64,
+            ),
+            ComponentIdentity(
+                "evaluation_search_configuration",
+                profile.search_plan.identity.replace(
+                    "evaluation-search-plan",
+                    "evaluation-search-configuration",
+                    1,
+                ),
+            ),
+            ComponentIdentity(
+                "product_search_lifecycle",
+                f"{execution_mode}:test-cache-policy@1",
+            ),
+            ComponentIdentity("product_search_runtime", "sha256:" + "9" * 64),
+        ),
+    )
+
+
+def _drift_profile_identities(
+    identities: ExecutionIdentities,
+    drift: str,
+) -> ExecutionIdentities:
+    model = list(identities.model_identities)
+    index = list(identities.index_identities)
+    config = list(identities.config_identities)
+    if drift == "missing":
+        model = [item for item in model if item.component_id != "qwen_reranker"]
+    elif drift == "extra":
+        model.append(ComponentIdentity("unexpected_model", "fixture/model@" + "a" * 40))
+    elif drift == "malformed":
+        model = [
+            replace(item, identity="fixture/siglip@floating-main")
+            if item.component_id == "visual_embedding"
+            else item
+            for item in model
+        ]
+    elif drift == "wrong_role":
+        moved = next(item for item in model if item.component_id == "visual_embedding")
+        model.remove(moved)
+        index.append(moved)
+    else:
+        raise AssertionError(f"unknown drift fixture {drift}")
+    return ExecutionIdentities(tuple(model), tuple(index), tuple(config))
+
+
 class FakeSearchAdapter:
     def __init__(self) -> None:
         self.states: dict[tuple[str, str], str | Exception] = {}
@@ -155,17 +314,10 @@ class FakeSearchAdapter:
 
     def identities(self) -> ExecutionIdentities:
         assert self.profile is not None
-        return ExecutionIdentities(
-            model_identities=(ComponentIdentity("siglip", "siglip@revision"),),
-            index_identities=(
-                ComponentIdentity("visual_dense", "generation-7@specification"),
-            ),
-            config_identities=(
-                ComponentIdentity(
-                    "search_stack",
-                    f"stack-for-{self.profile.profile_id}",
-                ),
-            ),
+        assert self.execution_mode is not None
+        return _valid_product_identities(
+            self.profile.profile_id,
+            execution_mode=self.execution_mode,
         )
 
     def lifecycle_identity(self) -> ComponentIdentity:
@@ -197,6 +349,34 @@ class FakeSearchAdapter:
 
     def close(self) -> None:
         self.closed = True
+
+
+@pytest.mark.parametrize("drift", ("missing", "extra", "malformed", "wrong_role"))
+def test_runner_rejects_profile_identity_drift_before_search_or_publication(
+    tmp_path,
+    drift: str,
+) -> None:
+    class DriftedIdentityAdapter(FakeSearchAdapter):
+        def identities(self) -> ExecutionIdentities:
+            assert self.profile is not None
+            return _drift_profile_identities(
+                _valid_product_identities(self.profile.profile_id),
+                drift,
+            )
+
+    adapter = DriftedIdentityAdapter()
+    runner = _runner(tmp_path, adapter)
+
+    with pytest.raises(BenchmarkExecutionError, match="identity contract"):
+        runner.run(
+            _dataset(),
+            profile_id="qwen_verification",
+            run_id=f"identity-drift-{drift}",
+            execution_mode="warm",
+        )
+
+    assert adapter.calls == []
+    assert runner.registry.list() == ()
 
 
 class DeterministicTimer:
@@ -268,6 +448,16 @@ def test_runner_scores_multi_interval_positive_and_zero_interval_negative_cases(
     assert metrics["recall_at_1"] == pytest.approx(0.5)
     assert metrics["recall_at_3"] == 1
     assert metrics["recall_at_5"] == 1
+    assert metrics["candidate_recall_at_50"] == pytest.approx(2 / 3)
+    assert metrics["precision_at_5"] == pytest.approx(0.2)
+    assert metrics["recall_at_10"] == pytest.approx(2 / 3)
+    assert metrics["recall_at_20"] == pytest.approx(2 / 3)
+    assert metrics["ndcg_at_10"] == pytest.approx(0.6934264)
+    assert metrics["mean_boundary_error_seconds"] == 0
+    assert metrics["p50_latency_ms"] == pytest.approx(100.0)
+    assert metrics["p95_latency_ms"] == pytest.approx(100.0)
+    assert metrics["infrastructure_failure_count"] == 0
+    assert metrics["model_miss_count"] == 0
     assert metrics["mrr"] == pytest.approx(0.75)
     assert metrics["mean_temporal_iou"] == 1
     assert metrics["false_positive_rate"] == pytest.approx(0.5)
@@ -296,6 +486,97 @@ def test_runner_scores_multi_interval_positive_and_zero_interval_negative_cases(
     audit_run_manifest(_dataset(), run)
 
 
+def test_runner_emits_metrics_for_versioned_critical_slice_labels(tmp_path) -> None:
+    dataset = _dataset()
+    labeled = replace(
+        dataset,
+        cases=(
+            replace(
+                dataset.cases[0],
+                critical_slices=CriticalSliceLabels(
+                    1,
+                    ("made_3",),
+                    ("scoreboard_hidden", "low_resolution"),
+                    ("different_camera_or_league",),
+                ),
+            ),
+            replace(
+                dataset.cases[1],
+                critical_slices=CriticalSliceLabels(
+                    1,
+                    ("miss",),
+                    ("low_resolution",),
+                    ("in_distribution",),
+                ),
+            ),
+            replace(
+                dataset.cases[2],
+                critical_slices=CriticalSliceLabels(
+                    1,
+                    ("replay",),
+                    ("standard",),
+                    ("in_distribution",),
+                ),
+            ),
+        ),
+    )
+    adapter = FakeSearchAdapter()
+    adapter.results = {
+        "made basket": (
+            BenchmarkSearchHit("asset-a", 40.0, 42.0, 0.9),
+        ),
+        "a dunk occurs": (),
+        "scoreboard changes": (
+            BenchmarkSearchHit("asset-b", 50.0, 51.0, 0.8),
+        ),
+    }
+
+    metrics = _metric_map(
+        _runner(tmp_path, adapter).run(
+            labeled,
+            profile_id="dense_siglip",
+            run_id="run-critical-slices",
+            execution_mode="warm",
+        )
+    )
+
+    assert metrics["slice.event_class.made_3.case_count"] == 1
+    assert metrics["slice.event_class.made_3.recall_at_5"] == 1
+    assert metrics["slice.capture_condition.low_resolution.case_count"] == 2
+    assert metrics["slice.capture_condition.scoreboard_hidden.recall_at_5"] == 1
+    assert metrics["slice.distribution_shift.different_camera_or_league.case_count"] == 1
+    assert metrics["slice.distribution_shift.in_distribution.case_count"] == 2
+
+
+def test_runner_does_not_invent_critical_slice_metrics_for_legacy_cases(tmp_path) -> None:
+    adapter = FakeSearchAdapter()
+    adapter.results = {
+        "made basket": (),
+        "a dunk occurs": (),
+        "scoreboard changes": (),
+    }
+
+    metrics = _metric_map(
+        _runner(tmp_path, adapter).run(
+            _dataset(),
+            profile_id="dense_siglip",
+            run_id="run-legacy-slices",
+            execution_mode="warm",
+        )
+    )
+
+    assert not any(
+        name.startswith(
+            (
+                "slice.event_class.",
+                "slice.capture_condition.",
+                "slice.distribution_shift.",
+            )
+        )
+        for name in metrics
+    )
+
+
 def test_runner_persists_capability_failures_as_errors_not_model_misses(tmp_path) -> None:
     adapter = FakeSearchAdapter()
     adapter.states[("asset-b", "visual_dense")] = "stale"
@@ -319,9 +600,34 @@ def test_runner_persists_capability_failures_as_errors_not_model_misses(tmp_path
     assert outcomes["one-positive"].diagnostic_code == "capability_stale"
     assert metrics["completed_case_count"] == 1
     assert metrics["error_count"] == 2
+    assert metrics["infrastructure_failure_count"] == 2
+    assert metrics["infrastructure_failure_rate"] == pytest.approx(2 / 3)
+    assert metrics["failure.capability_stale.count"] == 2
+    assert metrics["model_miss_count"] == 0
     assert metrics["recall_at_1"] == 1
     assert "a dunk occurs" not in {call[1] for call in adapter.calls}
     assert runner.registry.read("run-stale") == run
+
+
+def test_valid_empty_positive_is_a_model_miss_not_infrastructure_failure(
+    tmp_path,
+) -> None:
+    adapter = FakeSearchAdapter()
+    runner = _runner(tmp_path, adapter)
+
+    run = runner.run(
+        _dataset(),
+        profile_id="dense_siglip",
+        run_id="run-model-miss",
+        execution_mode="warm",
+    )
+    metrics = _metric_map(run)
+
+    assert metrics["infrastructure_failure_count"] == 0
+    assert metrics["infrastructure_failure_rate"] == 0
+    assert metrics["model_miss_count"] == 2
+    assert metrics["model_miss_rate"] == 1
+    assert all(outcome.status == "complete" for outcome in run.case_outcomes)
 
 
 def test_runner_fails_closed_on_missing_required_capability(tmp_path) -> None:
@@ -543,7 +849,7 @@ def test_runner_bounds_provider_iterables_before_rejecting_excess_results(
     )
 
     assert outcome.diagnostic_code == "invalid_search_result"
-    assert adapter.yield_count == 21 + 21 + 21
+    assert adapter.yield_count == (get_profile("dense_siglip").result_limit + 1) * 3
 
 
 def test_runner_rejects_duplicate_exact_ranked_hits(tmp_path) -> None:
@@ -637,13 +943,14 @@ def test_lexical_audit_requires_the_concrete_product_environment_contract(
         identity.component_id: identity
         for identity in run.config_identities
         if identity.component_id.startswith("benchmark_")
+        and identity.component_id != "benchmark_product_environment"
     }
     audited = replace(
         run,
         model_identities=(
             ComponentIdentity(
                 "text_embedding",
-                "fastembed@0.8.0:mean-pooling-v1:model:repo@revision:768",
+                _TEXT_MODEL_IDENTITY,
             ),
         ),
         index_identities=(
@@ -654,7 +961,7 @@ def test_lexical_audit_requires_the_concrete_product_environment_contract(
             *reserved.values(),
             ComponentIdentity(
                 "benchmark_product_environment",
-                "benchmark-product-environment@1:" + "c" * 64,
+                "benchmark-product-environment@2:" + "c" * 64,
             ),
             ComponentIdentity(
                 "evaluation_search_configuration",
@@ -679,9 +986,81 @@ def test_lexical_audit_requires_the_concrete_product_environment_contract(
             identity
             for identity in audited.config_identities
             if identity.component_id.startswith("benchmark_")
+            and identity.component_id != "benchmark_product_environment"
         ),
     )
-    with pytest.raises(BenchmarkExecutionError, match="product identity contract"):
+    with pytest.raises(BenchmarkExecutionError, match="identity contract"):
+        audit_run_manifest(_dataset(), forged)
+
+
+@pytest.mark.parametrize(
+    "profile_id",
+    (
+        "lexical_qdrant",
+        "dense_siglip",
+        "temporal_refinement",
+        "lighthouse",
+        "qwen_verification",
+        "internvideo",
+    ),
+)
+def test_persisted_audit_enforces_identity_contract_for_every_frozen_profile(
+    tmp_path,
+    profile_id: str,
+) -> None:
+    run = _runner(tmp_path / profile_id, FakeSearchAdapter()).run(
+        _dataset(),
+        profile_id=profile_id,
+        run_id=f"audit-{profile_id}",
+        execution_mode="warm",
+    )
+
+    audit_run_manifest(_dataset(), run)
+    contract_identity = next(
+        item.identity
+        for item in run.config_identities
+        if item.component_id == "benchmark_profile_identity_contract"
+    )
+    assert contract_identity.startswith("benchmark-profile-identity-contract@1:")
+
+
+@pytest.mark.parametrize("drift", ("missing", "extra", "malformed", "wrong_role"))
+def test_persisted_audit_rejects_profile_identity_drift(
+    tmp_path,
+    drift: str,
+) -> None:
+    run = _runner(tmp_path, FakeSearchAdapter()).run(
+        _dataset(),
+        profile_id="qwen_verification",
+        run_id="audit-drift",
+        execution_mode="warm",
+    )
+    drifted = _drift_profile_identities(
+        ExecutionIdentities(
+            run.model_identities,
+            run.index_identities,
+            tuple(
+                item
+                for item in run.config_identities
+                if item.component_id
+                not in {
+                    "benchmark_execution_lifecycle",
+                    "benchmark_methodology",
+                    "benchmark_profile",
+                    "benchmark_profile_identity_contract",
+                    "benchmark_search_plan",
+                }
+            ),
+        ),
+        drift,
+    )
+    forged = replace(
+        run,
+        model_identities=drifted.model_identities,
+        index_identities=drifted.index_identities,
+    )
+
+    with pytest.raises(BenchmarkExecutionError, match="identity contract"):
         audit_run_manifest(_dataset(), forged)
 
 
@@ -695,8 +1074,7 @@ def test_runner_opens_one_pinned_session_after_asset_resolution_and_closes_it(
             self.closed = False
 
         def identities(self) -> ExecutionIdentities:
-            identity = ComponentIdentity("component", "identity")
-            return ExecutionIdentities((identity,), (identity,), (identity,))
+            return _valid_product_identities("dense_siglip")
 
         def lifecycle_identity(self) -> ComponentIdentity:
             return ComponentIdentity(
@@ -956,8 +1334,7 @@ def test_latency_excludes_capability_checks_and_scoring(tmp_path) -> None:
 
     class Session:
         def identities(self) -> ExecutionIdentities:
-            identity = ComponentIdentity("component", "identity")
-            return ExecutionIdentities((identity,), (identity,), (identity,))
+            return _valid_product_identities("dense_siglip")
 
         def lifecycle_identity(self) -> ComponentIdentity:
             return ComponentIdentity(

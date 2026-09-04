@@ -7,8 +7,10 @@ from videoscope.benchmark.profiles import (
     BenchmarkProfile,
     EvaluationModalityWeight,
     EvaluationSearchPlan,
+    FROZEN_PROFILE_IDENTITY_CONTRACTS,
     FROZEN_PROFILES,
     get_profile,
+    profile_identity_contract,
 )
 
 
@@ -36,6 +38,44 @@ def test_approved_ablation_profiles_are_named_and_frozen() -> None:
         FROZEN_PROFILES["new"] = get_profile("dense_siglip")  # type: ignore[index]
     with pytest.raises(FrozenInstanceError):
         get_profile("dense_siglip").profile_id = "changed"  # type: ignore[misc]
+
+
+def test_every_frozen_profile_has_one_role_bound_identity_contract() -> None:
+    assert tuple(FROZEN_PROFILE_IDENTITY_CONTRACTS) == tuple(FROZEN_PROFILES)
+    assert len(
+        {contract.identity for contract in FROZEN_PROFILE_IDENTITY_CONTRACTS.values()}
+    ) == len(FROZEN_PROFILES)
+
+    lexical = profile_identity_contract(get_profile("lexical_qdrant"))
+    qwen = profile_identity_contract(get_profile("qwen_verification"))
+    assert lexical.component_ids("model") == ("text_embedding",)
+    assert lexical.component_ids("index") == (
+        "text_vector_generations",
+        "text_vector_index",
+    )
+    assert qwen.component_ids("model") == (
+        "lighthouse_model",
+        "qwen_reranker",
+        "text_embedding",
+        "visual_embedding",
+    )
+    assert qwen.component_ids("index") == (
+        "lighthouse_generations",
+        "text_vector_generations",
+        "text_vector_index",
+        "visual_generations",
+    )
+    assert qwen.component_ids("config") == (
+        "benchmark_product_environment",
+        "evaluation_search_configuration",
+        "product_search_lifecycle",
+        "product_search_runtime",
+    )
+
+    with pytest.raises(BenchmarkDataError, match="exact frozen profile"):
+        profile_identity_contract(
+            replace(get_profile("qwen_verification"), schema_version=99)
+        )
 
 
 def test_profile_identity_changes_with_contract_version() -> None:
@@ -136,6 +176,8 @@ def test_frozen_profiles_publish_exact_search_plans() -> None:
         profile.search_plan.reranker_candidate_limit == 0
         for profile in (baseline, dense, refined, lighthouse)
     )
+    assert all(profile.search_plan.result_limit == 50 for profile in FROZEN_PROFILES.values())
+    assert all(profile.schema_version == 2 for profile in FROZEN_PROFILES.values())
     expected_text_weights = {
         "objects": 0.92,
         "ocr": 0.88,

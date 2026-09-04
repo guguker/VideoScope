@@ -33,8 +33,8 @@ truncates the evaluated corpus.
 
 ## Frozen profiles and search adapter
 
-The approved v1 profiles are a cumulative product ablation followed by one
-mutually exclusive reranker fork:
+The approved profile-schema-v2 profiles are a cumulative product ablation
+followed by one mutually exclusive reranker fork:
 
 | Profile | Exact search plan | Required capabilities |
 | --- | --- | --- |
@@ -45,12 +45,12 @@ mutually exclusive reranker fork:
 | `qwen_verification` | Lighthouse plan, then Qwen over the top 12 base candidates | Lighthouse base plus Qwen |
 | `internvideo` | Lighthouse plan, then InternVideo over the top 4 base candidates | Lighthouse base plus InternVideo |
 
-Qwen and InternVideo are never chained. Every profile has result limit 20. Text
+Qwen and InternVideo are never chained. Every profile has result limit 50. Text
 weights remain fixed in every profile (`speech=1.0`, `ocr=0.88`,
 `objects=0.92`); dense visual has weight `1.08`, and Lighthouse has weight
 `0.78` when present. The `all_candidates` trigger means unconditional reranking
 of every candidate inside the frozen reranker cap: 12 for Qwen and 4 for
-InternVideo, not all 20 final result slots. Modalities, weights, refinement
+InternVideo, not all 50 final result slots. Modalities, weights, refinement
 flags, reranker trigger/candidate limit, and result limit are part of canonical
 `EvaluationSearchPlan` JSON and its SHA-256 identity. Provider input, frame, and
 token settings remain part of the pinned runtime/model identity. Input tuple
@@ -76,10 +76,13 @@ error, and a close failure prevents publication.
 
 The default lifecycle honestly supports only warm execution with preserved
 process caches. Cold execution requires a separate externally attested
-lifecycle and is rejected without one. The temporal, Qwen, and InternVideo
-profiles are frozen specifications and have strict capability gates, but they
-do not yet have a complete attested benchmark runtime and must not be described
-as runnable.
+lifecycle and is rejected without one. The product environment accepts every
+frozen profile and builds read-only wiring for dense SigLIP, temporal refinement,
+Lighthouse, and Qwen from the selected settings and existing generation state;
+it never indexes, activates, or falls back to another provider. InternVideo is
+the explicit exception: the profile is accepted, but the provider remains
+machine-readably `not_configured` until it has the same local, source-bound
+attestation contract.
 
 ## Read-only benchmark CLI
 
@@ -98,7 +101,8 @@ python -m videoscope.benchmark compare <baseline> <candidate> \
   --registry <root> --policy <policy.json> --dataset <file>
 python -m videoscope.benchmark run --dataset <file> --registry <existing-root> \
   --data-dir <product-data> --scratch-parent <existing-0700-directory> \
-  --run-id <id> [--bindings <alias-to-video.json>] [--preflight]
+  --run-id <id> [--bindings <alias-to-video.json>] \
+  [--profile <frozen-profile-id>] [--execution-mode warm] [--preflight]
 ```
 
 Successful commands write one compact, key-sorted JSON object to stdout. Errors
@@ -106,10 +110,10 @@ write a generic JSON object to stderr without a traceback, input path, or raw
 storage/provider exception. Stable exit codes are `2` for usage, `3` for invalid
 or corrupt data, `4` for missing data, `5` for an existing destination, `6` for
 an audit failure, `7` for storage I/O, `8` for product execution/preflight,
-reserved `9` for a future distinct measurement failure, `70` for an unexpected
-internal failure, `130` for an interrupt, and `143` for termination. Registry
-reads and benchmark runs require an already initialised registry; they never
-initialise one.
+`9` for unavailable or failed measurement/preflight measurement, `70` for an
+unexpected internal failure, `130` for an interrupt, and `143` for termination.
+Registry reads and benchmark runs require an already initialised registry; they
+never initialise one.
 
 Dataset and policy inputs must be bounded regular files. Symbolic links and
 special files such as FIFOs are rejected without following or waiting on them.
@@ -150,21 +154,35 @@ duplicates, unknown fields, and reserved benchmark component ids in the generic
 config allowlist are rejected. An empty/default object therefore means that all
 execution identities must match exactly.
 
-The executable path is deliberately narrow: only `lexical_qdrant` in `warm`
-mode is accepted. It opens the existing product database, FastEmbed model, and
-Qdrant state through retained read-only snapshots. It never calls normal mutable
-runtime construction, model download, schema initialisation, migration, or
-indexing. If `--bindings` is supplied, it must be a bounded JSON object whose
-keys exactly equal all dataset aliases and whose values are explicit local video
-ids; otherwise content identity resolution must be unambiguous.
+The executable path is deliberately narrow in a different sense: all six frozen
+profiles are accepted, but only in `warm` mode and only against existing product
+state. It opens the product database, FastEmbed model, Qdrant state, applicable
+visual/Lighthouse generations, and configured loopback providers through
+retained read-only boundaries. It never calls normal mutable runtime
+construction, model download, schema initialisation, migration, or indexing. If
+`--bindings` is supplied, it must be a bounded JSON object whose keys exactly
+equal all dataset aliases and whose values are explicit local video ids;
+otherwise content identity resolution must be unambiguous.
 
-`--preflight` resolves every asset, opens the pinned session, captures model,
-index, configuration, lifecycle, and environment identities, and requires every
-declared capability to be `complete`. It performs no search and does not change
-registry bytes. A real run is first prepared in memory, then the complete
-environment is closed and finally attested, and only then is the manifest
-published. Partial, failed, or cancelled runs, failed configured measurements,
-cleanup failures, and final attestation failures are never published.
+`--preflight` resolves every asset, opens the selected profile's pinned session,
+captures model, index, configuration, lifecycle, and environment identities,
+and returns the complete per-asset capability matrix. Every required capability
+must be `complete` for status `ready`; `not_configured`, missing, stale, failed,
+queued, or running states remain visible and are never converted to misses. It
+performs no search and does not change registry bytes. A real run is first
+prepared in memory, then the complete environment is closed and finally
+attested, and only then is the manifest published. Partial, failed, or cancelled
+runs, failed configured measurements, cleanup failures, and final attestation
+failures are never published.
+
+The CLI measurement boundary is independently fail-closed. The lexical profile
+can bind its local process tree. Profiles using an already running Vision,
+Lighthouse, Qwen, or InternVideo endpoint currently return measurement status
+`not_configured` with reason
+`external_worker_process_binding_unavailable`, because a health response does
+not prove the endpoint PID, start token, or executable identity. Such a
+preflight exits `9`, even when the provider capability matrix itself is ready;
+an environment/capability failure with a ready measurement exits `8`.
 
 Both preflight and execution require an exact clean Git `HEAD`. Any tracked
 change or relevant untracked source, worker, script, configuration, or lock file
@@ -208,8 +226,8 @@ only through `limit + 1`, exact duplicate hits are rejected, and failed outcomes
 contain no partial evidence. `audit_run_manifest` requires the exact current
 profile, search-plan, and methodology identities, then recomputes per-case and
 aggregate quality metrics from the frozen dataset, ranked evidence, and
-persisted per-case latency. It does not claim to reproduce process or storage
-measurements from aggregate values alone.
+persisted per-case latency. For a measured v2 run it also reconstructs every
+system aggregate from the persisted portable raw measurement evidence.
 
 Run schema v2 includes dataset revision, code SHA, model/index/config
 identities, hardware, cold/warm mode, outcomes, ranked evidence, and explicit
@@ -226,13 +244,15 @@ explicit `not-measured@1` sentinel, contain no system metrics or measurement
 timestamps, and therefore do not pretend that process-tree memory or storage
 was measured.
 
-The managed measurement implementation is all-or-nothing. It samples the
-identity-pinned managed process tree at 50 ms, rejects external workers, records
-peak/baseline RSS, and compares bounded descriptor-relative storage snapshots.
-Declared active immutable roots must remain unchanged; only declared benchmark
-scratch may grow. The base package intentionally supplies no implicit
-process-table provider, so an unavailable provider or any drift produces a
-failed measurement with no partial system metrics.
+The managed measurement implementation is all-or-nothing. On Darwin it uses the
+native `libproc` provider, not `ps`, to sample the identity-pinned recursive
+process tree at 50 ms. It persists the bounded raw RSS byte samples from which
+sample count, baseline, peak, and increment are recomputed, plus bounded
+descriptor-relative storage snapshots before and after the run. Declared active
+immutable roots must remain unchanged; only declared benchmark scratch may grow.
+An unavailable provider, unbound external worker, identity drift, storage drift,
+or cleanup failure produces a failed measurement with no partial system metrics.
+Metal is explicitly `unavailable` in this benchmark-run evidence contract.
 
 `BenchmarkRunRegistry` publishes v2 atomically in an immutable run directory
 and refuses duplicate run ids. The loader still accepts the exact strict v1
@@ -247,12 +267,47 @@ after bounded `limit + 1` materialization and portable hit translation. Asset
 binding, capability preflight, identity capture, scoring, audit work, registry
 I/O, and session open/close are outside that boundary. Capability/binding
 failures therefore have zero search latency rather than a misleading preflight
-duration. The optional managed measurement surrounds the pinned search session
-and finishes before that session is closed. Its protocol can record peak memory
-and storage accounting, but the run manifest currently contains only the
-resulting aggregates, not portable raw samples or a separately auditable
-measurement attestation. Consequently these observed system metrics cannot yet
-be used for promotion guardrails.
+duration. The managed measurement surrounds the pinned search session and
+finishes before that session is closed. Its protocol identity, raw RSS samples,
+and storage snapshots are stored in the run manifest; audit recomputes the
+system metrics and rejects missing or inconsistent evidence. Promotion policy
+still deliberately rejects observed system-metric guardrails in the current
+comparison layer, so resource acceptance remains a separate Phase 0 gate rather
+than an implicit quality-promotion check.
+
+## Offline full-ML smoke
+
+`scripts/full-ml-smoke.py` is the separate Phase 0 product-path proof. It requires
+an explicit existing mode-0700 disposable root outside the checkout and home
+directory, an explicit non-overlapping read-only model root outside the
+checkout, offline flags, exact manifest-bound owner/worker Python environments,
+and an explicitly attested FFmpeg/FFprobe pair. Worker `PATH`, `HOME`, and
+`TMPDIR` are deterministic. It self-starts Vision, Whisper, Lighthouse, and Qwen as authenticated random-port
+loopback descendants; OCR is a bounded child process. It never connects to
+prestarted workers, downloads artifacts, or writes to project `data/`.
+
+Against a synthetic local MP4, the smoke performs real SigLIP image/text
+embedding, RF-DETR detection, Whisper transcription, OCR, Lighthouse
+generation/search, and Qwen judging. It then uses production components for
+upload, durable indexing, generation-pinned search through
+`lexical_qdrant`, `dense_siglip`, `temporal_refinement`, `lighthouse`, and
+`qwen_verification`, inspectable evidence, and a real MP4 export verified by
+FFprobe. Each executed profile must report successful open/search/close,
+`generation_bound=true`, and non-empty evidence. `internvideo` must instead
+report `not_configured/provider_not_configured`; it is not silently substituted.
+
+The sanitized schema-v1 receipt binds the same pinned ML-environment manifest
+and path-free role mapping as the standalone attestation and benchmark batch. It
+also contains bounded raw process-tree RSS samples
+including every managed loopback worker, plus native host-resource raw samples,
+Metal in-use/allocated peaks and recovery delta, and VM swap deltas. The Metal
+and VM measurements are `system_wide` and explicitly non-additive with
+process-tree RSS; they are not per-worker attribution. OOM is reported separately
+from configuration, infrastructure, and contract failures. Exact provisioning
+and invocation are documented in
+[`ml-environment-attestation.md`](ml-environment-attestation.md). This smoke has
+not yet been executed as target-M4 promotion evidence, so it does not by itself
+complete Phase 0.
 
 ## Comparison and promotion guardrails
 
@@ -275,14 +330,13 @@ revisions.
 Every compatible comparison requires a `BenchmarkDataset`; the public
 `compare_runs` entry point and CLI audit the portable ranked evidence and
 recompute quality metrics for both baseline and candidate before evaluating any
-guardrail. Forged or internally inconsistent aggregates therefore fail audit
-instead of becoming promotion-eligible. Observed system-metric guardrails fail
-closed because the current manifest has no portable measurement evidence from
-which `audit_run_manifest` could reproduce them. The CLI reports that as an
-audit failure until a portable measurement-evidence/attestation contract is
-implemented. Machine-readable successful comparisons include every declared
-gate and sort checks deterministically; incomparable results may omit guardrail
-checks.
+guardrail. It also recomputes system aggregates for measured v2 runs from their
+raw evidence. Forged or internally inconsistent aggregates therefore fail audit
+instead of becoming promotion-eligible. Observed system-metric guardrails still
+fail closed under the current comparison policy and produce an audit error;
+quality guardrails remain available. Machine-readable successful comparisons
+include every declared gate and sort checks deterministically; incomparable
+results may omit guardrail checks.
 
 The statuses are `eligible`, `reject`, `insufficient_evidence`, and
 `incomparable`. `eligible` means only that the declared deterministic guardrails

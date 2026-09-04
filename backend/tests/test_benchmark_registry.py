@@ -16,13 +16,14 @@ from videoscope.benchmark import (
     ComponentIdentity,
     HardwareProfile,
     MetricValue,
+    RUN_SCHEMA_VERSION,
 )
 from videoscope.benchmark.serialization import run_from_dict, run_to_dict
 
 
 def _run(run_id: str = "run-001") -> BenchmarkRunManifest:
     return BenchmarkRunManifest(
-        schema_version=2,
+        schema_version=RUN_SCHEMA_VERSION,
         run_id=run_id,
         created_at="2026-08-18T12:30:00Z",
         started_at="2026-08-18T12:29:58Z",
@@ -395,16 +396,18 @@ def test_registry_keeps_post_commit_state_consistent_when_directory_fsync_fails(
     assert registry.read("run-002") == _run("run-002")
 
 
-def test_run_schema_v2_separates_quality_and_system_measurements() -> None:
+def test_run_schema_v3_separates_quality_and_system_measurements() -> None:
     run = _run()
     payload = run_to_dict(run)
 
-    assert run.schema_version == 2
+    assert run.schema_version == 3
     assert run.run_status == "partial"
     assert run.started_at <= run.finished_at <= run.created_at
     assert run.measurement_status == "not_measured"
     assert run.measurement_started_at is None
     assert run.measurement_finished_at is None
+    assert run.measurement_evidence_status == "not_applicable"
+    assert run.measurement_evidence is None
     assert run.system_metrics == ()
     assert payload["quality_metrics"] == [
         {"name": metric.name, "value": metric.value, "unit": metric.unit}
@@ -414,7 +417,7 @@ def test_run_schema_v2_separates_quality_and_system_measurements() -> None:
     assert run_from_dict(payload) == run
 
 
-def test_run_v2_rejects_inconsistent_status_timestamps_and_metric_names() -> None:
+def test_run_v3_rejects_inconsistent_status_timestamps_and_metric_names() -> None:
     run = _run()
 
     with pytest.raises(BenchmarkDataError, match="run_status"):
@@ -452,7 +455,7 @@ def test_run_v2_rejects_inconsistent_status_timestamps_and_metric_names() -> Non
         )
 
 
-def test_legacy_v1_run_is_readable_but_migrates_to_non_measured_v2() -> None:
+def test_legacy_v1_run_is_readable_but_migrates_to_non_measured_v3() -> None:
     run = _run()
     legacy = run_to_dict(run)
     legacy["schema_version"] = 1
@@ -466,16 +469,52 @@ def test_legacy_v1_run_is_readable_but_migrates_to_non_measured_v2() -> None:
         "measurement_finished_at",
         "measurement_protocol",
         "system_metrics",
+        "measurement_evidence_status",
+        "measurement_evidence",
     ):
         legacy.pop(field)
 
     migrated = run_from_dict(legacy)
 
-    assert migrated.schema_version == 2
+    assert migrated.schema_version == 3
     assert migrated.created_at == run.created_at
     assert migrated.quality_metrics == run.quality_metrics
     assert migrated.measurement_status == "not_measured"
+    assert migrated.measurement_evidence_status == "not_applicable"
+    assert migrated.measurement_evidence is None
     assert migrated.measurement_protocol.identity == "legacy-unmeasured@1"
+
+
+def test_legacy_v2_measured_run_remains_readable_as_aggregate_only() -> None:
+    run = _run()
+    legacy = run_to_dict(run)
+    legacy["schema_version"] = 2
+    legacy["measurement_status"] = "complete"
+    legacy["measurement_started_at"] = run.started_at
+    legacy["measurement_finished_at"] = run.finished_at
+    legacy["measurement_protocol"] = {
+        "component_id": "benchmark_measurement_protocol",
+        "identity": "process-tree-rss-50ms-contained-storage@1:legacy",
+    }
+    legacy["system_metrics"] = [
+        {
+            "name": "sampled_peak_process_tree_rss_bytes",
+            "value": 512.0,
+            "unit": "bytes",
+        }
+    ]
+    legacy.pop("measurement_evidence_status")
+    legacy.pop("measurement_evidence")
+
+    migrated = run_from_dict(legacy)
+
+    assert migrated.schema_version == 3
+    assert migrated.measurement_status == "complete"
+    assert migrated.measurement_evidence_status == "legacy_unavailable"
+    assert migrated.measurement_evidence is None
+    assert migrated.system_metrics == (
+        MetricValue("sampled_peak_process_tree_rss_bytes", 512.0, "bytes"),
+    )
 
 
 def test_run_loader_rejects_boolean_or_mixed_version_shapes() -> None:
@@ -514,4 +553,6 @@ def _run_values() -> dict[str, object]:
         "measurement_started_at": run.measurement_started_at,
         "measurement_finished_at": run.measurement_finished_at,
         "case_outcomes": run.case_outcomes,
+        "measurement_evidence_status": run.measurement_evidence_status,
+        "measurement_evidence": run.measurement_evidence,
     }

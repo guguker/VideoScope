@@ -4337,22 +4337,22 @@ class Repository:
             values = ("processing", job.progress, job.stage, None)
         elif job.state is JobState.COMPLETE:
             values = ("ready", 1.0, "ready", None)
+        elif (
+            job.state in {JobState.FAILED, JobState.CANCELLED}
+            and job.intent is VideoIndexIntent.REINDEX
+            and job.prior_video_state is not None
+        ):
+            prior = job.prior_video_state
+            values = (
+                prior.status,
+                prior.progress,
+                prior.stage,
+                prior.error_code,
+            )
         elif job.state is JobState.FAILED:
             values = ("failed", job.progress, "failed", job.error_code)
         elif job.state is JobState.CANCELLED:
-            if (
-                job.intent is VideoIndexIntent.REINDEX
-                and job.prior_video_state is not None
-            ):
-                prior = job.prior_video_state
-                values = (
-                    prior.status,
-                    prior.progress,
-                    prior.stage,
-                    prior.error_code,
-                )
-            else:
-                values = ("failed", job.progress, "cancelled", "job_cancelled")
+            values = ("failed", job.progress, "cancelled", "job_cancelled")
         else:  # pragma: no cover - exhaustive domain enum
             raise ValueError("unsupported video index job state")
         cursor = connection.execute(

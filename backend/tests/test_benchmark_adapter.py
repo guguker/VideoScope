@@ -189,11 +189,11 @@ def test_adapter_maps_local_video_ids_back_to_portable_asset_aliases() -> None:
         execution_mode="warm",
     )
 
-    hits = tuple(session.search("spoken phrase", (asset,), limit=20))
+    hits = tuple(session.search("spoken phrase", (asset,), limit=50))
 
     assert hits == (BenchmarkSearchHit("asset-a", 2.0, 4.0, 0.75),)
     assert service.session.search_calls == [
-        ("spoken phrase", ("local-video-a",), 20)
+        ("spoken phrase", ("local-video-a",), 50)
     ]
 
 
@@ -224,7 +224,7 @@ def test_adapter_rejects_results_outside_the_pinned_portable_asset_set() -> None
     )
 
     with pytest.raises(RuntimeError, match="unpinned video"):
-        tuple(session.search("query", (asset,), limit=20))
+        tuple(session.search("query", (asset,), limit=50))
 
 
 def test_adapter_forwards_capabilities_only_for_the_exact_resolved_asset() -> None:
@@ -259,7 +259,7 @@ def test_adapter_closes_product_session_and_rejects_duplicate_local_bindings() -
 
     assert service.session.closed
     with pytest.raises(RuntimeError, match="closed"):
-        tuple(session.search("query", (_asset(),), limit=20))
+        tuple(session.search("query", (_asset(),), limit=50))
     with pytest.raises(ValueError, match="same local video"):
         adapter.open_session(
             FROZEN_PROFILES["lexical_qdrant"],
@@ -440,7 +440,7 @@ def test_adapter_rejects_invalid_boundary_and_search_contract() -> None:
     )
 
     with pytest.raises(ValueError, match="unique non-empty"):
-        tuple(session.search("query", (), limit=20))
+        tuple(session.search("query", (), limit=50))
     with pytest.raises(ValueError, match="frozen profile"):
         tuple(session.search("query", (_asset(),), limit=19))
 

@@ -17,7 +17,9 @@ from videoscope.benchmark.environment import (
     open_product_benchmark_environment,
 )
 from videoscope.benchmark.product_runtime import ProductSnapshotCleanupError
+from videoscope.benchmark.profiles import FROZEN_PROFILES
 from videoscope.config import AppSettings
+from videoscope.media.ffmpeg import FFmpeg
 from videoscope.providers.whisper import snapshot_whisper_prompt
 from videoscope.repository import Repository
 from videoscope.runtime import build_runtime
@@ -404,7 +406,7 @@ def test_opens_lexical_environment_from_verified_private_snapshots_only(
     assert environment.identity.product_snapshot_sha256 == _SHA_A
     assert environment.identity.fastembed_model_content_sha256 == _SHA_B
     assert environment.identity.qdrant_snapshot_sha256 == _SHA_C
-    assert environment.identity.identity.startswith("benchmark-product-environment@1:")
+    assert environment.identity.identity.startswith("benchmark-product-environment@2:")
     assert state.search.kwargs["media_root"] == Path("product/data/media").absolute()
     media_access_root = state.search.kwargs["media_access_root"]
     assert str(media_access_root).startswith("/.vol/")
@@ -540,6 +542,31 @@ def test_environment_identity_rejects_tampering(
     environment.close()
 
 
+@pytest.mark.parametrize(
+    ("field_name", "invalid_value"),
+    (
+        ("semantic_text_min_score", -0.01),
+        ("semantic_text_min_score", 1.01),
+        ("semantic_text_min_score", float("nan")),
+        ("visual_min_score", -0.01),
+        ("visual_min_score", 1.01),
+        ("visual_min_score", float("inf")),
+    ),
+)
+def test_environment_identity_rejects_non_probability_thresholds(
+    environment_fakes: SimpleNamespace,
+    field_name: str,
+    invalid_value: float,
+) -> None:
+    state = environment_fakes
+    environment = open_product_benchmark_environment(state.settings, state.scratch_parent)
+
+    with pytest.raises(ValueError, match="score threshold"):
+        replace(environment.identity, **{field_name: invalid_value})
+
+    environment.close()
+
+
 def test_requires_validated_settings_before_any_product_open(
     environment_fakes: SimpleNamespace,
 ) -> None:
@@ -578,11 +605,30 @@ def test_product_open_cleanup_owner_is_propagated_unchanged(
     assert list(state.scratch_parent.iterdir()) == []
 
 
+@pytest.mark.parametrize("profile_id", tuple(FROZEN_PROFILES))
+def test_opens_every_frozen_warm_profile(
+    environment_fakes: SimpleNamespace,
+    profile_id: str,
+) -> None:
+    state = environment_fakes
+
+    environment = open_product_benchmark_environment(
+        state.settings,
+        state.scratch_parent,
+        profile_id=profile_id,
+        execution_mode="warm",
+    )
+
+    assert environment.identity.profile_id == profile_id
+    assert environment.identity.profile_identity == FROZEN_PROFILES[profile_id].identity
+    environment.close()
+
+
 @pytest.mark.parametrize(
     ("profile_id", "execution_mode"),
-    [("dense_siglip", "warm"), ("lexical_qdrant", "cold")],
+    [("unknown_profile", "warm"), ("lexical_qdrant", "cold")],
 )
-def test_rejects_unsupported_profiles_and_cold_mode_before_opening_product(
+def test_rejects_unknown_profiles_and_cold_mode_before_opening_product(
     environment_fakes: SimpleNamespace,
     profile_id: str,
     execution_mode: str,
@@ -599,6 +645,148 @@ def test_rejects_unsupported_profiles_and_cold_mode_before_opening_product(
 
     assert state.events == []
     assert list(state.scratch_parent.iterdir()) == []
+
+
+def test_qwen_profile_wires_only_read_only_selected_providers(
+    environment_fakes: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = environment_fakes
+    source_before = _tree(Path("product/data"))
+    probes: list[tuple[str, Path, Path]] = []
+
+    def record_probe(role: str, client: object, source: Path) -> bool:
+        assert source.is_file()
+        assert source.read_bytes() == b"videoscope-worker-source-probe-v1\n"
+        input_root = Path(getattr(client, "input_root"))
+        assert source.is_relative_to(input_root)
+        probes.append((role, input_root, source))
+        return True
+
+    monkeypatch.setattr(
+        environment_module.VisionWorkerClient,
+        "probe_source",
+        lambda client, source: record_probe("vision", client, source),
+    )
+    monkeypatch.setattr(
+        environment_module.QwenWorkerClient,
+        "probe_source",
+        lambda client, source: record_probe("qwen", client, source),
+    )
+
+    class _Toolchain:
+        def verify_current(self) -> str:
+            return "sha256:" + "9" * 64
+
+        def create_ffmpeg(self) -> FFmpeg:
+            return FFmpeg.from_attested_paths(
+                Path("/usr/bin/false"),
+                Path("/usr/bin/false"),
+            )
+
+    monkeypatch.setattr(
+        environment_module,
+        "attest_indexing_toolchain",
+        lambda: _Toolchain(),
+        raising=False,
+    )
+    settings = state.settings.model_copy(
+        update={
+            "vision_worker_endpoint": "http://127.0.0.1:9101",
+            "vision_worker_api_key": "v" * 32,
+            "lighthouse_endpoint": "http://127.0.0.1:9102",
+            "lighthouse_api_key": "l" * 32,
+            "qwen_video_endpoint": "http://127.0.0.1:9103",
+            "qwen_video_api_key": "q" * 32,
+            "qwen_video_model": "mlx-community/Qwen3.5-9B-MLX-4bit",
+        }
+    )
+
+    environment = open_product_benchmark_environment(
+        settings,
+        state.scratch_parent,
+        profile_id="qwen_verification",
+        execution_mode="warm",
+    )
+
+    assert getattr(state.search.kwargs["visual_search"], "id", None) == "siglip2"
+    temporal_refiner = state.search.kwargs["temporal_refiner"]
+    assert temporal_refiner is not None
+    assert temporal_refiner.benchmark_attestation is not None
+    assert not temporal_refiner.temp_dir.exists()
+    assert getattr(state.search.kwargs["moment_search"], "id", None) == "lighthouse"
+    assert state.search.kwargs["candidate_reranker"] is None
+    assert tuple(state.search.kwargs["evaluation_rerankers"]) == ("qwen",)
+    qwen = state.search.kwargs["evaluation_rerankers"]["qwen"]
+    assert getattr(qwen, "id", None) == "qwen-video"
+    assert qwen.benchmark_attestation["candidate_limit"] == 12
+    assert not qwen.temp_dir.exists()
+    assert not qwen.cache_dir.exists()
+    assert environment.probe_worker_sources() == ("qwen", "vision")
+    assert [role for role, _root, _source in probes] == ["qwen", "vision"]
+    assert all(root == state.scratch_parent for _role, root, _source in probes)
+    assert all(not source.exists() for _role, _root, source in probes)
+    visual_client = state.search.kwargs["visual_search"].inference_client
+    assert environment.identity.worker_input_root_identities == (
+        ("qwen", "sha256:" + qwen.inference_client.input_root_sha256),
+        ("vision", visual_client.input_root_identity),
+    )
+    assert _tree(Path("product/data")) == source_before
+
+    environment.close()
+    assert _tree(Path("product/data")) == source_before
+
+
+def test_internvideo_profile_is_explicitly_not_wired(
+    environment_fakes: SimpleNamespace,
+) -> None:
+    state = environment_fakes
+    settings = state.settings.model_copy(
+        update={
+            "internvideo_endpoint": "https://example.invalid",
+            "internvideo_api_key": "i" * 32,
+        }
+    )
+
+    environment = open_product_benchmark_environment(
+        settings,
+        state.scratch_parent,
+        profile_id="internvideo",
+        execution_mode="warm",
+    )
+
+    assert state.search.kwargs["candidate_reranker"] is None
+    assert "internvideo" not in state.search.kwargs["evaluation_rerankers"]
+    environment.close()
+
+
+def test_worker_source_probe_fails_closed_and_removes_marker(
+    environment_fakes: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = environment_fakes
+    settings = state.settings.model_copy(
+        update={
+            "vision_worker_endpoint": "http://127.0.0.1:9101",
+            "vision_worker_api_key": "v" * 32,
+        }
+    )
+    monkeypatch.setattr(
+        environment_module.VisionWorkerClient,
+        "probe_source",
+        lambda _client, _source: (_ for _ in ()).throw(RuntimeError("stale root")),
+    )
+    environment = open_product_benchmark_environment(
+        settings,
+        state.scratch_parent,
+        profile_id="dense_siglip",
+    )
+
+    with pytest.raises(BenchmarkEnvironmentError, match="source boundary"):
+        environment.probe_worker_sources()
+
+    assert not list(environment.scratch_root.rglob("worker-source-probe.bin"))
+    environment.close()
 
 
 def test_snapshot_setup_failure_rolls_back_private_scratch_then_product_lock(

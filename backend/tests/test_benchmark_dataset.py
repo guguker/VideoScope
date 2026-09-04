@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 import json
 
 import pytest
@@ -13,12 +13,15 @@ from videoscope.benchmark import (
     BenchmarkDataset,
     BenchmarkDurabilityError,
     BenchmarkInterval,
+    CRITICAL_SLICE_LABELS_SCHEMA_VERSION,
+    CriticalSliceLabels,
     HardNegative,
     QueryCase,
     dataset_revision,
     load_dataset,
     write_dataset,
 )
+from videoscope.benchmark.serialization import dataset_from_dict, dataset_to_dict
 
 
 def _asset(
@@ -170,6 +173,151 @@ def test_dataset_revision_tracks_labels_and_provenance() -> None:
     )
 
     assert dataset_revision(dataset) != dataset_revision(changed)
+
+
+def _critical_slice_labels(
+    *,
+    event_class: tuple[str, ...] = ("made_3",),
+    capture_condition: tuple[str, ...] = ("low_resolution", "scoreboard_hidden"),
+    distribution_shift: tuple[str, ...] = ("different_camera_or_league",),
+) -> CriticalSliceLabels:
+    return CriticalSliceLabels(
+        schema_version=CRITICAL_SLICE_LABELS_SCHEMA_VERSION,
+        event_class=event_class,
+        capture_condition=capture_condition,
+        distribution_shift=distribution_shift,
+    )
+
+
+def test_versioned_critical_slices_round_trip_and_canonicalize_revision() -> None:
+    dataset = _dataset()
+    labeled = replace(
+        dataset,
+        cases=(
+            replace(dataset.cases[0], critical_slices=_critical_slice_labels()),
+            replace(
+                dataset.cases[1],
+                critical_slices=_critical_slice_labels(
+                    event_class=("miss", "replay"),
+                    capture_condition=("standard",),
+                    distribution_shift=("in_distribution",),
+                ),
+            ),
+        ),
+    )
+    reordered = replace(
+        labeled,
+        cases=(
+            replace(
+                labeled.cases[0],
+                critical_slices=_critical_slice_labels(
+                    capture_condition=("scoreboard_hidden", "low_resolution"),
+                ),
+            ),
+            replace(
+                labeled.cases[1],
+                critical_slices=_critical_slice_labels(
+                    event_class=("replay", "miss"),
+                    capture_condition=("standard",),
+                    distribution_shift=("in_distribution",),
+                ),
+            ),
+        ),
+    )
+
+    payload = dataset_to_dict(labeled)
+
+    assert payload["cases"][0]["critical_slices"] == {  # type: ignore[index]
+        "schema_version": 1,
+        "event_class": ["made_3"],
+        "capture_condition": ["low_resolution", "scoreboard_hidden"],
+        "distribution_shift": ["different_camera_or_league"],
+    }
+    assert dataset_from_dict(payload) == labeled
+    assert dataset_revision(labeled) == dataset_revision(reordered)
+    assert dataset_revision(labeled) != dataset_revision(
+        replace(
+            labeled,
+            cases=(
+                replace(
+                    labeled.cases[0],
+                    critical_slices=_critical_slice_labels(
+                        event_class=("made_2",),
+                    ),
+                ),
+                labeled.cases[1],
+            ),
+        )
+    )
+
+
+def test_legacy_dataset_serialization_and_revision_remain_unchanged() -> None:
+    dataset = _dataset()
+    payload = dataset_to_dict(dataset)
+
+    assert all("critical_slices" not in case for case in payload["cases"])  # type: ignore[union-attr]
+    assert dataset_from_dict(payload) == dataset
+    assert (
+        dataset_revision(dataset)
+        == "bc23ec29550de06102a73c80a52fe009c452901183265e8f38bc6015d37b6c9b"
+    )
+
+
+@pytest.mark.parametrize(
+    "critical_slices",
+    [
+        {
+            "schema_version": 2,
+            "event_class": ["made_3"],
+            "capture_condition": ["standard"],
+            "distribution_shift": ["in_distribution"],
+        },
+        {
+            "schema_version": 1,
+            "event_class": [],
+            "capture_condition": ["standard"],
+            "distribution_shift": ["in_distribution"],
+        },
+        {
+            "schema_version": 1,
+            "event_class": ["made_3", "made_3"],
+            "capture_condition": ["standard"],
+            "distribution_shift": ["in_distribution"],
+        },
+        {
+            "schema_version": 1,
+            "event_class": ["made/3"],
+            "capture_condition": ["standard"],
+            "distribution_shift": ["in_distribution"],
+        },
+        {
+            "schema_version": 1,
+            "event_class": "made_3",
+            "capture_condition": ["standard"],
+            "distribution_shift": ["in_distribution"],
+        },
+        {
+            "schema_version": 1,
+            "event_class": ["made_3"],
+            "capture_condition": ["standard"],
+        },
+        {
+            "schema_version": 1,
+            "event_class": ["made_3"],
+            "capture_condition": ["standard"],
+            "distribution_shift": ["in_distribution"],
+            "unexpected": True,
+        },
+    ],
+)
+def test_critical_slice_labels_reject_malformed_contracts(
+    critical_slices: object,
+) -> None:
+    payload = dataset_to_dict(_dataset())
+    payload["cases"][0]["critical_slices"] = critical_slices  # type: ignore[index]
+
+    with pytest.raises(BenchmarkDataError, match="critical_slices"):
+        dataset_from_dict(payload)
 
 
 @pytest.mark.parametrize(

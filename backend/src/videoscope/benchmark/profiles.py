@@ -17,6 +17,8 @@ from .schema import (
 
 
 EVALUATION_SEARCH_PLAN_SCHEMA_VERSION = 1
+PROFILE_IDENTITY_CONTRACT_SCHEMA_VERSION = 1
+PROFILE_IDENTITY_CONTRACT_COMPONENT_ID = "benchmark_profile_identity_contract"
 _TEXT_MODALITIES = frozenset({"objects", "ocr", "speech"})
 _SEARCH_MODALITIES = _TEXT_MODALITIES | {"visual", "lighthouse"}
 
@@ -281,6 +283,147 @@ class BenchmarkProfile:
         return f"{self.profile_id}@{self.schema_version}:{digest}"
 
 
+@dataclass(frozen=True, slots=True)
+class ProfileIdentityExpectation:
+    role: Literal["model", "index", "config"]
+    component_id: str
+    value_contract: Literal[
+        "benchmark_environment_v2",
+        "evaluation_search_configuration",
+        "fastembed_mpnet_v1",
+        "internvideo_not_configured",
+        "lifecycle",
+        "provider_digest_or_not_configured",
+        "qwen_verifier_or_not_configured",
+        "reviewed_siglip_or_not_configured",
+        "sha256",
+        "sha256_prefixed",
+    ]
+
+    def __post_init__(self) -> None:
+        if self.role not in {"model", "index", "config"}:
+            raise BenchmarkDataError("profile identity expectation role is invalid")
+        _require_id(
+            self.component_id,
+            "profile identity expectation component_id",
+        )
+        if self.value_contract not in {
+            "benchmark_environment_v2",
+            "evaluation_search_configuration",
+            "fastembed_mpnet_v1",
+            "internvideo_not_configured",
+            "lifecycle",
+            "provider_digest_or_not_configured",
+            "qwen_verifier_or_not_configured",
+            "reviewed_siglip_or_not_configured",
+            "sha256",
+            "sha256_prefixed",
+        }:
+            raise BenchmarkDataError(
+                "profile identity expectation value_contract is invalid"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class ProfileIdentityContract:
+    """Exact product identity surface required by one frozen profile.
+
+    The contract intentionally describes roles as well as component names.  A
+    component moved from ``model`` to ``index`` is therefore drift, even when
+    the union of names is unchanged.
+    """
+
+    schema_version: int
+    profile_id: str
+    profile_identity: str
+    search_plan_identity: str
+    expectations: tuple[ProfileIdentityExpectation, ...]
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.schema_version) is not int
+            or self.schema_version != PROFILE_IDENTITY_CONTRACT_SCHEMA_VERSION
+        ):
+            raise BenchmarkDataError(
+                "profile identity contract schema_version must be "
+                f"{PROFILE_IDENTITY_CONTRACT_SCHEMA_VERSION}"
+            )
+        _require_id(self.profile_id, "profile identity contract profile_id")
+        if not isinstance(self.profile_identity, str) or not self.profile_identity:
+            raise BenchmarkDataError(
+                "profile identity contract profile_identity is invalid"
+            )
+        if (
+            not isinstance(self.search_plan_identity, str)
+            or not self.search_plan_identity
+        ):
+            raise BenchmarkDataError(
+                "profile identity contract search_plan_identity is invalid"
+            )
+        expectations = _require_tuple(
+            self.expectations,
+            "profile identity contract expectations",
+        )
+        if not expectations or any(
+            not isinstance(item, ProfileIdentityExpectation)
+            for item in expectations
+        ):
+            raise BenchmarkDataError(
+                "profile identity contract expectations are invalid"
+            )
+        keys = tuple((item.role, item.component_id) for item in expectations)
+        if len(keys) != len(set(keys)):
+            raise BenchmarkDataError(
+                "profile identity contract expectations must be unique by role"
+            )
+        component_ids = tuple(item.component_id for item in expectations)
+        if len(component_ids) != len(set(component_ids)):
+            raise BenchmarkDataError(
+                "profile identity contract component ids must have one exact role"
+            )
+        object.__setattr__(
+            self,
+            "expectations",
+            tuple(sorted(expectations, key=lambda item: (item.role, item.component_id))),
+        )
+
+    def component_ids(
+        self,
+        role: Literal["model", "index", "config"],
+    ) -> tuple[str, ...]:
+        return tuple(
+            item.component_id for item in self.expectations if item.role == role
+        )
+
+    @property
+    def canonical_json(self) -> str:
+        return json.dumps(
+            {
+                "expectations": [
+                    {
+                        "component_id": item.component_id,
+                        "role": item.role,
+                        "value_contract": item.value_contract,
+                    }
+                    for item in self.expectations
+                ],
+                "profile_id": self.profile_id,
+                "profile_identity": self.profile_identity,
+                "schema_version": self.schema_version,
+                "search_plan_identity": self.search_plan_identity,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+
+    @property
+    def identity(self) -> str:
+        digest = sha256(self.canonical_json.encode("utf-8")).hexdigest()
+        return f"benchmark-profile-identity-contract@{self.schema_version}:{digest}"
+
+
 _TEXT_PLAN = EvaluationSearchPlan(
     1,
     ("objects", "ocr", "speech"),
@@ -296,7 +439,7 @@ _TEXT_PLAN = EvaluationSearchPlan(
     "none",
     "disabled",
     0,
-    20,
+    50,
 )
 _DENSE_PLAN = EvaluationSearchPlan(
     1,
@@ -312,7 +455,7 @@ _DENSE_PLAN = EvaluationSearchPlan(
     "none",
     "disabled",
     0,
-    20,
+    50,
 )
 _REFINED_PLAN = EvaluationSearchPlan(
     1,
@@ -325,7 +468,7 @@ _REFINED_PLAN = EvaluationSearchPlan(
     "none",
     "disabled",
     0,
-    20,
+    50,
 )
 _LIGHTHOUSE_PLAN = EvaluationSearchPlan(
     1,
@@ -341,7 +484,7 @@ _LIGHTHOUSE_PLAN = EvaluationSearchPlan(
     "none",
     "disabled",
     0,
-    20,
+    50,
 )
 _QWEN_PLAN = EvaluationSearchPlan(
     1,
@@ -354,7 +497,7 @@ _QWEN_PLAN = EvaluationSearchPlan(
     "qwen",
     "all_candidates",
     12,
-    20,
+    50,
 )
 _INTERNVIDEO_PLAN = EvaluationSearchPlan(
     1,
@@ -367,33 +510,33 @@ _INTERNVIDEO_PLAN = EvaluationSearchPlan(
     "internvideo",
     "all_candidates",
     4,
-    20,
+    50,
 )
 
 
 _PROFILE_VALUES = (
-    BenchmarkProfile("lexical_qdrant", 1, ("text_vectors",), _TEXT_PLAN),
+    BenchmarkProfile("lexical_qdrant", 2, ("text_vectors",), _TEXT_PLAN),
     BenchmarkProfile(
         "dense_siglip",
-        1,
+        2,
         ("text_vectors", "visual_dense"),
         _DENSE_PLAN,
     ),
     BenchmarkProfile(
         "temporal_refinement",
-        1,
+        2,
         ("text_vectors", "visual_dense", "temporal_refinement"),
         _REFINED_PLAN,
     ),
     BenchmarkProfile(
         "lighthouse",
-        1,
+        2,
         ("text_vectors", "visual_dense", "temporal_refinement", "lighthouse"),
         _LIGHTHOUSE_PLAN,
     ),
     BenchmarkProfile(
         "qwen_verification",
-        1,
+        2,
         (
             "text_vectors",
             "visual_dense",
@@ -405,7 +548,7 @@ _PROFILE_VALUES = (
     ),
     BenchmarkProfile(
         "internvideo",
-        1,
+        2,
         (
             "text_vectors",
             "visual_dense",
@@ -419,6 +562,119 @@ _PROFILE_VALUES = (
 
 FROZEN_PROFILES: Mapping[str, BenchmarkProfile] = MappingProxyType(
     {profile.profile_id: profile for profile in _PROFILE_VALUES}
+)
+
+
+def profile_identity_contract(profile: BenchmarkProfile) -> ProfileIdentityContract:
+    """Return the canonical execution-identity contract for a frozen profile."""
+
+    if not isinstance(profile, BenchmarkProfile):
+        raise BenchmarkDataError("benchmark profile identity contract is invalid")
+    frozen = FROZEN_PROFILES.get(profile.profile_id)
+    if frozen is None or frozen != profile:
+        raise BenchmarkDataError(
+            "benchmark profile identity contract requires an exact frozen profile"
+        )
+    expectations: list[ProfileIdentityExpectation] = []
+    plan = profile.search_plan
+    if plan.text_search != "disabled":
+        expectations.extend(
+            (
+                ProfileIdentityExpectation(
+                    "model",
+                    "text_embedding",
+                    "fastembed_mpnet_v1",
+                ),
+                ProfileIdentityExpectation("index", "text_vector_index", "sha256"),
+                ProfileIdentityExpectation(
+                    "index",
+                    "text_vector_generations",
+                    "sha256_prefixed",
+                ),
+            )
+        )
+    if plan.visual_search != "disabled":
+        expectations.extend(
+            (
+                ProfileIdentityExpectation(
+                    "model",
+                    "visual_embedding",
+                    "reviewed_siglip_or_not_configured",
+                ),
+                ProfileIdentityExpectation(
+                    "index",
+                    "visual_generations",
+                    "sha256_prefixed",
+                ),
+            )
+        )
+    if plan.lighthouse:
+        expectations.extend(
+            (
+                ProfileIdentityExpectation(
+                    "model",
+                    "lighthouse_model",
+                    "provider_digest_or_not_configured",
+                ),
+                ProfileIdentityExpectation(
+                    "index",
+                    "lighthouse_generations",
+                    "sha256_prefixed",
+                ),
+            )
+        )
+    if plan.reranker != "none":
+        expectations.append(
+            ProfileIdentityExpectation(
+                "model",
+                f"{plan.reranker}_reranker",
+                (
+                    "qwen_verifier_or_not_configured"
+                    if plan.reranker == "qwen"
+                    else "internvideo_not_configured"
+                ),
+            )
+        )
+    expectations.extend(
+        (
+            ProfileIdentityExpectation(
+                "config",
+                "benchmark_product_environment",
+                "benchmark_environment_v2",
+            ),
+            ProfileIdentityExpectation(
+                "config",
+                "evaluation_search_configuration",
+                "evaluation_search_configuration",
+            ),
+            ProfileIdentityExpectation(
+                "config",
+                "product_search_lifecycle",
+                "lifecycle",
+            ),
+            ProfileIdentityExpectation(
+                "config",
+                "product_search_runtime",
+                "sha256_prefixed",
+            ),
+        )
+    )
+    return ProfileIdentityContract(
+        schema_version=PROFILE_IDENTITY_CONTRACT_SCHEMA_VERSION,
+        profile_id=profile.profile_id,
+        profile_identity=profile.identity,
+        search_plan_identity=profile.search_plan.identity,
+        expectations=tuple(expectations),
+    )
+
+
+FROZEN_PROFILE_IDENTITY_CONTRACTS: Mapping[str, ProfileIdentityContract] = (
+    MappingProxyType(
+        {
+            profile_id: profile_identity_contract(profile)
+            for profile_id, profile in FROZEN_PROFILES.items()
+        }
+    )
 )
 
 

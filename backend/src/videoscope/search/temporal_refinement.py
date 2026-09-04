@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import hashlib
+import json
+import math
 from pathlib import Path
 import tempfile
 from typing import Protocol
@@ -28,6 +31,9 @@ class FrameScorer(Protocol):
 
 
 class TemporalRefiner:
+    _IMPLEMENTATION_REVISION = "dense-temporal-refinement-v1"
+    _SCRATCH_POLICY_IDENTITY = "private-temporary-directory-delete-on-exit-v1"
+
     def __init__(
         self,
         *,
@@ -40,6 +46,9 @@ class TemporalRefiner:
         min_score: float = 0.50,
         score_drop: float = 0.08,
         max_candidate_seconds: float = 36.0,
+        ffmpeg_identity: str | None = None,
+        scorer_identity: str | None = None,
+        runtime_identity: str | None = None,
     ) -> None:
         self.repository = repository
         self.extractor = extractor
@@ -50,6 +59,70 @@ class TemporalRefiner:
         self.min_score = min_score
         self.score_drop = max(0.0, score_drop)
         self.max_candidate_seconds = max(2.0, max_candidate_seconds)
+        self.ffmpeg_identity = self._optional_identity(ffmpeg_identity)
+        self.scorer_identity = self._optional_identity(scorer_identity)
+        self.runtime_identity = self._optional_identity(runtime_identity)
+
+    @staticmethod
+    def _optional_identity(value: str | None) -> str | None:
+        if value is None:
+            return None
+        if type(value) is not str or not value.strip() or len(value) > 2_048:
+            raise ValueError("benchmark runtime identities must be non-empty strings")
+        return value.strip()
+
+    @property
+    def implementation_identity(self) -> str:
+        payload = {
+            "max_candidate_seconds": self.max_candidate_seconds,
+            "min_score": self.min_score,
+            "revision": self._IMPLEMENTATION_REVISION,
+            "sample_step": self.sample_step,
+            "score_drop": self.score_drop,
+            "top_candidates": self.top_candidates,
+        }
+        if any(
+            isinstance(value, float) and not math.isfinite(value)
+            for value in payload.values()
+        ):
+            raise ValueError("temporal refinement configuration must be finite")
+        canonical = json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    @property
+    def benchmark_attestation(self) -> dict[str, object] | None:
+        """Return a path-free strict benchmark identity or decline pinning.
+
+        Production construction has to provide the exact attested FFmpeg and
+        scorer-runtime identities.  A generic refiner must never become a
+        benchmark-capable component merely because it implements ``refine``.
+        """
+        if (
+            self.ffmpeg_identity is None
+            or self.scorer_identity is None
+            or self.runtime_identity is None
+            or self.temp_dir.is_symlink()
+        ):
+            return None
+        try:
+            implementation_identity = self.implementation_identity
+        except ValueError:
+            return None
+        return {
+            "ffmpeg_identity": self.ffmpeg_identity,
+            "implementation_identity": implementation_identity,
+            "runtime_identity": self.runtime_identity,
+            "scorer_identity": self.scorer_identity,
+            "scratch_policy_identity": self._SCRATCH_POLICY_IDENTITY,
+            "source_bound": True,
+            "strict_complete": True,
+            "top_candidates": self.top_candidates,
+        }
 
     def refine(self, query: str, hits: list[EvidenceHit]) -> list[EvidenceHit]:
         return self._refine(query, hits, raise_on_error=False)

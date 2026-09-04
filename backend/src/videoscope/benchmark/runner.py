@@ -10,13 +10,32 @@ from time import perf_counter
 from typing import Callable, Iterable, Literal, Protocol
 
 from videoscope.evaluation import RELEVANCE_IOU_THRESHOLD, temporal_iou
+from videoscope.model_manifest import (
+    FASTEMBED_ALGORITHM_VERSION,
+    FASTEMBED_REPOSITORY,
+    FASTEMBED_RUNTIME_VERSION,
+    MODEL_REVISIONS,
+    QWEN_VIDEO_MODEL,
+    SIGLIP_224_MODEL,
+    SIGLIP_384_MODEL,
+    TEXT_EMBEDDING_DIMENSIONS,
+    TEXT_EMBEDDING_MODEL,
+    model_identity,
+)
 
 from .catalog import AssetResolutionError, LocalAssetResolver, ResolvedAsset
 from .measurements import (
     BenchmarkMeasurementFactory,
     BenchmarkMeasurementSession,
+    measurement_metrics_from_evidence,
 )
-from .profiles import BenchmarkProfile, get_profile
+from .profiles import (
+    PROFILE_IDENTITY_CONTRACT_COMPONENT_ID,
+    BenchmarkProfile,
+    ProfileIdentityExpectation,
+    get_profile,
+    profile_identity_contract,
+)
 from .schema import (
     LEGACY_UNMEASURED_PROTOCOL_IDENTITY,
     MEASUREMENT_PROTOCOL_COMPONENT_ID,
@@ -25,6 +44,7 @@ from .schema import (
     BenchmarkCaseOutcome,
     BenchmarkDataError,
     BenchmarkDataset,
+    BenchmarkMeasurementEvidence,
     BenchmarkRunManifest,
     BenchmarkResultEvidence,
     ComponentIdentity,
@@ -41,13 +61,27 @@ from .serialization import dataset_revision
 from .storage import BenchmarkRunRegistry
 
 
-BENCHMARK_METHODOLOGY_VERSION = 3
+BENCHMARK_METHODOLOGY_VERSION = 5
 EXECUTION_LIFECYCLE_COMPONENT_ID = "benchmark_execution_lifecycle"
+_BENCHMARK_CONFIG_COMPONENT_IDS = frozenset(
+    {
+        EXECUTION_LIFECYCLE_COMPONENT_ID,
+        "benchmark_methodology",
+        "benchmark_profile",
+        PROFILE_IDENTITY_CONTRACT_COMPONENT_ID,
+        "benchmark_search_plan",
+    }
+)
 _COMPLETE_CAPABILITY_STATE = "complete"
 _KNOWN_INCOMPLETE_STATES = frozenset(
     {"queued", "running", "cancelled", "failed", "stale", "not_configured"}
 )
 _SLICE_DIMENSIONS = ("domain", "modality", "label_quality", "split_group")
+_CRITICAL_SLICE_DIMENSIONS = (
+    "event_class",
+    "capture_condition",
+    "distribution_shift",
+)
 
 
 class BenchmarkExecutionError(RuntimeError):
@@ -111,6 +145,156 @@ class ExecutionIdentities:
                 raise BenchmarkDataError(f"{field_name} must contain unique identities")
 
 
+def _validate_profile_execution_identities(
+    identities: ExecutionIdentities,
+    *,
+    profile: BenchmarkProfile,
+    lifecycle: ComponentIdentity,
+    execution_mode: Literal["cold", "warm"],
+    expected_environment_identity: str | None = None,
+    persisted: bool = False,
+) -> None:
+    """Validate one identity snapshot against the frozen profile contract.
+
+    ``persisted=False`` validates the product-owned identity surface returned by
+    a pinned search session. ``persisted=True`` additionally requires the exact
+    benchmark-owned audit identities that are added by the runner.
+    """
+
+    if not isinstance(identities, ExecutionIdentities):
+        raise BenchmarkExecutionError(
+            "benchmark profile execution identity contract mismatch"
+        )
+    if (
+        not isinstance(lifecycle, ComponentIdentity)
+        or lifecycle.component_id != EXECUTION_LIFECYCLE_COMPONENT_ID
+        or execution_mode not in {"cold", "warm"}
+        or not lifecycle.identity.startswith(f"{execution_mode}:")
+        or not lifecycle.identity.removeprefix(f"{execution_mode}:").strip()
+    ):
+        raise BenchmarkExecutionError(
+            "benchmark profile execution identity contract mismatch"
+        )
+    contract = profile_identity_contract(profile)
+    by_role = {
+        "model": {
+            item.component_id: item.identity for item in identities.model_identities
+        },
+        "index": {
+            item.component_id: item.identity for item in identities.index_identities
+        },
+        "config": {
+            item.component_id: item.identity for item in identities.config_identities
+        },
+    }
+    expected_by_role = {
+        role: set(contract.component_ids(role))
+        for role in ("model", "index", "config")
+    }
+    if persisted:
+        expected_by_role["config"].update(_BENCHMARK_CONFIG_COMPONENT_IDS)
+    if any(set(by_role[role]) != expected_by_role[role] for role in by_role):
+        raise BenchmarkExecutionError(
+            "benchmark profile execution identity contract mismatch"
+        )
+    for expectation in contract.expectations:
+        value = by_role[expectation.role][expectation.component_id]
+        if not _identity_value_matches_contract(
+            expectation,
+            value,
+            profile=profile,
+            lifecycle=lifecycle,
+            expected_environment_identity=expected_environment_identity,
+        ):
+            raise BenchmarkExecutionError(
+                "benchmark profile execution identity contract mismatch"
+            )
+    if not persisted:
+        return
+    expected_benchmark_values = {
+        EXECUTION_LIFECYCLE_COMPONENT_ID: lifecycle.identity,
+        "benchmark_methodology": _methodology_identity(),
+        "benchmark_profile": profile.identity,
+        PROFILE_IDENTITY_CONTRACT_COMPONENT_ID: contract.identity,
+        "benchmark_search_plan": profile.search_plan.identity,
+    }
+    if any(
+        by_role["config"].get(component_id) != value
+        for component_id, value in expected_benchmark_values.items()
+    ):
+        raise BenchmarkExecutionError(
+            "benchmark profile execution identity contract mismatch"
+        )
+
+
+def _identity_value_matches_contract(
+    expectation: ProfileIdentityExpectation,
+    value: object,
+    *,
+    profile: BenchmarkProfile,
+    lifecycle: ComponentIdentity,
+    expected_environment_identity: str | None,
+) -> bool:
+    if type(value) is not str or not value or value.strip() != value:
+        return False
+    value_contract = expectation.value_contract
+    if value_contract == "sha256":
+        return _is_sha256(value)
+    if value_contract == "sha256_prefixed":
+        return value.startswith("sha256:") and _is_sha256(
+            value.removeprefix("sha256:")
+        )
+    if value_contract == "fastembed_mpnet_v1":
+        return value == (
+            f"fastembed@{FASTEMBED_RUNTIME_VERSION}:{FASTEMBED_ALGORITHM_VERSION}:"
+            f"{TEXT_EMBEDDING_MODEL}:"
+            f"{model_identity(FASTEMBED_REPOSITORY, MODEL_REVISIONS[FASTEMBED_REPOSITORY])}:"
+            f"{TEXT_EMBEDDING_DIMENSIONS}"
+        )
+    if value_contract == "reviewed_siglip_or_not_configured":
+        return value == "not-configured" or value in {
+            model_identity(model_name, MODEL_REVISIONS[model_name])
+            for model_name in (SIGLIP_224_MODEL, SIGLIP_384_MODEL)
+        }
+    if value_contract == "qwen_verifier_or_not_configured":
+        return value == "not-configured" or value == model_identity(
+            QWEN_VIDEO_MODEL,
+            MODEL_REVISIONS[QWEN_VIDEO_MODEL],
+        )
+    if value_contract == "internvideo_not_configured":
+        return value == "not-configured"
+    if value_contract == "provider_digest_or_not_configured":
+        return value == "not-configured" or (
+            value.startswith("sha256:")
+            and _is_sha256(value.removeprefix("sha256:"))
+        )
+    if value_contract == "benchmark_environment_v2":
+        if not value.startswith("benchmark-product-environment@2:"):
+            return False
+        if not _is_sha256(value.removeprefix("benchmark-product-environment@2:")):
+            return False
+        return expected_environment_identity is None or (
+            value == expected_environment_identity
+        )
+    if value_contract == "evaluation_search_configuration":
+        return value == profile.search_plan.identity.replace(
+            "evaluation-search-plan",
+            "evaluation-search-configuration",
+            1,
+        )
+    if value_contract == "lifecycle":
+        return value == lifecycle.identity
+    return False
+
+
+def _is_sha256(value: object) -> bool:
+    return (
+        type(value) is str
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
 class BenchmarkSearchSession(Protocol):
     """One immutable execution snapshot pinned for an entire benchmark run."""
 
@@ -166,6 +350,13 @@ class _CaseScore:
     false_positive_count: int
     negative_false_positive: int
     hard_negative_hit: int
+    relevant_interval_count: int
+    covered_relevant_at_10: int
+    covered_relevant_at_20: int
+    covered_relevant_at_50: int
+    precision_at_5: float
+    ndcg_at_10: float
+    boundary_errors: tuple[tuple[float, float], ...]
     hits: tuple[BenchmarkSearchHit, ...]
 
 
@@ -247,6 +438,10 @@ class BenchmarkRunner:
         measurement_started_at: str | None = None
         measurement_finished_at: str | None = None
         system_metrics: tuple[MetricValue, ...] = ()
+        measurement_evidence_status: Literal[
+            "not_applicable", "complete", "legacy_unavailable"
+        ] = "not_applicable"
+        measurement_evidence: BenchmarkMeasurementEvidence | None = None
         measurement_session: BenchmarkMeasurementSession | None = None
         measurement_active = False
         if self._measurement is not None:
@@ -301,7 +496,17 @@ class BenchmarkRunner:
                         raise BenchmarkExecutionError(
                             "benchmark measurement session is unavailable"
                         )
-                    candidate_metrics = measurement_session.finish()
+                    candidate_evidence = measurement_session.finish()
+                    if not isinstance(
+                        candidate_evidence,
+                        BenchmarkMeasurementEvidence,
+                    ):
+                        raise BenchmarkExecutionError(
+                            "benchmark measurement did not return portable raw evidence"
+                        )
+                    candidate_metrics = measurement_metrics_from_evidence(
+                        candidate_evidence
+                    )
                     system_metrics = self._validate_system_metrics(
                         candidate_metrics,
                         quality_metrics=metrics,
@@ -311,6 +516,8 @@ class BenchmarkRunner:
                     measurement_status = "failed"
                 else:
                     measurement_status = "complete"
+                    measurement_evidence_status = "complete"
+                    measurement_evidence = candidate_evidence
                 measurement_finished_at = self._timestamp()
             self._close_session(session, suppress_error=False)
             search_closed = True
@@ -351,6 +558,8 @@ class BenchmarkRunner:
             except Exception:
                 system_metrics = ()
                 measurement_status = "failed"
+                measurement_evidence_status = "not_applicable"
+                measurement_evidence = None
         finished_at = self._timestamp()
         run = BenchmarkRunManifest(
             schema_version=RUN_SCHEMA_VERSION,
@@ -373,7 +582,10 @@ class BenchmarkRunner:
             measurement_started_at=measurement_started_at,
             measurement_finished_at=measurement_finished_at,
             case_outcomes=ordered_outcomes,
+            measurement_evidence_status=measurement_evidence_status,
+            measurement_evidence=measurement_evidence,
         )
+        _validate_persisted_profile_identity_contract(run)
         if publish:
             self.registry.add(run)
         else:
@@ -389,6 +601,7 @@ class BenchmarkRunner:
             raise BenchmarkExecutionError("benchmark run is not prepared")
         if any(entry.run_id == run.run_id for entry in self.registry.list()):
             raise FileExistsError(f"benchmark run {run.run_id!r} already exists")
+        _validate_persisted_profile_identity_contract(run)
         self.registry.add(run)
         del self._prepared_runs[run.run_id]
 
@@ -481,12 +694,7 @@ class BenchmarkRunner:
             raise BenchmarkExecutionError(
                 "stable benchmark execution identity has an invalid contract"
             )
-        reserved = {
-            "benchmark_profile",
-            "benchmark_methodology",
-            "benchmark_search_plan",
-            EXECUTION_LIFECYCLE_COMPONENT_ID,
-        }
+        reserved = _BENCHMARK_CONFIG_COMPONENT_IDS
         if reserved & {
             identity.component_id for identity in identities.config_identities
         }:
@@ -495,6 +703,12 @@ class BenchmarkRunner:
             )
         lifecycle = self._execution_lifecycle_identity(
             session,
+            execution_mode=execution_mode,
+        )
+        _validate_profile_execution_identities(
+            identities,
+            profile=profile,
+            lifecycle=lifecycle,
             execution_mode=execution_mode,
         )
         measurement = self._measurement
@@ -516,12 +730,24 @@ class BenchmarkRunner:
                 "benchmark_methodology",
                 _methodology_identity(),
             ),
+            ComponentIdentity(
+                PROFILE_IDENTITY_CONTRACT_COMPONENT_ID,
+                profile_identity_contract(profile).identity,
+            ),
         )
-        return ExecutionIdentities(
+        complete = ExecutionIdentities(
             model_identities=_ordered_identities(identities.model_identities),
             index_identities=_ordered_identities(identities.index_identities),
             config_identities=_ordered_identities(config_identities),
         )
+        _validate_profile_execution_identities(
+            complete,
+            profile=profile,
+            lifecycle=lifecycle,
+            execution_mode=execution_mode,
+            persisted=True,
+        )
+        return complete
 
     @staticmethod
     def _execution_lifecycle_identity(
@@ -856,8 +1082,58 @@ class BenchmarkRunner:
                         score.best_temporal_iou,
                         "ratio",
                     ),
+                    MetricValue(
+                        "precision_at_5",
+                        score.precision_at_5,
+                        "ratio",
+                    ),
+                    MetricValue(
+                        "recall_at_10",
+                        score.covered_relevant_at_10
+                        / score.relevant_interval_count,
+                        "ratio",
+                    ),
+                    MetricValue(
+                        "recall_at_20",
+                        score.covered_relevant_at_20
+                        / score.relevant_interval_count,
+                        "ratio",
+                    ),
+                    MetricValue(
+                        "candidate_recall_at_50",
+                        score.covered_relevant_at_50
+                        / score.relevant_interval_count,
+                        "ratio",
+                    ),
+                    MetricValue(
+                        "ndcg_at_10",
+                        score.ndcg_at_10,
+                        "ratio",
+                    ),
                 )
             )
+            if score.boundary_errors:
+                starts = tuple(value[0] for value in score.boundary_errors)
+                ends = tuple(value[1] for value in score.boundary_errors)
+                case_metrics.extend(
+                    (
+                        MetricValue(
+                            "mean_start_boundary_error_seconds",
+                            mean(starts),
+                            "seconds",
+                        ),
+                        MetricValue(
+                            "mean_end_boundary_error_seconds",
+                            mean(ends),
+                            "seconds",
+                        ),
+                        MetricValue(
+                            "mean_boundary_error_seconds",
+                            mean((*starts, *ends)),
+                            "seconds",
+                        ),
+                    )
+                )
         else:
             case_metrics.append(
                 MetricValue(
@@ -911,7 +1187,52 @@ class BenchmarkRunner:
                 error_count / total_count if total_count else 0.0,
                 "ratio",
             ),
+            MetricValue(
+                "infrastructure_failure_count",
+                error_count,
+                "count",
+            ),
+            MetricValue(
+                "infrastructure_failure_rate",
+                error_count / total_count if total_count else 0.0,
+                "ratio",
+            ),
         ]
+        failure_counts: dict[str, int] = {}
+        for outcome in outcomes:
+            if outcome.status == "complete":
+                continue
+            diagnostic = outcome.diagnostic_code or "execution_failed"
+            failure_counts[diagnostic] = failure_counts.get(diagnostic, 0) + 1
+        for diagnostic, count in sorted(failure_counts.items()):
+            metrics.extend(
+                (
+                    MetricValue(f"failure.{diagnostic}.count", count, "count"),
+                    MetricValue(
+                        f"failure.{diagnostic}.rate",
+                        count / total_count if total_count else 0.0,
+                        "ratio",
+                    ),
+                )
+            )
+        completed_positive = tuple(
+            score for score in scores if score.case.relevant_intervals
+        )
+        model_miss_count = sum(
+            score.relevant_rank is None for score in completed_positive
+        )
+        metrics.extend(
+            (
+                MetricValue("model_miss_count", model_miss_count, "count"),
+                MetricValue(
+                    "model_miss_rate",
+                    model_miss_count / len(completed_positive)
+                    if completed_positive
+                    else 0.0,
+                    "ratio",
+                ),
+            )
+        )
         metrics.extend(_quality_metrics(scores))
         metrics.extend(BenchmarkRunner._slice_metrics(dataset, outcomes, scores))
         return tuple(sorted(metrics, key=lambda item: item.name))
@@ -932,7 +1253,17 @@ class BenchmarkRunner:
                 "label_quality": (case.label_quality,),
                 "split_group": (case.split_group,),
             }
-            for dimension in _SLICE_DIMENSIONS:
+            dimensions = _SLICE_DIMENSIONS
+            if case.critical_slices is not None:
+                values.update(
+                    {
+                        "event_class": case.critical_slices.event_class,
+                        "capture_condition": case.critical_slices.capture_condition,
+                        "distribution_shift": case.critical_slices.distribution_shift,
+                    }
+                )
+                dimensions += _CRITICAL_SLICE_DIMENSIONS
+            for dimension in dimensions:
                 for value in values[dimension]:
                     grouped.setdefault((dimension, value), set()).add(case.case_id)
 
@@ -1002,6 +1333,60 @@ class BenchmarkRunner:
         return elapsed
 
 
+def _validate_persisted_profile_identity_contract(
+    run: BenchmarkRunManifest,
+) -> BenchmarkProfile:
+    if not isinstance(run, BenchmarkRunManifest):
+        raise BenchmarkExecutionError(
+            "benchmark profile execution identity contract mismatch"
+        )
+    config = {
+        identity.component_id: identity.identity
+        for identity in run.config_identities
+    }
+    profile_identity = config.get("benchmark_profile")
+    if type(profile_identity) is not str:
+        raise BenchmarkExecutionError(
+            "benchmark profile execution identity contract mismatch"
+        )
+    profile_id, separator, _version = profile_identity.rpartition("@")
+    if not separator:
+        raise BenchmarkExecutionError(
+            "benchmark profile execution identity contract mismatch"
+        )
+    try:
+        profile = get_profile(profile_id)
+    except BenchmarkDataError:
+        raise BenchmarkExecutionError(
+            "profile identity mismatch"
+        ) from None
+    if profile.identity != profile_identity:
+        raise BenchmarkExecutionError("profile identity mismatch")
+    if config.get("benchmark_methodology") != _methodology_identity():
+        raise BenchmarkExecutionError("methodology identity mismatch")
+    if config.get("benchmark_search_plan") != profile.search_plan.identity:
+        raise BenchmarkExecutionError("search plan identity mismatch")
+    lifecycle_value = config.get(EXECUTION_LIFECYCLE_COMPONENT_ID)
+    if type(lifecycle_value) is not str:
+        raise BenchmarkExecutionError("execution lifecycle identity mismatch")
+    lifecycle = ComponentIdentity(
+        EXECUTION_LIFECYCLE_COMPONENT_ID,
+        lifecycle_value,
+    )
+    _validate_profile_execution_identities(
+        ExecutionIdentities(
+            model_identities=run.model_identities,
+            index_identities=run.index_identities,
+            config_identities=run.config_identities,
+        ),
+        profile=profile,
+        lifecycle=lifecycle,
+        execution_mode=run.execution_mode,
+        persisted=True,
+    )
+    return profile
+
+
 def audit_run_manifest(
     dataset: BenchmarkDataset,
     run: BenchmarkRunManifest,
@@ -1023,123 +1408,12 @@ def audit_run_manifest(
         raise BenchmarkExecutionError(
             "benchmark run audit failed: dataset revision mismatch"
         )
-    profile_identity = next(
-        (
-            identity.identity
-            for identity in run.config_identities
-            if identity.component_id == "benchmark_profile"
-        ),
-        None,
-    )
-    methodology_identity = next(
-        (
-            identity.identity
-            for identity in run.config_identities
-            if identity.component_id == "benchmark_methodology"
-        ),
-        None,
-    )
-    search_plan_identity = next(
-        (
-            identity.identity
-            for identity in run.config_identities
-            if identity.component_id == "benchmark_search_plan"
-        ),
-        None,
-    )
-    lifecycle_identity = next(
-        (
-            identity.identity
-            for identity in run.config_identities
-            if identity.component_id == EXECUTION_LIFECYCLE_COMPONENT_ID
-        ),
-        None,
-    )
-    if profile_identity is None or methodology_identity != _methodology_identity():
-        raise BenchmarkExecutionError(
-            "benchmark run audit failed: methodology identity mismatch"
-        )
-    profile_id, separator, _version = profile_identity.rpartition("@")
-    if not separator:
-        raise BenchmarkExecutionError(
-            "benchmark run audit failed: profile identity mismatch"
-        )
     try:
-        profile = get_profile(profile_id)
-    except BenchmarkDataError:
+        profile = _validate_persisted_profile_identity_contract(run)
+    except BenchmarkExecutionError as error:
         raise BenchmarkExecutionError(
-            "benchmark run audit failed: profile identity mismatch"
-        ) from None
-    if profile.identity != profile_identity:
-        raise BenchmarkExecutionError(
-            "benchmark run audit failed: profile identity mismatch"
-        )
-    if search_plan_identity != profile.search_plan.identity:
-        raise BenchmarkExecutionError(
-            "benchmark run audit failed: search plan identity mismatch"
-        )
-    if (
-        lifecycle_identity is None
-        or not lifecycle_identity.startswith(f"{run.execution_mode}:")
-        or not lifecycle_identity.removeprefix(f"{run.execution_mode}:").strip()
-    ):
-        raise BenchmarkExecutionError(
-            "benchmark run audit failed: execution lifecycle identity mismatch"
-        )
-    if profile.profile_id == "lexical_qdrant":
-        model = {item.component_id: item.identity for item in run.model_identities}
-        index = {item.component_id: item.identity for item in run.index_identities}
-        config = {item.component_id: item.identity for item in run.config_identities}
-        expected_config_ids = {
-            "benchmark_execution_lifecycle",
-            "benchmark_methodology",
-            "benchmark_product_environment",
-            "benchmark_profile",
-            "benchmark_search_plan",
-            "evaluation_search_configuration",
-            "product_search_lifecycle",
-            "product_search_runtime",
-        }
-        is_sha256 = lambda value: (  # noqa: E731
-            type(value) is str
-            and len(value) == 64
-            and all(character in "0123456789abcdef" for character in value)
-        )
-        expected_evaluation_identity = profile.search_plan.identity.replace(
-            "evaluation-search-plan",
-            "evaluation-search-configuration",
-            1,
-        )
-        environment_identity = config.get("benchmark_product_environment", "")
-        if (
-            set(model) != {"text_embedding"}
-            or set(index) != {"text_vector_index", "text_vector_generations"}
-            or set(config) != expected_config_ids
-            or not model["text_embedding"].startswith("fastembed@")
-            or not is_sha256(index["text_vector_index"])
-            or not index["text_vector_generations"].startswith("sha256:")
-            or not is_sha256(
-                index["text_vector_generations"].removeprefix("sha256:")
-            )
-            or config["evaluation_search_configuration"]
-            != expected_evaluation_identity
-            or config["product_search_lifecycle"] != lifecycle_identity
-            or not config["product_search_runtime"].startswith("sha256:")
-            or not is_sha256(
-                config["product_search_runtime"].removeprefix("sha256:")
-            )
-            or not environment_identity.startswith(
-                "benchmark-product-environment@1:"
-            )
-            or not is_sha256(
-                environment_identity.removeprefix(
-                    "benchmark-product-environment@1:"
-                )
-            )
-        ):
-            raise BenchmarkExecutionError(
-                "benchmark run audit failed: product identity contract mismatch"
-            )
+            f"benchmark run audit failed: {error}"
+        ) from error
 
     cases_by_id = {case.case_id: case for case in dataset.cases}
     expected_case_ids = tuple(sorted(cases_by_id))
@@ -1189,6 +1463,26 @@ def audit_run_manifest(
         raise BenchmarkExecutionError(
             "benchmark run audit failed: aggregate metrics mismatch"
         )
+    if run.measurement_status == "complete":
+        if (
+            run.measurement_evidence_status != "complete"
+            or run.measurement_evidence is None
+        ):
+            raise BenchmarkExecutionError(
+                "benchmark run audit failed: raw measurement evidence is unavailable"
+            )
+        try:
+            expected_system_metrics = measurement_metrics_from_evidence(
+                run.measurement_evidence
+            )
+        except BenchmarkDataError:
+            raise BenchmarkExecutionError(
+                "benchmark run audit failed: invalid raw measurement evidence"
+            ) from None
+        if expected_system_metrics != run.system_metrics:
+            raise BenchmarkExecutionError(
+                "benchmark run audit failed: system metrics mismatch"
+            )
 
 
 def _validate_ranked_hits(
@@ -1224,32 +1518,62 @@ def _score_ranked_hits(
 ) -> _CaseScore:
     relevant_rank: int | None = None
     best_iou = 0.0
-    false_positive_count = 0
     hard_negative_hit = 0
-    for rank, hit in enumerate(hits, start=1):
-        relevant_overlap = max(
-            (
-                _checked_overlap(
-                    overlap,
-                    interval.start_seconds,
-                    interval.end_seconds,
-                    hit.start_seconds,
-                    hit.end_seconds,
-                )
-                for interval in case.relevant_intervals
-                if interval.asset_id == hit.asset_id
-            ),
-            default=0.0,
-        )
+    unique_relevance_gains: list[int] = []
+    covered_relevant_at_10 = 0
+    covered_relevant_at_20 = 0
+    covered_relevant_at_50 = 0
+    hit_matches: list[tuple[tuple[int, float], ...]] = []
+    gold_to_hit: dict[int, int] = {}
+
+    def augment(hit_index: int, visited_gold: set[int]) -> bool:
+        for gold_index, _iou in hit_matches[hit_index]:
+            if gold_index in visited_gold:
+                continue
+            visited_gold.add(gold_index)
+            previous_hit = gold_to_hit.get(gold_index)
+            if previous_hit is None or augment(previous_hit, visited_gold):
+                gold_to_hit[gold_index] = hit_index
+                return True
+        return False
+
+    for hit_index, hit in enumerate(hits):
+        rank = hit_index + 1
+        overlaps = {
+            index: _checked_overlap(
+                overlap,
+                interval.start_seconds,
+                interval.end_seconds,
+                hit.start_seconds,
+                hit.end_seconds,
+            )
+            for index, interval in enumerate(case.relevant_intervals)
+            if interval.asset_id == hit.asset_id
+        }
+        relevant_overlap = max(overlaps.values(), default=0.0)
         best_iou = max(best_iou, relevant_overlap)
-        is_relevant = (
-            bool(case.relevant_intervals)
-            and relevant_overlap >= RELEVANCE_IOU_THRESHOLD
+        hit_matches.append(
+            tuple(
+                sorted(
+                    (
+                        (index, value)
+                        for index, value in overlaps.items()
+                        if value >= RELEVANCE_IOU_THRESHOLD
+                    ),
+                    key=lambda item: (-item[1], item[0]),
+                )
+            )
         )
-        if is_relevant and relevant_rank is None:
+        gained = int(augment(hit_index, set()))
+        unique_relevance_gains.append(gained)
+        if gained and relevant_rank is None:
             relevant_rank = rank
-        if not is_relevant:
-            false_positive_count += 1
+        if rank <= 10:
+            covered_relevant_at_10 = len(gold_to_hit)
+        if rank <= 20:
+            covered_relevant_at_20 = len(gold_to_hit)
+        if rank <= 50:
+            covered_relevant_at_50 = len(gold_to_hit)
         if any(
             negative.asset_id == hit.asset_id
             and _checked_overlap(
@@ -1263,17 +1587,41 @@ def _score_ranked_hits(
             for negative in case.hard_negatives
         ):
             hard_negative_hit = 1
+
+    boundary_errors: list[tuple[float, float]] = []
+    for gold_index, hit_index in sorted(gold_to_hit.items()):
+        interval = case.relevant_intervals[gold_index]
+        selected_hit = hits[hit_index]
+        boundary_errors.append(
+            (
+                abs(selected_hit.start_seconds - interval.start_seconds),
+                abs(selected_hit.end_seconds - interval.end_seconds),
+            )
+        )
+    dcg = sum(
+        gain / math.log2(rank + 1)
+        for rank, gain in enumerate(unique_relevance_gains[:10], start=1)
+    )
+    ideal_count = min(len(case.relevant_intervals), 10)
+    ideal_dcg = sum(1 / math.log2(rank + 1) for rank in range(1, ideal_count + 1))
     return _CaseScore(
         case=case,
         latency_ms=latency_ms,
         result_count=len(hits),
         relevant_rank=relevant_rank,
         best_temporal_iou=best_iou,
-        false_positive_count=false_positive_count,
+        false_positive_count=len(hits) - sum(unique_relevance_gains),
         negative_false_positive=(
             int(bool(hits)) if not case.relevant_intervals else 0
         ),
         hard_negative_hit=hard_negative_hit,
+        relevant_interval_count=len(case.relevant_intervals),
+        covered_relevant_at_10=covered_relevant_at_10,
+        covered_relevant_at_20=covered_relevant_at_20,
+        covered_relevant_at_50=covered_relevant_at_50,
+        precision_at_5=sum(unique_relevance_gains[:5]) / 5,
+        ndcg_at_10=dcg / ideal_dcg if ideal_dcg else 0.0,
+        boundary_errors=tuple(boundary_errors),
         hits=hits,
     )
 
@@ -1298,7 +1646,12 @@ def _methodology_identity() -> str:
     return (
         f"portable-retrieval@{BENCHMARK_METHODOLOGY_VERSION};"
         f"temporal-iou-threshold={RELEVANCE_IOU_THRESHOLD:g};"
-        "quality-denominator=completed-positive-cases"
+        "quality-denominator=completed-positive-cases;"
+        "matching=rank-prefix-maximum-cardinality-one-to-one;"
+        "candidate-recall=one-to-one-gold-interval-coverage-at-50;"
+        "precision=one-to-one-prefix-gains-over-five;"
+        "ndcg=one-to-one-prefix-gains-at-10;"
+        "latency-p95=nearest-rank"
     )
 
 
@@ -1321,6 +1674,15 @@ def _quality_metrics(
     negative = tuple(score for score in scores if not score.case.relevant_intervals)
     hard_negative = tuple(score for score in scores if score.case.hard_negatives)
     if positive:
+        relevant_interval_count = sum(
+            score.relevant_interval_count for score in positive
+        )
+        covered_at_10 = sum(score.covered_relevant_at_10 for score in positive)
+        covered_at_20 = sum(score.covered_relevant_at_20 for score in positive)
+        covered_at_50 = sum(score.covered_relevant_at_50 for score in positive)
+        boundary_errors = tuple(
+            error for score in positive for error in score.boundary_errors
+        )
         metrics.extend(
             (
                 MetricValue(
@@ -1360,8 +1722,55 @@ def _quality_metrics(
                     mean(score.best_temporal_iou for score in positive),
                     "ratio",
                 ),
+                MetricValue(
+                    name("precision_at_5"),
+                    mean(score.precision_at_5 for score in positive),
+                    "ratio",
+                ),
+                MetricValue(
+                    name("recall_at_10"),
+                    covered_at_10 / relevant_interval_count,
+                    "ratio",
+                ),
+                MetricValue(
+                    name("recall_at_20"),
+                    covered_at_20 / relevant_interval_count,
+                    "ratio",
+                ),
+                MetricValue(
+                    name("candidate_recall_at_50"),
+                    covered_at_50 / relevant_interval_count,
+                    "ratio",
+                ),
+                MetricValue(
+                    name("ndcg_at_10"),
+                    mean(score.ndcg_at_10 for score in positive),
+                    "ratio",
+                ),
             )
         )
+        if boundary_errors:
+            starts = tuple(value[0] for value in boundary_errors)
+            ends = tuple(value[1] for value in boundary_errors)
+            metrics.extend(
+                (
+                    MetricValue(
+                        name("mean_start_boundary_error_seconds"),
+                        mean(starts),
+                        "seconds",
+                    ),
+                    MetricValue(
+                        name("mean_end_boundary_error_seconds"),
+                        mean(ends),
+                        "seconds",
+                    ),
+                    MetricValue(
+                        name("mean_boundary_error_seconds"),
+                        mean((*starts, *ends)),
+                        "seconds",
+                    ),
+                )
+            )
     if scores:
         result_count = sum(score.result_count for score in scores)
         false_positive_count = sum(score.false_positive_count for score in scores)
@@ -1375,6 +1784,22 @@ def _quality_metrics(
                 MetricValue(
                     name("mean_latency_ms"),
                     mean(score.latency_ms for score in scores),
+                    "milliseconds",
+                ),
+                MetricValue(
+                    name("p50_latency_ms"),
+                    _nearest_rank_percentile(
+                        tuple(score.latency_ms for score in scores),
+                        0.50,
+                    ),
+                    "milliseconds",
+                ),
+                MetricValue(
+                    name("p95_latency_ms"),
+                    _nearest_rank_percentile(
+                        tuple(score.latency_ms for score in scores),
+                        0.95,
+                    ),
                     "milliseconds",
                 ),
             )
@@ -1396,6 +1821,14 @@ def _quality_metrics(
             )
         )
     return tuple(metrics)
+
+
+def _nearest_rank_percentile(values: tuple[float, ...], percentile: float) -> float:
+    if not values:
+        raise ValueError("percentile requires at least one value")
+    ordered = tuple(sorted(values))
+    rank = max(1, math.ceil(percentile * len(ordered)))
+    return ordered[rank - 1]
 
 
 def _bounded_metric_name(prefix: str, suffix: str) -> str:

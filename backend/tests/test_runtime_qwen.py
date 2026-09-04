@@ -3,6 +3,7 @@ from pathlib import Path
 from videoscope.config import AppSettings
 from videoscope.model_manifest import QWEN_VIDEO_MODEL
 from videoscope.providers.qwen_worker import QwenWorkerClient
+from videoscope.providers.qwen_video import QWEN_IN_PROCESS_RUNTIME_IDENTITY
 from videoscope.runtime import create_qwen_reranker
 
 
@@ -24,6 +25,7 @@ def test_runtime_builds_worker_adapter_without_importing_or_contacting_mlx(
         qwen_video_api_key="q" * 32,
         qwen_video_timeout=41,
     )
+    settings.temp_dir.mkdir(parents=True)
 
     reranker = create_qwen_reranker(
         settings,
@@ -57,5 +59,5 @@ def test_runtime_keeps_deprecated_in_process_path_behind_explicit_flag(
     assert reranker.allow_in_process is True
     assert reranker.identity["boundary"] == {
         "mode": "deprecated-in-process",
-        "runtime_identity": "mlx-vlm==0.6.7",
+        "runtime_identity": QWEN_IN_PROCESS_RUNTIME_IDENTITY,
     }

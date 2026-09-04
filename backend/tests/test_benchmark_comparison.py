@@ -11,6 +11,7 @@ from videoscope.benchmark import (
     ComponentIdentity,
     HardwareProfile,
     MetricValue,
+    RUN_SCHEMA_VERSION,
 )
 import videoscope.benchmark.comparison as comparison_module
 from videoscope.benchmark.comparison import (
@@ -47,7 +48,7 @@ def _run(
         for index in range(case_count)
     )
     return BenchmarkRunManifest(
-        schema_version=2,
+        schema_version=RUN_SCHEMA_VERSION,
         run_id=run_id,
         created_at="2026-08-18T12:30:02Z",
         started_at="2026-08-18T12:30:00Z",
@@ -1080,6 +1081,7 @@ def test_comparison_requires_same_measurement_protocol_and_status() -> None:
         measurement_started_at="2026-08-18T12:30:00Z",
         measurement_finished_at="2026-08-18T12:30:01Z",
         system_metrics=(MetricValue("peak_rss_bytes", 1_000, "bytes"),),
+        measurement_evidence_status="legacy_unavailable",
     )
     candidate = replace(
         _run(
@@ -1094,6 +1096,7 @@ def test_comparison_requires_same_measurement_protocol_and_status() -> None:
         measurement_started_at="2026-08-18T12:30:00Z",
         measurement_finished_at="2026-08-18T12:30:01Z",
         system_metrics=(MetricValue("peak_rss_bytes", 900, "bytes"),),
+        measurement_evidence_status="legacy_unavailable",
     )
 
     protocol_mismatch = replace(
@@ -1107,6 +1110,7 @@ def test_comparison_requires_same_measurement_protocol_and_status() -> None:
         candidate,
         measurement_status="failed",
         system_metrics=(),
+        measurement_evidence_status="not_applicable",
     )
 
     assert compare_runs(baseline, protocol_mismatch, _policy()).status == "incomparable"
@@ -1162,6 +1166,7 @@ def test_verified_system_metrics_remain_descriptively_addressable() -> None:
         system_metrics=(
             MetricValue("sampled_peak_process_tree_rss_bytes", 1_000, "bytes"),
         ),
+        measurement_evidence_status="legacy_unavailable",
     )
     candidate = replace(
         _run(
@@ -1181,6 +1186,7 @@ def test_verified_system_metrics_remain_descriptively_addressable() -> None:
         system_metrics=(
             MetricValue("sampled_peak_process_tree_rss_bytes", 900, "bytes"),
         ),
+        measurement_evidence_status="legacy_unavailable",
     )
     policy = PromotionPolicy(
         "memory",

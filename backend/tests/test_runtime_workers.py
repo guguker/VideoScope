@@ -103,6 +103,31 @@ def test_runtime_attaches_one_shared_vision_client_and_isolated_whisper(
     )
 
 
+def test_temporal_refiner_identity_projection_is_path_free_and_exact(
+    tmp_path: Path,
+) -> None:
+    settings = _worker_settings(tmp_path)
+    vision_client = runtime_module.create_vision_worker_client(settings)
+    assert vision_client is not None
+    visual = runtime_module.create_visual_index(
+        settings,
+        inference_client=vision_client,
+    )
+
+    scorer_identity, runtime_identity = (
+        runtime_module._temporal_refiner_scorer_identities(visual, vision_client)
+    )
+
+    assert scorer_identity == (
+        f"{visual.model_identity}#{visual.specification_identity}"
+    )
+    assert runtime_identity == (
+        "vision-worker:" + str(vision_client.identity["siglip_specification_hash"])
+    )
+    assert str(tmp_path) not in scorer_identity
+    assert str(tmp_path) not in runtime_identity
+
+
 def test_configured_unavailable_workers_remain_attached_without_fallback(
     tmp_path: Path,
     monkeypatch,

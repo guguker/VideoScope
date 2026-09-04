@@ -19,6 +19,7 @@ from videoscope.benchmark import (
     BenchmarkInterval,
     BenchmarkRunRegistry,
     ComponentIdentity,
+    FROZEN_PROFILES,
     HardwareProfile,
     LocalAssetResolver,
     QueryCase,
@@ -45,9 +46,32 @@ from videoscope.benchmark.policy import (
     load_policy,
 )
 from videoscope.benchmark.runner import (
+    BenchmarkExecutionError,
     BenchmarkRunner,
     BenchmarkSearchHit,
     ExecutionIdentities,
+)
+from videoscope.benchmark.measurements import (
+    DeclaredStorageRoot,
+    MeasurementUnavailableError,
+    ProcessRecord,
+    SystemMeasurementFactory,
+)
+
+
+_TEXT_MODEL_IDENTITY = (
+    "fastembed@0.8.0:mean-pooling-v1:"
+    "sentence-transformers/paraphrase-multilingual-mpnet-base-v2:"
+    "xenova/paraphrase-multilingual-mpnet-base-v2@"
+    "e5d116277351513fd260955ece953ecddde7046e:768"
+)
+_VISUAL_MODEL_IDENTITY = (
+    "google/siglip2-base-patch16-224@"
+    "75de2d55ec2d0b4efc50b3e9ad70dba96a7b2fa2"
+)
+_QWEN_MODEL_IDENTITY = (
+    "mlx-community/Qwen3.5-9B-MLX-4bit@"
+    "938d8919941c6e7efd3c7150eff7fe9d12afa631"
 )
 
 
@@ -130,14 +154,57 @@ class _SearchAdapter:
 
     def identities(self) -> ExecutionIdentities:
         assert self.profile is not None
+        assert self.execution_mode is not None
+        profile = self.profile
+        model = [ComponentIdentity("text_embedding", _TEXT_MODEL_IDENTITY)]
+        index = [
+            ComponentIdentity("text_vector_index", "1" * 64),
+            ComponentIdentity("text_vector_generations", "sha256:" + "2" * 64),
+        ]
+        if profile.search_plan.visual_search != "disabled":
+            model.append(
+                ComponentIdentity("visual_embedding", _VISUAL_MODEL_IDENTITY)
+            )
+            index.append(
+                ComponentIdentity("visual_generations", "sha256:" + "4" * 64)
+            )
+        if profile.search_plan.lighthouse:
+            model.append(
+                ComponentIdentity("lighthouse_model", "sha256:" + "5" * 64)
+            )
+            index.append(
+                ComponentIdentity("lighthouse_generations", "sha256:" + "6" * 64)
+            )
+        if profile.search_plan.reranker != "none":
+            model.append(
+                ComponentIdentity(
+                    f"{profile.search_plan.reranker}_reranker",
+                    (
+                        _QWEN_MODEL_IDENTITY
+                        if profile.search_plan.reranker == "qwen"
+                        else "not-configured"
+                    ),
+                )
+            )
+        lifecycle = f"{self.execution_mode}:test-cache-policy@1"
         return ExecutionIdentities(
-            model_identities=(ComponentIdentity("model", "model@revision"),),
-            index_identities=(ComponentIdentity("index", "generation-1"),),
+            model_identities=tuple(model),
+            index_identities=tuple(index),
             config_identities=(
                 ComponentIdentity(
-                    "search",
-                    f"search-for-{self.profile.profile_id}",
+                    "benchmark_product_environment",
+                    "benchmark-product-environment@2:" + "8" * 64,
                 ),
+                ComponentIdentity(
+                    "evaluation_search_configuration",
+                    profile.search_plan.identity.replace(
+                        "evaluation-search-plan",
+                        "evaluation-search-configuration",
+                        1,
+                    ),
+                ),
+                ComponentIdentity("product_search_lifecycle", lifecycle),
+                ComponentIdentity("product_search_runtime", "sha256:" + "9" * 64),
             ),
         )
 
@@ -290,6 +357,18 @@ def test_dataset_validate_emits_canonical_summary_json(
         sort_keys=True,
         separators=(",", ":"),
     ) + "\n"
+
+
+def test_preflight_exit_status_is_fail_closed() -> None:
+    assert cli_module._preflight_exit_code(
+        {"status": "ready", "measurement": {"status": "ready"}}
+    ) == EXIT_SUCCESS
+    assert cli_module._preflight_exit_code(
+        {"status": "not_ready", "measurement": {"status": "ready"}}
+    ) == cli_module.EXIT_EXECUTION
+    assert cli_module._preflight_exit_code(
+        {"status": "not_ready", "measurement": {"status": "not_configured"}}
+    ) == cli_module.EXIT_MEASUREMENT
 
 
 def test_dataset_import_is_the_only_command_that_creates_catalog_state(
@@ -823,13 +902,177 @@ def test_run_command_requires_the_complete_read_only_execution_contract(
     assert json.loads(captured.err)["error"]["code"] == "usage_error"
 
 
+class _CliNativeProcessProvider:
+    identity = "test-native-process-tree@1"
+
+    def snapshot(self) -> tuple[ProcessRecord, ...]:
+        return (
+            ProcessRecord(
+                pid=os.getpid(),
+                parent_pid=os.getppid(),
+                rss_bytes=1_024,
+                start_token="root-start",
+                executable_identity="path-sha256:" + "a" * 64,
+            ),
+        )
+
+
+def _ready_measurement_preflight() -> dict[str, object]:
+    return {
+        "external_worker_roles": [],
+        "measurement_protocol_identity": "measurement@1:" + "f" * 64,
+        "metal_telemetry_status": "unavailable",
+        "process_provider_identity": "test-native-process-tree@1",
+        "reason_code": None,
+        "status": "ready",
+        "storage_root_ids": [
+            "active-text-vector-storage",
+            "benchmark-private-scratch",
+        ],
+    }
+
+
+def test_product_measurement_factory_is_bound_to_native_tree_and_contained_storage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_dir = tmp_path / "product"
+    text_storage = data_dir / "qdrant" / "text"
+    text_storage.mkdir(parents=True)
+    scratch = tmp_path / "private-benchmark-scratch"
+    scratch.mkdir()
+    settings = cli_module.AppSettings(data_dir=data_dir)
+    environment = SimpleNamespace(scratch_root=scratch)
+    provider = _CliNativeProcessProvider()
+    monkeypatch.setattr(
+        cli_module,
+        "create_native_process_snapshot_provider",
+        lambda *, root_pid: provider if root_pid == os.getpid() else None,
+    )
+
+    factory = cli_module._create_product_measurement_factory(
+        settings,
+        environment,
+        cli_module.get_profile("lexical_qdrant"),
+    )
+
+    assert isinstance(factory, SystemMeasurementFactory)
+    assert factory.process_provider is provider
+    assert factory.process_root_pid == os.getpid()
+    assert factory.managed_workers == ()
+    assert factory.external_worker_pids == ()
+    assert factory.cache_policy_identity == "process-cache-preserved@1"
+    assert factory.storage_roots == (
+        DeclaredStorageRoot(
+            "active-text-vector-storage",
+            text_storage,
+            "active_immutable_artifacts",
+        ),
+        DeclaredStorageRoot(
+            "benchmark-private-scratch",
+            scratch,
+            "benchmark_scratch",
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("profile_id", "roles"),
+    (
+        ("dense_siglip", ("vision",)),
+        ("temporal_refinement", ("vision",)),
+        ("lighthouse", ("lighthouse", "vision")),
+        ("qwen_verification", ("lighthouse", "qwen", "vision")),
+        ("internvideo", ("internvideo", "lighthouse", "vision")),
+    ),
+)
+def test_product_measurement_rejects_profiles_whose_worker_pid_is_not_attested(
+    tmp_path: Path,
+    profile_id: str,
+    roles: tuple[str, ...],
+) -> None:
+    data_dir = tmp_path / "product"
+    data_dir.mkdir()
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+
+    with pytest.raises(MeasurementUnavailableError) as captured:
+        cli_module._create_product_measurement_factory(
+            cli_module.AppSettings(data_dir=data_dir),
+            SimpleNamespace(scratch_root=scratch),
+            cli_module.get_profile(profile_id),
+        )
+
+    assert captured.value.code == "external_worker_process_binding_unavailable"
+    assert cli_module._external_worker_roles(
+        cli_module.get_profile(profile_id)
+    ) == roles
+
+
+def test_measurement_preflight_is_machine_readable_when_workers_are_unbound(
+    tmp_path: Path,
+) -> None:
+    summary = cli_module._preflight_measurement(
+        cli_module.AppSettings(data_dir=tmp_path / "product"),
+        SimpleNamespace(scratch_root=tmp_path / "scratch"),
+        cli_module.get_profile("qwen_verification"),
+    )
+
+    assert summary == {
+        "external_worker_roles": ["lighthouse", "qwen", "vision"],
+        "measurement_protocol_identity": None,
+        "metal_telemetry_status": "unavailable",
+        "process_provider_identity": None,
+        "reason_code": "external_worker_process_binding_unavailable",
+        "status": "not_configured",
+        "storage_root_ids": [],
+    }
+
+
+def test_lexical_measurement_preflight_probes_native_rss_and_storage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_dir = tmp_path / "product"
+    (data_dir / "qdrant" / "text").mkdir(parents=True)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    provider = _CliNativeProcessProvider()
+    monkeypatch.setattr(
+        cli_module,
+        "create_native_process_snapshot_provider",
+        lambda *, root_pid: provider if root_pid == os.getpid() else None,
+    )
+
+    summary = cli_module._preflight_measurement(
+        cli_module.AppSettings(data_dir=data_dir),
+        SimpleNamespace(scratch_root=scratch),
+        cli_module.get_profile("lexical_qdrant"),
+    )
+
+    assert summary["status"] == "ready"
+    assert summary["reason_code"] is None
+    assert summary["process_provider_identity"] == provider.identity
+    assert str(summary["measurement_protocol_identity"]).startswith(
+        "process-tree-rss-50ms-contained-storage@2:"
+    )
+    assert summary["storage_root_ids"] == [
+        "active-text-vector-storage",
+        "benchmark-private-scratch",
+    ]
+    assert summary["metal_telemetry_status"] == "unavailable"
+
+
 class _CliEnvironment:
     def __init__(self, dataset: BenchmarkDataset, events: list[str]) -> None:
         self.asset_resolver = LocalAssetResolver(_Repository(dataset))
         self.search_adapter = object()
-        self.identity = SimpleNamespace(identity="benchmark-product-environment@1:" + "e" * 64)
+        self.identity = SimpleNamespace(identity="benchmark-product-environment@2:" + "e" * 64)
         self.is_closed = False
         self._events = events
+
+    def probe_worker_sources(self) -> tuple[str, ...]:
+        return ()
 
     def close(self) -> None:
         self._events.append("environment.close")
@@ -843,6 +1086,7 @@ def _run_arguments(
     data_dir: Path,
     scratch_parent: Path,
     preflight: bool = False,
+    profile: str | None = None,
 ) -> list[str]:
     value = [
         "run",
@@ -859,22 +1103,27 @@ def _run_arguments(
     ]
     if preflight:
         value.append("--preflight")
+    if profile is not None:
+        value.extend(["--profile", profile])
     return value
 
 
+@pytest.mark.parametrize("profile_id", tuple(FROZEN_PROFILES))
 def test_run_prepares_closes_then_publishes_complete_manifest(
     cli_workspace,
     tmp_path,
     capsys,
     monkeypatch,
+    profile_id: str,
 ) -> None:  # type: ignore[no-untyped-def]
     dataset, dataset_path, registry_root, _policy = cli_workspace
     events: list[str] = []
     environment = _CliEnvironment(dataset, events)
+    measurement = object()
     prepared = SimpleNamespace(
         run_id="run-new",
         run_status="complete",
-        measurement_status="not_measured",
+        measurement_status="complete",
         dataset_revision=dataset_revision(dataset),
         case_outcomes=(object(),),
     )
@@ -884,12 +1133,13 @@ def test_run_prepares_closes_then_publishes_complete_manifest(
             assert kwargs["asset_resolver"] is environment.asset_resolver
             assert kwargs["search"] is environment.search_adapter
             assert kwargs["code_sha"] == "d" * 40
+            assert kwargs["measurement"] is measurement
             events.append("runner.init")
 
         def run(self, supplied, **kwargs):  # type: ignore[no-untyped-def]
             assert supplied == dataset
             assert kwargs == {
-                "profile_id": "lexical_qdrant",
+                "profile_id": profile_id,
                 "run_id": "run-new",
                 "execution_mode": "warm",
                 "publish": False,
@@ -917,6 +1167,11 @@ def test_run_prepares_closes_then_publishes_complete_manifest(
         "open_product_benchmark_environment",
         lambda *_args, **_kwargs: environment,
     )
+    monkeypatch.setattr(
+        cli_module,
+        "_create_product_measurement_factory",
+        lambda *_args: measurement,
+    )
     monkeypatch.setattr(cli_module, "_current_code_sha", lambda: "d" * 40)
     monkeypatch.setattr(
         cli_module,
@@ -934,6 +1189,7 @@ def test_run_prepares_closes_then_publishes_complete_manifest(
             registry_root=registry_root,
             data_dir=data_dir,
             scratch_parent=scratch_parent,
+            profile=profile_id,
         )
     )
     captured = capsys.readouterr()
@@ -950,7 +1206,7 @@ def test_run_prepares_closes_then_publishes_complete_manifest(
         "case_count": 1,
         "dataset_revision": dataset_revision(dataset),
         "execution_mode": "warm",
-        "profile_id": "lexical_qdrant",
+        "profile_id": profile_id,
         "run_id": "run-new",
         "run_status": "complete",
         "status": "published",
@@ -960,13 +1216,68 @@ def test_run_prepares_closes_then_publishes_complete_manifest(
     assert EXIT_MEASUREMENT == 9
 
 
+def test_run_rejects_unbound_external_worker_measurement_before_search(
+    cli_workspace,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dataset, dataset_path, registry_root, _policy = cli_workspace
+    events: list[str] = []
+    environment = _CliEnvironment(dataset, events)
+
+    monkeypatch.setattr(
+        cli_module,
+        "open_product_benchmark_environment",
+        lambda *_args, **_kwargs: environment,
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "BenchmarkRunner",
+        lambda **_kwargs: pytest.fail("unmeasured search must not start"),
+    )
+    monkeypatch.setattr(cli_module, "_current_code_sha", lambda: "d" * 40)
+    monkeypatch.setattr(
+        cli_module,
+        "_current_hardware_profile",
+        lambda: HardwareProfile("test-os", "arm64", "test-cpu", 1024),
+    )
+    data_dir = tmp_path / "product"
+    data_dir.mkdir()
+    scratch_parent = tmp_path / "scratch"
+    scratch_parent.mkdir()
+    registry_before = registry_root.joinpath("registry.json").read_bytes()
+
+    exit_code = main(
+        _run_arguments(
+            dataset_path=dataset_path,
+            registry_root=registry_root,
+            data_dir=data_dir,
+            scratch_parent=scratch_parent,
+            profile="qwen_verification",
+        )
+    )
+    captured = capsys.readouterr()
+
+    assert exit_code == EXIT_MEASUREMENT
+    assert events == ["environment.close"]
+    assert registry_root.joinpath("registry.json").read_bytes() == registry_before
+    assert captured.out == ""
+    assert json.loads(captured.err) == {
+        "error": {
+            "code": "external_worker_process_binding_unavailable",
+            "message": "benchmark measurement is unavailable",
+        }
+    }
+
+
 @pytest.mark.parametrize(
-    ("run_status", "measurement_status"),
+    ("run_status", "measurement_status", "expected_exit"),
     [
-        ("partial", "not_measured"),
-        ("failed", "not_measured"),
-        ("cancelled", "not_measured"),
-        ("complete", "failed"),
+        ("partial", "not_measured", EXIT_EXECUTION),
+        ("failed", "not_measured", EXIT_EXECUTION),
+        ("cancelled", "not_measured", EXIT_EXECUTION),
+        ("complete", "failed", EXIT_MEASUREMENT),
     ],
 )
 def test_run_never_publishes_an_untrustworthy_prepared_manifest(
@@ -976,6 +1287,7 @@ def test_run_never_publishes_an_untrustworthy_prepared_manifest(
     monkeypatch,
     run_status: str,
     measurement_status: str,
+    expected_exit: int,
 ) -> None:  # type: ignore[no-untyped-def]
     dataset, dataset_path, registry_root, _policy = cli_workspace
     events: list[str] = []
@@ -1003,6 +1315,11 @@ def test_run_never_publishes_an_untrustworthy_prepared_manifest(
         "open_product_benchmark_environment",
         lambda *_args, **_kwargs: environment,
     )
+    monkeypatch.setattr(
+        cli_module,
+        "_create_product_measurement_factory",
+        lambda *_args: object(),
+    )
     monkeypatch.setattr(cli_module, "_current_code_sha", lambda: "d" * 40)
     monkeypatch.setattr(
         cli_module,
@@ -1025,10 +1342,15 @@ def test_run_never_publishes_an_untrustworthy_prepared_manifest(
     )
     captured = capsys.readouterr()
 
-    assert exit_code == EXIT_EXECUTION
+    assert exit_code == expected_exit
     assert events == ["environment.close"]
     assert registry_root.joinpath("registry.json").read_bytes() == before
-    assert json.loads(captured.err)["error"]["code"] == "execution_failed"
+    expected_code = (
+        "benchmark_measurement_incomplete"
+        if expected_exit == EXIT_MEASUREMENT
+        else "execution_failed"
+    )
+    assert json.loads(captured.err)["error"]["code"] == expected_code
 
 
 def test_cleanup_failure_prevents_publication(
@@ -1069,6 +1391,16 @@ def test_cleanup_failure_prevents_publication(
         cli_module,
         "open_product_benchmark_environment",
         lambda *_args, **_kwargs: environment,
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "_preflight_measurement",
+        lambda *_args: _ready_measurement_preflight(),
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "_create_product_measurement_factory",
+        lambda *_args: object(),
     )
     monkeypatch.setattr(cli_module, "_current_code_sha", lambda: "d" * 40)
     monkeypatch.setattr(
@@ -1116,7 +1448,7 @@ def test_code_identity_drift_after_cleanup_prevents_publication(
             return SimpleNamespace(
                 run_id="run-new",
                 run_status="complete",
-                measurement_status="not_measured",
+                measurement_status="complete",
                 dataset_revision=dataset_revision(dataset),
                 case_outcomes=(),
             )
@@ -1132,6 +1464,11 @@ def test_code_identity_drift_after_cleanup_prevents_publication(
         cli_module,
         "open_product_benchmark_environment",
         lambda *_args, **_kwargs: environment,
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "_create_product_measurement_factory",
+        lambda *_args: object(),
     )
     monkeypatch.setattr(
         cli_module,
@@ -1182,7 +1519,7 @@ def test_preflight_checks_every_capability_without_search_or_registry_mutation(
             events.append("session.identities")
             return ExecutionIdentities(
                 model_identities=(
-                    ComponentIdentity("text_embedding", "fastembed@revision"),
+                        ComponentIdentity("text_embedding", _TEXT_MODEL_IDENTITY),
                 ),
                 index_identities=(
                     ComponentIdentity("text_vector_index", "1" * 64),
@@ -1251,6 +1588,11 @@ def test_preflight_checks_every_capability_without_search_or_registry_mutation(
         "open_product_benchmark_environment",
         lambda *_args, **_kwargs: environment,
     )
+    monkeypatch.setattr(
+        cli_module,
+        "_preflight_measurement",
+        lambda *_args: _ready_measurement_preflight(),
+    )
     monkeypatch.setattr(cli_module, "_current_code_sha", lambda: "d" * 40)
     monkeypatch.setattr(
         cli_module,
@@ -1295,14 +1637,219 @@ def test_preflight_checks_every_capability_without_search_or_registry_mutation(
     ]
     assert json.loads(captured.out) == {
         "asset_count": 1,
+        "capability_matrix": [
+            {
+                "asset_id": dataset.assets[0].asset_id,
+                "capabilities": {"text_vectors": "complete"},
+                "status": "ready",
+            }
+        ],
         "capability_count": 1,
         "code_sha": "d" * 40,
         "dataset_revision": dataset_revision(dataset),
-        "environment_identity": "benchmark-product-environment@1:" + "e" * 64,
+        "environment_identity": "benchmark-product-environment@2:" + "e" * 64,
         "execution_mode": "warm",
+        "measurement": _ready_measurement_preflight(),
         "profile_id": "lexical_qdrant",
         "run_id": "run-new",
         "status": "ready",
+    }
+    assert captured.err == ""
+
+
+@pytest.mark.parametrize("drift", ("missing", "extra", "malformed", "wrong_role"))
+def test_preflight_rejects_profile_identity_contract_drift(drift: str) -> None:
+    profile = cli_module.get_profile("qwen_verification")
+    adapter = _SearchAdapter(())
+    adapter.open_session(profile, (), execution_mode="warm")
+    base = adapter.identities()
+    model = list(base.model_identities)
+    index = list(base.index_identities)
+    if drift == "missing":
+        model = [item for item in model if item.component_id != "qwen_reranker"]
+    elif drift == "extra":
+        model.append(
+            ComponentIdentity("unexpected_model", "fixture/model@" + "a" * 40)
+        )
+    elif drift == "malformed":
+        model = [
+            replace(item, identity="fixture/siglip@floating-main")
+            if item.component_id == "visual_embedding"
+            else item
+            for item in model
+        ]
+    elif drift == "wrong_role":
+        moved = next(item for item in model if item.component_id == "visual_embedding")
+        model.remove(moved)
+        index.append(moved)
+    identities = ExecutionIdentities(
+        tuple(model),
+        tuple(index),
+        base.config_identities,
+    )
+    lifecycle = adapter.lifecycle_identity()
+    environment = SimpleNamespace(
+        identity=SimpleNamespace(
+            identity="benchmark-product-environment@2:" + "8" * 64
+        )
+    )
+
+    with pytest.raises(BenchmarkExecutionError, match="preflight product identities"):
+        cli_module._validate_preflight_identities(
+            identities,
+            lifecycle=lifecycle,
+            environment=environment,
+            profile=profile,
+            execution_mode="warm",
+        )
+
+
+def test_qwen_preflight_reports_the_complete_capability_matrix(
+    cli_workspace,
+    tmp_path,
+    capsys,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    dataset, dataset_path, registry_root, _policy = cli_workspace
+    events: list[str] = []
+    environment = _CliEnvironment(dataset, events)
+    resolved = environment.asset_resolver.resolve(dataset.assets[0])
+    profile = cli_module.get_profile("qwen_verification")
+    capability_states = {
+        "text_vectors": "complete",
+        "visual_dense": "complete",
+        "temporal_refinement": "not_configured",
+        "lighthouse": "missing",
+        "qwen_verification": "not_configured",
+    }
+
+    class Session:
+        def identities(self) -> ExecutionIdentities:
+            return ExecutionIdentities(
+                model_identities=(
+                    ComponentIdentity("text_embedding", _TEXT_MODEL_IDENTITY),
+                    ComponentIdentity(
+                        "visual_embedding",
+                        _VISUAL_MODEL_IDENTITY,
+                    ),
+                    ComponentIdentity("lighthouse_model", "not-configured"),
+                    ComponentIdentity("qwen_reranker", "not-configured"),
+                ),
+                index_identities=(
+                    ComponentIdentity("text_vector_index", "1" * 64),
+                    ComponentIdentity("text_vector_generations", "sha256:" + "2" * 64),
+                    ComponentIdentity("visual_generations", "sha256:" + "4" * 64),
+                    ComponentIdentity("lighthouse_generations", "sha256:" + "5" * 64),
+                ),
+                config_identities=(
+                    ComponentIdentity(
+                        "benchmark_product_environment",
+                        environment.identity.identity,
+                    ),
+                    ComponentIdentity(
+                        "evaluation_search_configuration",
+                        profile.search_plan.identity.replace(
+                            "evaluation-search-plan",
+                            "evaluation-search-configuration",
+                            1,
+                        ),
+                    ),
+                    ComponentIdentity(
+                        "product_search_lifecycle",
+                        "warm:process-cache-preserved@1",
+                    ),
+                    ComponentIdentity(
+                        "product_search_runtime",
+                        "sha256:" + "3" * 64,
+                    ),
+                ),
+            )
+
+        def lifecycle_identity(self) -> ComponentIdentity:
+            return ComponentIdentity(
+                "benchmark_execution_lifecycle",
+                "warm:process-cache-preserved@1",
+            )
+
+        def capability_state(self, asset, capability):  # type: ignore[no-untyped-def]
+            assert asset == resolved
+            events.append(f"capability:{capability}")
+            return capability_states[capability]
+
+        def search(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
+            raise AssertionError("preflight must not execute search")
+
+        def close(self) -> None:
+            events.append("session.close")
+
+    class Adapter:
+        def open_session(self, selected, assets, *, execution_mode):  # type: ignore[no-untyped-def]
+            assert selected is profile
+            assert assets == (resolved,)
+            assert execution_mode == "warm"
+            return Session()
+
+    environment.search_adapter = Adapter()
+    monkeypatch.setattr(
+        cli_module,
+        "open_product_benchmark_environment",
+        lambda *_args, **_kwargs: environment,
+    )
+    monkeypatch.setattr(cli_module, "_current_code_sha", lambda: "d" * 40)
+    monkeypatch.setattr(
+        cli_module,
+        "_current_hardware_profile",
+        lambda: HardwareProfile("test-os", "arm64", "test-cpu", 1024),
+    )
+    data_dir = tmp_path / "product"
+    data_dir.mkdir()
+    scratch_parent = tmp_path / "scratch"
+    scratch_parent.mkdir(mode=0o700)
+
+    exit_code = main(
+        _run_arguments(
+            dataset_path=dataset_path,
+            registry_root=registry_root,
+            data_dir=data_dir,
+            scratch_parent=scratch_parent,
+            preflight=True,
+            profile="qwen_verification",
+        )
+    )
+    captured = capsys.readouterr()
+
+    assert exit_code == EXIT_MEASUREMENT
+    assert events == [
+        *(f"capability:{capability}" for capability in profile.required_capabilities),
+        "session.close",
+        "environment.close",
+    ]
+    assert json.loads(captured.out) == {
+        "asset_count": 1,
+        "capability_count": len(profile.required_capabilities),
+        "capability_matrix": [
+            {
+                "asset_id": dataset.assets[0].asset_id,
+                "capabilities": capability_states,
+                "status": "not_ready",
+            }
+        ],
+        "code_sha": "d" * 40,
+        "dataset_revision": dataset_revision(dataset),
+        "environment_identity": "benchmark-product-environment@2:" + "e" * 64,
+        "execution_mode": "warm",
+        "measurement": {
+            "external_worker_roles": ["lighthouse", "qwen", "vision"],
+            "measurement_protocol_identity": None,
+            "metal_telemetry_status": "unavailable",
+            "process_provider_identity": None,
+            "reason_code": "external_worker_process_binding_unavailable",
+            "status": "not_configured",
+            "storage_root_ids": [],
+        },
+        "profile_id": "qwen_verification",
+        "run_id": "run-new",
+        "status": "not_ready",
     }
     assert captured.err == ""
 
@@ -1348,6 +1895,9 @@ def test_bindings_must_be_an_exact_bounded_alias_to_video_object(
         b" M docs/benchmark-core.md\0",
         b"?? backend/src/videoscope/private.py\0",
         b"?? backend/uv.lock\0",
+        b"?? json.py\0",
+        b"?? sitecustomize.py\0",
+        b"?? videoscope/__init__.py\0",
     ),
 )
 def test_code_identity_rejects_tracked_or_relevant_untracked_changes(
