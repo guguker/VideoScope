@@ -22,18 +22,21 @@ from videoscope.storage import atomic_write_json
 
 logger = logging.getLogger(__name__)
 
-MADE_BASKET_PROMPT_VERSION = "made-basket-facts-v3"
+MADE_BASKET_PROMPT_VERSION = "made-basket-facts-v4"
 LEGACY_MADE_THREE_PROMPT_VERSION = "made-three-facts-v2"
-GENERIC_PROMPT_VERSION = "generic-visual-v3"
+GENERIC_PROMPT_VERSION = "generic-visual-v4"
 QWEN_INPUT_SCHEMA_VERSION = "qwen-video-input-v3"
+QWEN_RESPONSE_MAX_BYTES = 4096
+QWEN_EVIDENCE_MAX_CHARS = 240
 _BASKETBALL_FACTS_PROMPT = (
     "Report only independently visible basketball facts. Return exactly one "
     "compact JSON object with keys shot_attempt, ball_through_hoop, "
     "shooter_outside_arc, three_point_signal, shooter_jersey, evidence. "
     "Each fact must be true, false, or null independently; do not decide the "
     "event class. Use null when the clip does not prove a fact. A shooting pose "
-    "does not prove a make. shooter_jersey is digits only or null. evidence is "
-    "one short factual sentence. No text outside JSON."
+    "does not prove a make. shooter_jersey is 0, 00, or 1 through 99 without "
+    "a leading zero, or null. evidence is "
+    "one short factual sentence of at most 240 characters. No text outside JSON."
 )
 _GENERIC_QUERY_PROMPT_PREFIX = (
     "You are a strict video judge. Inspect the supplied visual evidence in "
@@ -44,8 +47,61 @@ _GENERIC_QUERY_PROMPT_SUFFIX = (
     "event_start, event_end, shot_attempt, made, three_point, shooter_jersey, "
     "evidence. Use null whenever the frames do not prove a fact. Never infer a "
     "made basket from a shooting posture. A jersey number must be visible; "
-    "otherwise use null."
+    "otherwise use null. confidence is a number from 0 to 1. event_start and "
+    "event_end are nonnegative seconds or null. evidence is one short factual "
+    "sentence of at most 240 characters. No text outside JSON."
 )
+
+
+def _flat_qwen_schema(properties: dict[str, object]) -> dict[str, object]:
+    return {
+        "type": "object",
+        "properties": properties,
+        "required": list(properties),
+        "additionalProperties": False,
+    }
+
+
+# Canonical immutable JSON supplies a fresh grammar schema for every request.
+# The same schemas drive strict parsing and the content-bound prompt protocol.
+_QWEN_RESPONSE_SCHEMAS_JSON = json.dumps(
+    {
+        "basketball_facts": _flat_qwen_schema({
+            "shot_attempt": {"type": ["boolean", "null"]},
+            "ball_through_hoop": {"type": ["boolean", "null"]},
+            "shooter_outside_arc": {"type": ["boolean", "null"]},
+            "three_point_signal": {"type": ["boolean", "null"]},
+            "shooter_jersey": {
+                "type": ["string", "null"], "pattern": "^(?:0|00|[1-9][0-9]?)$",
+            },
+            "evidence": {"type": "string", "maxLength": QWEN_EVIDENCE_MAX_CHARS},
+        }),
+        "generic_query": _flat_qwen_schema({
+            "matches_query": {"type": ["boolean", "null"]},
+            "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+            "event_start": {"type": ["number", "null"], "minimum": 0},
+            "event_end": {"type": ["number", "null"], "minimum": 0},
+            "shot_attempt": {"type": ["boolean", "null"]},
+            "made": {"type": ["boolean", "null"]},
+            "three_point": {"type": ["boolean", "null"]},
+            "shooter_jersey": {
+                "type": ["string", "null"], "pattern": "^[0-9]{1,3}$",
+            },
+            "evidence": {"type": "string", "maxLength": QWEN_EVIDENCE_MAX_CHARS},
+        }),
+    },
+    sort_keys=True,
+    separators=(",", ":"),
+    allow_nan=False,
+)
+
+
+def qwen_response_schema(prompt_kind: str) -> dict[str, object]:
+    if prompt_kind not in {"basketball_facts", "generic_query"}:
+        raise ValueError("Qwen response prompt contract is unsupported")
+    return json.loads(_QWEN_RESPONSE_SCHEMAS_JSON)[prompt_kind]
+
+
 _QWEN_PROMPT_PROTOCOL = {
     "basketball_prompt": _BASKETBALL_FACTS_PROMPT,
     "basketball_prompt_version": MADE_BASKET_PROMPT_VERSION,
@@ -64,11 +120,20 @@ _QWEN_PROMPT_PROTOCOL = {
         "enable_thinking": False,
         "temperature": 0.0,
     },
+    "structured_output": {
+        "version": "qwen-typed-output-v1",
+        "decoder": "mlx-vlm==0.6.7:llguidance==1.7.6:json-schema-v1",
+        "parser": "strict-flat-json-v1",
+        "completion": "finish_reason=stop",
+        "max_response_utf8_bytes": QWEN_RESPONSE_MAX_BYTES,
+        "interval": "event_end>event_start-when-both-present",
+        "schemas": json.loads(_QWEN_RESPONSE_SCHEMAS_JSON),
+    },
     "supported_prompt_inputs": {
         "basketball_facts": ["video"],
         "generic_query": ["storyboard", "video"],
     },
-    "schema_version": 3,
+    "schema_version": 4,
 }
 QWEN_PROMPT_PROTOCOL_SHA256 = hashlib.sha256(
     json.dumps(
@@ -243,6 +308,74 @@ def parse_qwen_judgement(text: str) -> QwenVideoJudgement:
     if not isinstance(payload, dict):
         raise ValueError("Qwen response must be a JSON object")
     return _judgement_from_mapping(payload)
+
+
+def _unique_qwen_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("Qwen response has duplicate keys")
+        result[key] = value
+    return result
+
+
+def _reject_qwen_json_constant(_value: str) -> object:
+    raise ValueError("Qwen response has a non-finite number")
+
+
+def _validate_qwen_scalar(value: object, spec: dict[str, object]) -> None:
+    # This intentionally validates only the flat, primitive response contract.
+    kind = {
+        bool: "boolean", int: "number", float: "number",
+        str: "string", type(None): "null",
+    }.get(type(value))
+    allowed = spec["type"]
+    if kind is None or kind not in (allowed if isinstance(allowed, list) else [allowed]):
+        raise ValueError("Qwen response has an invalid field type")
+    if kind == "number":
+        try:
+            finite = math.isfinite(value)
+        except OverflowError:
+            finite = False
+        if not finite:
+            raise ValueError("Qwen response has a non-finite number")
+        if "minimum" in spec and value < spec["minimum"]:
+            raise ValueError("Qwen response number is out of bounds")
+        if "maximum" in spec and value > spec["maximum"]:
+            raise ValueError("Qwen response number is out of bounds")
+    elif kind == "string":
+        try:
+            value.encode("utf-8")
+        except UnicodeEncodeError:
+            raise ValueError("Qwen response text is not valid UTF-8") from None
+        if "maxLength" in spec and len(value) > spec["maxLength"]:
+            raise ValueError("Qwen response text is too long")
+        if "pattern" in spec and re.fullmatch(spec["pattern"], value) is None:
+            raise ValueError("Qwen response text has an invalid format")
+
+
+def parse_qwen_worker_judgement(text: str, *, prompt_kind: str) -> QwenVideoJudgement:
+    """Reject malformed worker output before it can become an abstention."""
+    schema = qwen_response_schema(prompt_kind)
+    if type(text) is not str or len(text.encode("utf-8")) > QWEN_RESPONSE_MAX_BYTES:
+        raise ValueError("Qwen response text is invalid or too large")
+    try:
+        payload = json.loads(
+            text,
+            object_pairs_hook=_unique_qwen_object,
+            parse_constant=_reject_qwen_json_constant,
+        )
+    except (json.JSONDecodeError, RecursionError):
+        raise ValueError("Qwen response is not strict JSON") from None
+    if type(payload) is not dict or set(payload) != set(schema["required"]):
+        raise ValueError("Qwen response fields do not match its prompt contract")
+    for key, spec in schema["properties"].items():
+        _validate_qwen_scalar(payload[key], spec)
+    event_start = payload.get("event_start")
+    event_end = payload.get("event_end")
+    if event_start is not None and event_end is not None and event_end <= event_start:
+        raise ValueError("Qwen response interval is invalid")
+    return QwenVideoJudgement(**payload)
 
 
 _THREE_POINT_QUERY = re.compile(
