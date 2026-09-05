@@ -15,6 +15,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Lock
 from time import sleep
+from types import TracebackType
 from typing import Any, Callable
 from uuid import uuid4
 from weakref import WeakValueDictionary
@@ -3534,6 +3535,23 @@ class RepositoryAssetRecord:
             raise AssetIdentityError("repository asset video link is corrupt")
 
 
+class _RepositoryConnection(sqlite3.Connection):
+    """Finish each transaction and release its SQLite resources in one scope."""
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> bool:
+        try:
+            return super().__exit__(exc_type, exc_value, traceback)
+        finally:
+            # sqlite3's context manager commits/rolls back but does not close;
+            # deferred WAL cleanup must not mutate storage during later work.
+            self.close()
+
+
 class Repository:
     _VIDEO_UPDATE_FIELDS = {
         "display_name",
@@ -3593,13 +3611,20 @@ class Repository:
                 self._read_only_uri,
                 timeout=30,
                 uri=True,
+                factory=_RepositoryConnection,
             )
         else:
-            connection = sqlite3.connect(self.database_path, timeout=30)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys = ON")
-        if self._read_only:
-            connection.execute("PRAGMA query_only = ON")
+            connection = sqlite3.connect(
+                self.database_path, timeout=30, factory=_RepositoryConnection
+            )
+        try:
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA foreign_keys = ON")
+            if self._read_only:
+                connection.execute("PRAGMA query_only = ON")
+        except BaseException:
+            connection.close()
+            raise
         return connection
 
     def initialize(self) -> None:
