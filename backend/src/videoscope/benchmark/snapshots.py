@@ -1452,8 +1452,7 @@ def materialize_fastembed_snapshot(
 ) -> FastEmbedSnapshot:
     if not isinstance(manifest, FastEmbedSnapshotManifest):
         raise ValueError("FastEmbed snapshot manifest must be validated")
-    acquired_source_path, source_fd = _acquire_directory(source_root)
-    source_path = _directory_logical_path(source_root, acquired_source_path)
+    source_path, source_fd = _acquire_directory(source_root)
     scratch_fd: int | None = None
     repository: _HuggingFaceRepository | None = None
     staging_name = f".fastembed-{uuid4().hex}.partial"
@@ -1466,6 +1465,17 @@ def materialize_fastembed_snapshot(
         scratch_path, scratch_fd = _ensure_private_scratch(scratch_root)
         _require_disjoint_roots(source_fd, scratch_fd)
         repository = _open_huggingface_repository(source_path, source_fd, manifest)
+        if repository is None:
+            logical_source_path = _directory_logical_path(source_root, source_path)
+            if logical_source_path != source_path:
+                logical_repository = _open_huggingface_repository(
+                    logical_source_path,
+                    source_fd,
+                    manifest,
+                )
+                if logical_repository is not None:
+                    source_path = logical_source_path
+                    repository = logical_repository
         source_before = _file_state(os.fstat(source_fd))
         os.mkdir(staging.name, mode=0o700, dir_fd=scratch_fd)
         staging.created = True
