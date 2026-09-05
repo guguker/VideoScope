@@ -100,6 +100,18 @@ class RegressionFixtureError(RuntimeError):
         super().__init__(f"regression fixture failed ({code})")
 
 
+def _regression_video_id(source_sha256: str) -> str:
+    # The complete digest fits both serving indexes' 64-character ID limit.
+    # Adding a prefix would exceed it; truncating would discard source identity.
+    if (
+        type(source_sha256) is not str
+        or len(source_sha256) != 64
+        or any(character not in "0123456789abcdef" for character in source_sha256)
+    ):
+        raise RegressionFixtureError("fixture_video_id_invalid")
+    return source_sha256
+
+
 @dataclass(frozen=True, slots=True)
 class LocalPreparedInput:
     asset_id: str
@@ -310,6 +322,8 @@ def prepare_regression_fixture(
     ):
         raise RegressionFixtureError("timeout_invalid")
     dataset = load_regression_fixture(Path(dataset_path))
+    for asset in dataset.assets:
+        _regression_video_id(asset.sha256)
     bindings = load_local_input_bindings(Path(bindings_path), dataset)
     resolved_data_root = _validate_unused_data_root(Path(data_root))
     resolved_models_root = _validate_models_root(Path(models_root), resolved_data_root)
@@ -777,6 +791,8 @@ def _prevalidate_batch_inputs(
 
     code_sha = code_identity()
     dataset = load_regression_fixture(Path(dataset_path))
+    for asset in dataset.assets:
+        _regression_video_id(asset.sha256)
     policy = load_frozen_metric_policy(Path(policy_path))
     validate_frozen_metric_policy_product_dataset(policy, dataset)
     worker_configuration = load_worker_launch_configuration(Path(worker_launch_path))
@@ -1112,6 +1128,7 @@ class ProductionRegressionDriver:
         from videoscope.repository import Repository
         from videoscope.runtime import build_runtime
 
+        video_ids = tuple(_regression_video_id(item.sha256) for item in assets)
         runtime: object | None = None
         results: list[ProvisionedAsset] = []
         primary_error: BaseException | None = None
@@ -1144,8 +1161,7 @@ class ProductionRegressionDriver:
                 wakeup=_QueueWakeup(runtime.queue),
             )
             jobs: list[tuple[StagedRegressionAsset, str, str]] = []
-            for item in assets:
-                video_id = f"reg_{item.sha256}"
+            for item, video_id in zip(assets, video_ids, strict=True):
                 job_id = f"regjob_{item.sha256}"
                 validate_upload(
                     f"{item.asset_id}.mp4",
