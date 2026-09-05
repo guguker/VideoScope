@@ -11,6 +11,7 @@ from ipaddress import ip_address
 import json
 import logging
 import math
+from numbers import Real
 import os
 from pathlib import Path, PurePosixPath
 import platform
@@ -1847,6 +1848,7 @@ class LocalVisionWorkerRuntime:
             detector = self._load_detector()
             with Image.open(source) as image:
                 rgb_image = image.convert("RGB")
+                image_width, image_height = rgb_image.size
             try:
                 detections = detector.predict(
                     rgb_image,
@@ -1859,12 +1861,36 @@ class LocalVisionWorkerRuntime:
             detections = detections[0] if detections else None
         if detections is None:
             return []
+        if len(detections) > MAX_DETECTIONS:
+            raise ValueError("RF-DETR returned too many detections")
         class_names = getattr(detections, "data", {}).get("class_name")
         output: list[dict[str, object]] = []
-        for index in range(min(len(detections), MAX_DETECTIONS + 1)):
+        for index in range(len(detections)):
             confidence = float(detections.confidence[index])
+            if not math.isfinite(confidence) or not 0 <= confidence <= 1:
+                raise ValueError("RF-DETR returned an invalid confidence")
             class_id = int(detections.class_id[index])
-            x1, y1, x2, y2 = map(float, detections.xyxy[index])
+            coordinates = detections.xyxy[index]
+            if len(coordinates) != 4 or any(
+                isinstance(value, bool) or not isinstance(value, Real)
+                for value in coordinates
+            ):
+                raise ValueError("RF-DETR returned a malformed box")
+            x1, y1, x2, y2 = map(float, coordinates)
+            if (
+                not all(math.isfinite(value) for value in (x1, y1, x2, y2))
+                or x1 > x2
+                or y1 > y2
+            ):
+                raise ValueError("RF-DETR returned an invalid box")
+            # RF-DETR predicts unbounded xyxy coordinates. Evidence describes only
+            # the visible intersection; the response contract still enforces bounds.
+            x1 = max(0.0, min(float(image_width), x1))
+            y1 = max(0.0, min(float(image_height), y1))
+            x2 = max(0.0, min(float(image_width), x2))
+            y2 = max(0.0, min(float(image_height), y2))
+            if x1 == x2 or y1 == y2:
+                continue
             label = class_names[index] if class_names is not None else None
             output.append(
                 {
