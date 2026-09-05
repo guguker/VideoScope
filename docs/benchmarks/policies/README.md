@@ -1,13 +1,13 @@
 # Frozen Phase-0 metric policy
 
 `phase0-regression-v1.json` is the machine-readable quality contract frozen
-before further ML work. It binds the current verifier regression fixture by its
-canonical SHA-256 revision and records the exact benchmark methodology, schema,
+before further ML work. It binds the product and verifier regression fixtures by
+their canonical SHA-256 revisions and records the exact benchmark methodology, schema,
 measurement-protocol, profile, and search-plan revisions against which a
 baseline may be described.
 
-The data status is intentionally fail-closed: all ten verifier cases are
-`regression_seen`, the product dataset is not frozen, and
+The data status is intentionally fail-closed: all ten verifier cases and the
+five product cases are frozen `regression_seen`, and
 `promotion_eligible` is `false`. This artifact is suitable for regression and
 Phase-0 completeness checks only. It is not a promotion policy and cannot turn
 the existing seen fixtures into holdout evidence. The separate benchmark
@@ -37,7 +37,8 @@ without accessing product or user data:
 PYTHONPATH=backend/src .venv/bin/python \
   -m videoscope.benchmark.metric_policy validate \
   --policy docs/benchmarks/policies/phase0-regression-v1.json \
-  --verifier-dataset docs/benchmarks/video-verifier/seed-v1.json
+  --verifier-dataset docs/benchmarks/video-verifier/seed-v1.json \
+  --product-dataset docs/benchmarks/product-retrieval/seed-v1.json
 ```
 
 Success writes one compact JSON object containing only status, policy id,
