@@ -831,9 +831,22 @@ class QwenVideoReranker:
         end = min(duration, start + target)
         return start, end
 
+    def refinement_bounds(
+        self, query: str, candidate: FusedResult,
+    ) -> tuple[float, float] | None:
+        """Expose the reviewed storyboard context before generating a judgement."""
+        native_video = (
+            _required_sports_event_type(query) is not None
+            and bool(_candidate_sports_event_types(candidate))
+        )
+        return None if native_video else self._clip_interval(candidate)
+
     @staticmethod
     def _candidate_id(candidate: FusedResult) -> str:
-        return f"{candidate.video_id}:{candidate.start:.3f}:{candidate.end:.3f}"
+        return (
+            f"{candidate.video_id}:{float(candidate.start).hex()}:"
+            f"{float(candidate.end).hex()}"
+        )
 
     def _prompt_version(self, query: str, native_video: bool) -> str:
         fps_suffix = f"-fps{self.video_fps:g}"

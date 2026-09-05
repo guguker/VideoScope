@@ -136,3 +136,15 @@ The worker and runner were cleaned up. This run was diagnostic while independent
 agent code review continued; its latency is not an exclusive-host measurement.
 These controls do not complete Phase 0: the corrected five-profile batch and the
 resource gate must still pass together at a committed clean revision.
+
+The candidate correction uses detached inputs and per-call proposal tokens.
+Validation checks one-to-one membership, source video, exact source evidence
+types/content and preservation of modality tags. Qwen refinement is checked
+against its pre-call source context and corroborating evidence independently of
+proposal identity. Tokens are removed before returning results; stable evidence
+IDs encode the exact original float intervals. In-place provider failures retain
+the original fused candidates and untouched tail. The change passed 146 focused
+tests, including 35 independent adversarial controls, then all 2,441 backend tests
+with the same two deprecation warnings. A read-only audit also found all 56
+retained result intervals from the four prior profiles inside their source
+durations; it did not infer missing Qwen outputs.

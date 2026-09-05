@@ -37,6 +37,7 @@ class FusedResult:
     score: float
     modalities: list[str]
     evidence: list[EvidenceHit]
+    _rerank_token: object | None = field(default=None, repr=False, compare=False)
 
 
 def _is_valid_hit(hit: EvidenceHit) -> bool:

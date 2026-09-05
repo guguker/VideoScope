@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass, replace
+from copy import deepcopy
+from dataclasses import dataclass, fields, replace
 from hashlib import sha256
 import json
 import logging
@@ -28,13 +29,169 @@ from videoscope.repository import (
     Repository,
     SegmentRecord,
 )
-from videoscope.search.fusion import EvidenceHit, calibrate_hits, fuse_hits
+from videoscope.search.fusion import EvidenceHit, FusedResult, calibrate_hits, fuse_hits
 from videoscope.search.query_router import QueryPlan, QueryRouter
 from videoscope.search.text_matching import SearchLexicon, lexical_match, normalize_text
 from videoscope.search.text_matching import tokens as text_tokens
 
 
 logger = logging.getLogger(__name__)
+
+@dataclass(frozen=True, slots=True)
+class _RerankBinding:
+    original: FusedResult
+    source_duration: float | None
+    refinement_bounds: tuple[float, float] | None
+    qwen_segment_id: str | None
+    qwen_metadata: Mapping[str, object] | None
+
+
+def _finite_rerank_number(value: object) -> bool:
+    return (
+        isinstance(value, Real) and not isinstance(value, bool)
+        and math.isfinite(value)
+    )
+
+
+def _same_rerank_value(left: object, right: object) -> bool:
+    """Preserve source types as well as values: True must not replace 1."""
+    if type(left) is not type(right):
+        return False
+    if isinstance(left, EvidenceHit):
+        return all(
+            _same_rerank_value(getattr(left, item.name), getattr(right, item.name))
+            for item in fields(EvidenceHit)
+        )
+    if isinstance(left, dict):
+        return len(left) == len(right) and all(
+            key in right
+            and any(type(key) is type(other) and key == other for other in right)
+            and _same_rerank_value(value, right[key])
+            for key, value in left.items()
+        )
+    if isinstance(left, (list, tuple)):
+        return len(left) == len(right) and all(
+            _same_rerank_value(first, second) for first, second in zip(left, right)
+        )
+    return left == right
+
+
+def _bind_rerank_candidates(
+    candidates: list[FusedResult],
+    *,
+    reranker: object,
+    query: str,
+    source_durations: Mapping[str, float | None],
+) -> tuple[list[FusedResult], dict[object, _RerankBinding]]:
+    from videoscope.providers.qwen_video import QwenVideoReranker
+
+    inputs: list[FusedResult] = []
+    bindings: dict[object, _RerankBinding] = {}
+    for candidate in candidates:
+        original = deepcopy(candidate)
+        duration = source_durations.get(original.video_id)
+        if not _finite_rerank_number(duration) or duration <= 0:
+            duration = None
+        bounds = None
+        segment_id = None
+        metadata = None
+        # Refinement is a production Qwen capability, not a generic plugin claim.
+        if isinstance(reranker, QwenVideoReranker) and duration is not None:
+            bounds = reranker.refinement_bounds(query, deepcopy(original))
+            if bounds is not None:
+                if (
+                    not isinstance(bounds, tuple) or len(bounds) != 2
+                    or not all(_finite_rerank_number(value) for value in bounds)
+                    or not 0 <= bounds[0] < bounds[1] <= duration
+                ):
+                    raise ValueError("candidate refinement context is invalid")
+                segment_id = f"qwen-video:{reranker._candidate_id(original)}"
+                metadata = {
+                    "source": "qwen-video-verifier",
+                    "model": reranker.model_identity,
+                    "prompt_version": reranker._prompt_version(query, False),
+                    "matches_query": True,
+                    "clip_start": bounds[0],
+                    "clip_end": bounds[1],
+                }
+        token = object()
+        bindings[token] = _RerankBinding(
+            original, duration, bounds, segment_id, metadata,
+        )
+        inputs.append(replace(deepcopy(original), _rerank_token=token))
+    return inputs, bindings
+
+
+def _validate_reranked_candidates(
+    candidates: object, bindings: Mapping[object, _RerankBinding],
+) -> list[FusedResult]:
+    if not isinstance(candidates, list) or len(candidates) != len(bindings):
+        raise ValueError("candidate reranker changed the pinned candidate set")
+    seen: set[object] = set()
+    validated: list[FusedResult] = []
+    for candidate in candidates:
+        if not isinstance(candidate, FusedResult):
+            raise ValueError("candidate reranker returned an invalid candidate")
+        token = candidate._rerank_token
+        if token not in bindings or token in seen:
+            raise ValueError("candidate reranker changed the pinned candidate set")
+        seen.add(token)
+        binding = bindings[token]
+        original = binding.original
+        if (
+            candidate.video_id != original.video_id
+            or not all(_finite_rerank_number(value) for value in (
+                candidate.start, candidate.end, candidate.score,
+            ))
+            or not 0 <= candidate.start < candidate.end
+            or (
+                binding.source_duration is not None
+                and candidate.end > binding.source_duration
+            )
+            or not isinstance(candidate.evidence, list)
+            or not isinstance(candidate.modalities, list)
+            or not all(type(tag) is str and tag for tag in candidate.modalities)
+            or not set(original.modalities).issubset(candidate.modalities)
+            or any(
+                not isinstance(hit, EvidenceHit) or hit.video_id != original.video_id
+                for hit in candidate.evidence
+            )
+        ):
+            raise ValueError("candidate reranker changed source or returned invalid bounds")
+        remaining = list(candidate.evidence)
+        for source_evidence in original.evidence:
+            matching = next((
+                index for index, hit in enumerate(remaining)
+                if _same_rerank_value(source_evidence, hit)
+            ), None)
+            if matching is None:
+                raise ValueError("candidate reranker changed original evidence")
+            remaining.pop(matching)
+        if (candidate.start, candidate.end) != (original.start, original.end):
+            bounds = binding.refinement_bounds
+            if (
+                bounds is None
+                or not bounds[0] <= candidate.start < candidate.end <= bounds[1]
+                or not any(
+                    isinstance(hit, EvidenceHit)
+                    and hit.video_id == original.video_id
+                    and hit.segment_id == binding.qwen_segment_id
+                    and hit.modality == "qwen_video"
+                    and (hit.start, hit.end) == (candidate.start, candidate.end)
+                    and binding.qwen_metadata is not None
+                    and all(
+                        _same_rerank_value(hit.metadata.get(key), value)
+                        for key, value in binding.qwen_metadata.items()
+                    )
+                    and hit.metadata.get("matches_query") is True
+                    for hit in remaining
+                )
+            ):
+                raise ValueError("candidate refinement is outside its reviewed evidence")
+        # Per-call provenance never escapes into views, caches or receipts.
+        validated.append(replace(candidate, _rerank_token=None))
+    return validated
+
 
 _TRUSTED_ENTITY_MATCHES = {"exact", "stem", "transliteration"}
 _EVALUATION_MODALITIES = frozenset(
@@ -1596,26 +1753,17 @@ class SearchService:
                 )
                 selected_candidates = fused[:candidate_limit]
                 untouched_tail = fused[candidate_limit:]
+                rerank_inputs, candidate_bindings = _bind_rerank_candidates(
+                    selected_candidates,
+                    reranker=selected_reranker,
+                    query=normalized_query,
+                    source_durations={key: video.duration for key, video in videos.items()},
+                )
                 reranked = rerank(  # type: ignore[arg-type]
                     normalized_query,
-                    selected_candidates,
+                    rerank_inputs,
                 )
-                if not isinstance(reranked, list):
-                    raise ValueError("candidate reranker returned an invalid collection")
-                expected_keys = {
-                    (item.video_id, item.start, item.end)
-                    for item in selected_candidates
-                }
-                actual_keys = {
-                    (item.video_id, item.start, item.end)
-                    for item in reranked
-                }
-                if (
-                    len(reranked) != len(selected_candidates)
-                    or len(actual_keys) != len(reranked)
-                    or actual_keys != expected_keys
-                ):
-                    raise ValueError("candidate reranker changed the pinned candidate set")
+                reranked = _validate_reranked_candidates(reranked, candidate_bindings)
                 if (
                     _execution_recorder is not None
                     and _evaluation_configuration is not None
