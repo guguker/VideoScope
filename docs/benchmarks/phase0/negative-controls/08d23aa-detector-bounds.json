@@ -1,0 +1,98 @@
+{
+  "checkpoint_sha256": "d81979a9213a2109345158ce9232668df4c1ae52e9b8db3f2ec0a8cbad959b33",
+  "code_sha": "08d23aa95a09410eb8d6d1c05a07fe507e9f756c",
+  "detector_release": "confirmed",
+  "diagnostic_only": true,
+  "elapsed_seconds": 10.231864624889567,
+  "launcher_sha256": "b828b9b4185bc57ef39b6449d0135419046a0fbb173ac6cc695cdbfa2a7de65a",
+  "requests": [
+    {
+      "asset_id": "panel-light-top-gesture-negative",
+      "detection_count": 6,
+      "dimensions": [
+        960,
+        540
+      ],
+      "elapsed_seconds": 6.59529162500985,
+      "frame": "scene-0000.jpg",
+      "http_status": 200,
+      "source_sha256": "5ade8ba32b051677a78f55071f7edc9f6edb7c6386a0b5ef414a55c86a5fb14a",
+      "source_size_bytes": 34772
+    },
+    {
+      "asset_id": "panel-light-top-gesture-negative",
+      "detail": "Vision worker detection failed",
+      "elapsed_seconds": 0.04609937500208616,
+      "frame": "scene-0001.jpg",
+      "http_status": 503,
+      "source_sha256": "139c12d4424e1a17d91bf0adb2b591f18dfb1f9aa872cf35a7faf279d92f1f06",
+      "source_size_bytes": 44740
+    },
+    {
+      "asset_id": "panel-light-top-gesture-negative",
+      "detection_count": 18,
+      "dimensions": [
+        960,
+        540
+      ],
+      "elapsed_seconds": 0.043917167000472546,
+      "frame": "scene-0002.jpg",
+      "http_status": 200,
+      "source_sha256": "53b1ba22f4ef398f44d3ca475fcb1d8b1e44141dbdbceb73bfc1b1c570d8d2ba",
+      "source_size_bytes": 56982
+    },
+    {
+      "asset_id": "panel-light-top-gesture-positive",
+      "detection_count": 7,
+      "dimensions": [
+        960,
+        540
+      ],
+      "elapsed_seconds": 0.043530791997909546,
+      "frame": "scene-0000.jpg",
+      "http_status": 200,
+      "source_sha256": "da05c8fd3cdd662dfe7283a71579040ff44abe018adfcdfca833081b4e22a828",
+      "source_size_bytes": 33979
+    }
+  ],
+  "runtime_identity": "videoscope-vision-worker-v1|python==3.12.13|platform==aarch64-apple-darwin|macos-major>=14|siglip-backend==mps|siglip-dtype==float32|rfdetr-backend==mps|rfdetr-dtype==float32|mps-residency==exclusive-vision-backbone-v1|detector-release==stage-bound-v1|lock-sha256:261be2a4694b09e0b0e4a9b1919feb05a6d5fa334f46bfb2b7d261cb5e3487c6",
+  "schema_version": 1,
+  "specification_hash": "77ca86969b84a8bd52aecd84d3588cde70d09bd48216d613a3339b81144b6b00",
+  "startup_seconds": 3.173526833066717,
+  "status": "observed",
+  "worker_cleanup": "complete",
+  "worker_exit_code": -15,
+  "worker_log_sha256": "5ddb10e49dabcbbbd170b94d3d7bae58c1b8de6a406c9684c95e8302fb6a76e8",
+  "private_diagnostic_receipt_sha256": "073a2e1c525948066bc2ee556087f21e4d46ca7d908875f16b3e64a790faeecb",
+  "evidence_kind": "infrastructure_diagnostic",
+  "model_quality_scored": false,
+  "confirmed_contract_failure": {
+    "code": "detection_box_outside_source_image",
+    "source_dimensions": [
+      960,
+      540
+    ],
+    "examples": [
+      {
+        "class": "tv",
+        "confidence": 0.44864893,
+        "xyxy": [
+          1.99241638,
+          -0.257652998,
+          824.65563965,
+          282.80807495
+        ]
+      },
+      {
+        "class": "dining table",
+        "confidence": 0.41187832,
+        "xyxy": [
+          2.25379944,
+          485.20278931,
+          962.16271973,
+          539.33087158
+        ]
+      }
+    ]
+  }
+}

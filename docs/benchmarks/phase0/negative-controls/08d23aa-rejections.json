@@ -1,0 +1,165 @@
+{
+  "classification": {
+    "category": "resource_gate",
+    "code": "full_ml_smoke_invalid",
+    "kind": "infrastructure",
+    "model_attribution": "not_established",
+    "model_miss": false,
+    "observed_violation": "nonzero_system_swapins"
+  },
+  "code_sha": "08d23aa95a09410eb8d6d1c05a07fe507e9f756c",
+  "decision": "Neither receipt satisfies the Phase 0 resource gate. Retain both exact originals as negative evidence; Phase 0 remains open.",
+  "evidence_kind": "negative_control",
+  "guardrail": "No acceptance rule or threshold changed. Swapins, swapouts and Metal recovery must each have zero measured delta.",
+  "integrity_checks": {
+    "bounded_portable_field_and_string_review": "passed",
+    "complete_component_and_profile_contracts": "passed",
+    "raw_host_samples_and_aggregates": "passed",
+    "source_bytes_preserved": "exact",
+    "strict_json_without_duplicates_or_nonfinite_values": "passed",
+    "unchanged_acceptance_validator": "rejected_both_at_nonzero_pressure_gate"
+  },
+  "interpretation_limits": [
+    "Receipt status ready records completed functional coverage; it does not mean the resource acceptance gate passed.",
+    "First means the first recorded smoke in this proof environment. Host and operating-system caches were not proven cold.",
+    "The repeat is a separate invocation in the same proof environment; it is not a controlled host-cold comparison.",
+    "System-wide swapins do not identify the process or model responsible. Neither run establishes attribution to Qwen or another model.",
+    "Metal measurements are system-wide and must not be added to process-tree RSS."
+  ],
+  "runs": [
+    {
+      "acceptance_status": "rejected",
+      "byte_size": 331577,
+      "code_sha_after": "08d23aa95a09410eb8d6d1c05a07fe507e9f756c",
+      "code_sha_before": "08d23aa95a09410eb8d6d1c05a07fe507e9f756c",
+      "component_steps_complete": 8,
+      "execution_order": "first_recorded_smoke_in_proof16_environment",
+      "file": "08d23aa-first-smoke.json",
+      "host_cold_start": "not_established",
+      "host_measurements": {
+        "elapsed_nanoseconds": 293003212458,
+        "metal": {
+          "alloc_system_memory": {
+            "baseline_bytes": 2718695424,
+            "increment_bytes": 11580833792,
+            "peak_bytes": 14299529216
+          },
+          "in_use_system_memory": {
+            "baseline_bytes": 1215184896,
+            "increment_bytes": 10024992768,
+            "peak_bytes": 11240177664
+          },
+          "recovery_delta": 0
+        },
+        "sample_count": 1137,
+        "sample_interval_milliseconds": 250
+      },
+      "oom": {
+        "status": "not_observed"
+      },
+      "process_tree_rss": {
+        "baseline_bytes": 176603136,
+        "external_loopback_workers_included": true,
+        "increment_bytes": 8686469120,
+        "managed_worker_roles": [
+          "vision",
+          "whisper",
+          "lighthouse",
+          "qwen"
+        ],
+        "sample_count": 5029,
+        "sampling_interval_ms": 50,
+        "scope": "smoke_process_and_descendants",
+        "status": "measured",
+        "value": 8863072256
+      },
+      "product_integration_status": "complete",
+      "profiles": {
+        "dense_siglip": "complete",
+        "internvideo": "not_configured",
+        "lexical_qdrant": "complete",
+        "lighthouse": "complete",
+        "qwen_verification": "complete",
+        "temporal_refinement": "complete"
+      },
+      "receipt_status": "ready",
+      "sha256": "b1cc1037dd41b273e46b5ed51999e16c99ebc860420e56022ccf79a9b3632f3d",
+      "system_wide_pressure_deltas": {
+        "metal_recovery_count": 0,
+        "swapins_bytes": 17891328,
+        "swapins_pages": 1092,
+        "swapouts_bytes": 0,
+        "swapouts_pages": 0
+      },
+      "workspace_cleanup": "complete"
+    },
+    {
+      "acceptance_status": "rejected",
+      "byte_size": 121056,
+      "code_sha_after": "08d23aa95a09410eb8d6d1c05a07fe507e9f756c",
+      "code_sha_before": "08d23aa95a09410eb8d6d1c05a07fe507e9f756c",
+      "component_steps_complete": 8,
+      "execution_order": "repeat_in_same_proof16_environment",
+      "file": "08d23aa-repeat-smoke.json",
+      "host_cold_start": "not_established",
+      "host_measurements": {
+        "elapsed_nanoseconds": 103917521833,
+        "metal": {
+          "alloc_system_memory": {
+            "baseline_bytes": 2719793152,
+            "increment_bytes": 11576852480,
+            "peak_bytes": 14296645632
+          },
+          "in_use_system_memory": {
+            "baseline_bytes": 1274281984,
+            "increment_bytes": 9963520000,
+            "peak_bytes": 11237801984
+          },
+          "recovery_delta": 0
+        },
+        "sample_count": 399,
+        "sample_interval_milliseconds": 250
+      },
+      "oom": {
+        "status": "not_observed"
+      },
+      "process_tree_rss": {
+        "baseline_bytes": 176750592,
+        "external_loopback_workers_included": true,
+        "increment_bytes": 10522656768,
+        "managed_worker_roles": [
+          "vision",
+          "whisper",
+          "lighthouse",
+          "qwen"
+        ],
+        "sample_count": 1745,
+        "sampling_interval_ms": 50,
+        "scope": "smoke_process_and_descendants",
+        "status": "measured",
+        "value": 10699407360
+      },
+      "product_integration_status": "complete",
+      "profiles": {
+        "dense_siglip": "complete",
+        "internvideo": "not_configured",
+        "lexical_qdrant": "complete",
+        "lighthouse": "complete",
+        "qwen_verification": "complete",
+        "temporal_refinement": "complete"
+      },
+      "receipt_status": "ready",
+      "sha256": "2eafbbc7ea63dad18918dc919f11cd03330e83eb8dd479885e065d50d26fe2e9",
+      "system_wide_pressure_deltas": {
+        "metal_recovery_count": 0,
+        "swapins_bytes": 2424832,
+        "swapins_pages": 148,
+        "swapouts_bytes": 0,
+        "swapouts_pages": 0
+      },
+      "workspace_cleanup": "complete"
+    }
+  ],
+  "schema_version": 1,
+  "status": "rejected"
+}
