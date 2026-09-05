@@ -750,7 +750,7 @@ def test_current_fact_prompt_reuses_and_promotes_legacy_v2_cache(
     current_key = reranker._cache_key(
         video_id=item.video_id,
         interval=interval,
-        prompt_version="made-basket-facts-v3-fps2",
+        prompt_version=f"{qwen_video_module.MADE_BASKET_PROMPT_VERSION}-fps2",
     )
     current_path = reranker._cache_path(current_key)
     assert current_path.is_file()

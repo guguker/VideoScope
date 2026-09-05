@@ -35,6 +35,21 @@ TOKEN = "q" * 32
 MODEL_IDENTITY = "organization/qwen@" + "a" * 40
 
 
+def _generated_response(prompt_kind: str = "generic_query") -> str:
+    if prompt_kind == "basketball_facts":
+        return json.dumps({
+            "shot_attempt": True, "ball_through_hoop": True,
+            "shooter_outside_arc": None, "three_point_signal": None,
+            "shooter_jersey": None, "evidence": "The ball passes through the rim.",
+        })
+    return json.dumps({
+        "matches_query": True, "confidence": 0.9,
+        "event_start": None, "event_end": None, "shot_attempt": None,
+        "made": None, "three_point": None, "shooter_jersey": None,
+        "evidence": "The requested action is visible.",
+    })
+
+
 def _canonical_sha256(payload: object) -> str:
     return sha256(
         json.dumps(
@@ -1168,7 +1183,20 @@ def test_mlx_runtime_stays_lazy_and_preserves_all_prompt_input_paths(
             _rope_deltas=None,
         ),
     )
-    fake_processor = object()
+    fake_processor = SimpleNamespace(tokenizer=object())
+    grammars: list[object] = []
+
+    def build_grammar(tokenizer, schema):  # type: ignore[no-untyped-def]
+        assert tokenizer is fake_processor.tokenizer
+        calls.append(("grammar", schema))
+        grammar = object()
+        grammars.append(grammar)
+        return grammar
+
+    monkeypatch.setitem(
+        sys.modules, "mlx_vlm.structured",
+        SimpleNamespace(build_json_schema_logits_processor=build_grammar),
+    )
 
     def load(reference: str):  # type: ignore[no-untyped-def]
         calls.append(("load", reference))
@@ -1182,10 +1210,10 @@ def test_mlx_runtime_stays_lazy_and_preserves_all_prompt_input_paths(
         calls.append(("generate", kwargs))
         if "video" in kwargs and "User query" not in args[2]:
             return SimpleNamespace(
-                text='{"shot_attempt":true,"ball_through_hoop":true}'
+                text=_generated_response("basketball_facts"), finish_reason="stop",
             )
         return SimpleNamespace(
-            text='{"matches_query":true,"confidence":0.9}'
+            text=_generated_response(), finish_reason="stop",
         )
 
     monkeypatch.setattr(
@@ -1259,6 +1287,18 @@ def test_mlx_runtime_stays_lazy_and_preserves_all_prompt_input_paths(
         if name == "template" and "prompts" in payload
     ]
     assert any("visible dunk" in prompt for prompt in template_prompts)
+    assert len(grammars) == 3
+    assert len({id(grammar) for grammar in grammars}) == 3
+    for index, payload in enumerate(item for name, item in calls if name == "generate"):
+        assert payload["logits_processors"] == [grammars[index]]
+        assert payload["max_tokens"] == 320
+        assert payload["temperature"] == 0.0
+        assert payload["enable_thinking"] is False
+    schemas = [payload for name, payload in calls if name == "grammar"]
+    assert "ball_through_hoop" in schemas[0]["required"]
+    assert "matches_query" not in schemas[0]["required"]
+    assert "matches_query" in schemas[1]["required"]
+    assert schemas[1] == schemas[2]
 
 
 def _mlx_request_lifecycle_runtime(
@@ -1267,6 +1307,9 @@ def _mlx_request_lifecycle_runtime(
     *,
     generate_error: Exception | None = None,
     clear_cache_error: Exception | None = None,
+    finish_reason: str | None = "stop",
+    generation_text: object = None,
+    grammar_error: Exception | None = None,
 ) -> tuple[MLXQwenWorkerRuntime, object, list[str], list[object]]:
     snapshot = tmp_path / "model"
     snapshot.mkdir()
@@ -1279,7 +1322,9 @@ def _mlx_request_lifecycle_runtime(
         pass
 
     class GenerationResult:
-        text = '{"matches_query":true,"confidence":0.9}'
+        text = generation_text if generation_text is not None else _generated_response()
+
+    GenerationResult.finish_reason = finish_reason
 
     language_model = SimpleNamespace(
         _position_ids=None,
@@ -1290,6 +1335,18 @@ def _mlx_request_lifecycle_runtime(
         language_model=language_model,
     )
     processor = object()
+
+    def build_grammar(_tokenizer, _schema):  # type: ignore[no-untyped-def]
+        grammar = RequestState()
+        request_references.append(ref(grammar))
+        if grammar_error is not None:
+            raise grammar_error
+        return grammar
+
+    monkeypatch.setitem(
+        sys.modules, "mlx_vlm.structured",
+        SimpleNamespace(build_json_schema_logits_processor=build_grammar),
+    )
 
     def load(_reference: str):  # type: ignore[no-untyped-def]
         events.append("load")
@@ -1319,7 +1376,8 @@ def _mlx_request_lifecycle_runtime(
     def clear_cache() -> None:
         assert language_model._position_ids is None
         assert language_model._rope_deltas is None
-        assert request_references
+        if "generate" in events:
+            assert request_references
         assert all(reference() is None for reference in request_references)
         events.append("clear_cache")
         if clear_cache_error is not None:
@@ -1351,6 +1409,73 @@ def _mlx_request_lifecycle_runtime(
         lambda: events.append("gc"),
     )
     return MLXQwenWorkerRuntime(str(snapshot), None), model, events, request_references
+
+
+@pytest.mark.parametrize("finish_reason", ["length", None, "unknown"])
+def test_mlx_runtime_rejects_unfinished_generation_after_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, finish_reason: str | None,
+) -> None:
+    runtime, _model, events, _references = _mlx_request_lifecycle_runtime(
+        tmp_path, monkeypatch, finish_reason=finish_reason,
+    )
+    video = tmp_path / "candidate.mp4"
+    video.write_bytes(b"video")
+
+    with pytest.raises(RuntimeError, match="completion"):
+        runtime.judge(QwenJudgeRequest.model_validate(_request(tmp_path)), video)
+
+    assert events == ["load", "generate", "synchronize", "gc", "clear_cache"]
+    assert runtime.available is True
+
+
+def test_mlx_runtime_rejects_invalid_typed_json_after_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime, _model, events, _references = _mlx_request_lifecycle_runtime(
+        tmp_path, monkeypatch, generation_text="{}",
+    )
+    video = tmp_path / "candidate.mp4"
+    video.write_bytes(b"video")
+
+    with pytest.raises(ValueError):
+        runtime.judge(QwenJudgeRequest.model_validate(_request(tmp_path)), video)
+
+    assert events == ["load", "generate", "synchronize", "gc", "clear_cache"]
+    assert runtime.available is True
+
+
+@pytest.mark.parametrize("unavailable_package", [False, True])
+def test_mlx_runtime_preserves_cleanup_when_structured_decoder_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, unavailable_package: bool,
+) -> None:
+    runtime, _model, events, _references = _mlx_request_lifecycle_runtime(
+        tmp_path, monkeypatch, grammar_error=RuntimeError("grammar unavailable"),
+    )
+    if unavailable_package:
+        monkeypatch.setitem(sys.modules, "mlx_vlm.structured", None)
+    video = tmp_path / "candidate.mp4"
+    video.write_bytes(b"video")
+
+    with pytest.raises((RuntimeError, ModuleNotFoundError)):
+        runtime.judge(QwenJudgeRequest.model_validate(_request(tmp_path)), video)
+
+    assert events == ["load", "synchronize", "gc", "clear_cache"]
+    assert runtime.available is True
+
+
+def test_mlx_runtime_does_not_coerce_non_text_generation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime, _model, events, _references = _mlx_request_lifecycle_runtime(
+        tmp_path, monkeypatch, generation_text=17,
+    )
+    video = tmp_path / "candidate.mp4"
+    video.write_bytes(b"video")
+
+    with pytest.raises(ValueError, match="invalid text"):
+        runtime.judge(QwenJudgeRequest.model_validate(_request(tmp_path)), video)
+
+    assert events == ["load", "generate", "synchronize", "gc", "clear_cache"]
 
 
 def test_mlx_runtime_clears_request_memory_without_reloading_weights(

@@ -46,7 +46,8 @@ from videoscope.providers.qwen_video import (
     QwenInferenceStatus,
     QwenVideoJudgement,
     QwenVideoReranker,
-    parse_qwen_judgement,
+    parse_qwen_worker_judgement,
+    qwen_response_schema,
 )
 
 
@@ -1905,11 +1906,23 @@ class MLXQwenWorkerRuntime:
         mlx = self._mlx_runtime_module()
         language_model = self._request_state_owner(model)
         result: object | None = None
+        logits_processors: list[Any] | None = None
         text: str | None = None
         with self._inference_lock:
             if not self._healthy:
                 raise RuntimeError("Qwen worker runtime is unavailable")
             try:
+                from mlx_vlm.structured import build_json_schema_logits_processor
+
+                tokenizer = (
+                    processor.tokenizer
+                    if hasattr(processor, "tokenizer") else processor
+                )
+                logits_processors = [
+                    build_json_schema_logits_processor(
+                        tokenizer, qwen_response_schema(request.prompt_kind)
+                    )
+                ]
                 result = generate(
                     model,
                     processor,
@@ -1918,11 +1931,17 @@ class MLXQwenWorkerRuntime:
                     max_tokens=request.max_tokens,
                     temperature=0.0,
                     enable_thinking=False,
+                    logits_processors=logits_processors,
                     verbose=False,
                 )
-                text = str(result.text)
+                if getattr(result, "finish_reason", None) != "stop":
+                    raise RuntimeError("Qwen generation completion was not confirmed")
+                if type(result.text) is not str:
+                    raise ValueError("Qwen generation returned invalid text")
+                text = result.text
             except BaseException as primary_error:
                 result = None
+                logits_processors = None
                 traceback.clear_frames(primary_error.__traceback__)
                 self._release_mlx_after_request(
                     language_model=language_model,
@@ -1932,6 +1951,7 @@ class MLXQwenWorkerRuntime:
                 raise
             else:
                 result = None
+                logits_processors = None
                 self._release_mlx_after_request(
                     language_model=language_model,
                     mlx=mlx,
@@ -1994,7 +2014,7 @@ class MLXQwenWorkerRuntime:
             if request.input_kind == "video"
             else self._generate_storyboard(source, request)
         )
-        return parse_qwen_judgement(text)
+        return parse_qwen_worker_judgement(text, prompt_kind=request.prompt_kind)
 
 
 class QwenWorkerSettings(BaseSettings):
