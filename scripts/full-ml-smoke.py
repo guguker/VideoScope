@@ -1207,6 +1207,7 @@ def _worker_environments(
             "VIDEOSCOPE_VISION_WORKER_API_KEY": tokens["vision"],
             "VIDEOSCOPE_VISION_WORKER_HOST": "127.0.0.1",
             "VIDEOSCOPE_VISION_WORKER_INPUT_ROOT": str(root),
+            "VIDEOSCOPE_VISION_WORKER_PRODUCT_DATA_SUBDIRECTORY": "product",
             "VIDEOSCOPE_VISION_WORKER_PORT": str(ports["vision"]),
             "VIDEOSCOPE_VISION_WORKER_RFDETR_CHECKPOINT": str(
                 models_root / "rfdetr" / "rf-detr-small.pth"

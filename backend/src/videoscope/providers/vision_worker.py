@@ -102,6 +102,7 @@ _RFDETR_CLASSES = {
 }
 _SIGLIP_IMAGE_INFERENCE_BATCH_SIZE = 8
 _SIGLIP_TEXT_INFERENCE_BATCH_SIZE = 32
+_DERIVED_INPUT_SUBDIRECTORIES = ("visual-index", "thumbnails", "tmp")
 _RFDETR_CONSTRUCTION_LOCK = Lock()
 
 
@@ -689,7 +690,16 @@ def _validated_allowed_subdirectories(
         raise ValueError("Vision worker input subdirectory allowlist is invalid")
     normalized = frozenset(values)
     if len(normalized) != len(values) or any(
-        _SAFE_SUBDIRECTORY_RE.fullmatch(value) is None or value in {".", ".."}
+        type(value) is not str
+        or len(value) > 256
+        or PurePosixPath(value).is_absolute()
+        or PurePosixPath(value).as_posix() != value
+        or not 1 <= len(PurePosixPath(value).parts) <= 4
+        or any(
+            _SAFE_SUBDIRECTORY_RE.fullmatch(part) is None
+            or part in {".", ".."}
+            for part in PurePosixPath(value).parts
+        )
         for value in values
     ):
         raise ValueError("Vision worker input subdirectory allowlist is invalid")
@@ -724,7 +734,12 @@ def _input_subdirectory_is_allowed(
         return True
     first = PurePosixPath(relative_path).parts[0]
     return (
-        allowed_subdirectories is not None and first in allowed_subdirectories
+        allowed_subdirectories is not None
+        and any(
+            relative_path == allowed
+            or relative_path.startswith(f"{allowed}/")
+            for allowed in allowed_subdirectories
+        )
     ) or any(first.startswith(prefix) for prefix in allowed_prefixes)
 
 
@@ -1788,6 +1803,13 @@ class VisionWorkerSettings(BaseSettings):
         default=Path("data"),
         validation_alias="VIDEOSCOPE_VISION_WORKER_INPUT_ROOT",
     )
+    product_data_subdirectory: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9._-]+$",
+        validation_alias="VIDEOSCOPE_VISION_WORKER_PRODUCT_DATA_SUBDIRECTORY",
+    )
     siglip_model: str = Field(
         default=SIGLIP_224_MODEL,
         validation_alias="VIDEOSCOPE_SIGLIP_MODEL",
@@ -1842,6 +1864,21 @@ class VisionWorkerSettings(BaseSettings):
             raise ValueError("SigLIP model is not a reviewed local profile")
         return value
 
+    @field_validator("product_data_subdirectory")
+    @classmethod
+    def validate_product_data_subdirectory(cls, value: str | None) -> str | None:
+        if value in {".", ".."}:
+            raise ValueError("Product data subdirectory is invalid")
+        return value
+
+    def allowed_input_subdirectories(self) -> tuple[str, ...]:
+        if self.product_data_subdirectory is None:
+            return _DERIVED_INPUT_SUBDIRECTORIES
+        return tuple(
+            f"{self.product_data_subdirectory}/{name}"
+            for name in _DERIVED_INPUT_SUBDIRECTORIES
+        )
+
     def specification(self) -> VisionWorkerSpecification:
         revision = MODEL_REVISIONS[self.siglip_model]
         dimensions, logit_scale, logit_bias = REVIEWED_SIGLIP_PROFILES[
@@ -1869,7 +1906,7 @@ def main() -> None:
         runtime=runtime,
         input_root=settings.input_root,
         api_key=settings.api_key,
-        allowed_input_subdirectories=("visual-index", "thumbnails", "tmp"),
+        allowed_input_subdirectories=settings.allowed_input_subdirectories(),
         allowed_input_subdirectory_prefixes=("benchmark-environment-",),
         max_concurrency=settings.max_concurrency,
     )

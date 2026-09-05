@@ -545,6 +545,74 @@ def test_worker_enforces_explicit_top_level_input_allowlist(tmp_path: Path) -> N
     assert accepted.status_code == 200
 
 
+def test_worker_enforces_nested_input_allowlist_without_exposing_product_media(
+    tmp_path: Path,
+) -> None:
+    runtime = FakeVisionRuntime()
+    allowed_dir = tmp_path / "product" / "tmp"
+    media_dir = tmp_path / "product" / "media"
+    collision_dir = tmp_path / "product" / "tmp-elsewhere"
+    root_tmp_dir = tmp_path / "tmp"
+    for directory in (allowed_dir, media_dir, collision_dir, root_tmp_dir):
+        directory.mkdir(parents=True, exist_ok=True)
+    allowed = allowed_dir / "frame.png"
+    forbidden_media = media_dir / "frame.png"
+    forbidden_collision = collision_dir / "frame.png"
+    forbidden_root_tmp = root_tmp_dir / "frame.png"
+    for source in (
+        allowed,
+        forbidden_media,
+        forbidden_collision,
+        forbidden_root_tmp,
+    ):
+        _write_png(source)
+    app = create_vision_worker_app(
+        runtime=runtime,
+        input_root=tmp_path,
+        api_key=TOKEN,
+        allowed_input_subdirectories=(
+            "product/visual-index",
+            "product/thumbnails",
+            "product/tmp",
+        ),
+    )
+    client = TestClient(
+        app,
+        base_url="http://127.0.0.1",
+        client=("127.0.0.1", 50100),
+    )
+    headers = {"Authorization": f"Bearer {TOKEN}"}
+
+    def request_for(source: Path) -> dict[str, object]:
+        request = _images_request(runtime, source, input_root=tmp_path)
+        request["items"][0]["relative_path"] = source.relative_to(  # type: ignore[index]
+            tmp_path
+        ).as_posix()
+        return request
+
+    accepted = client.post(
+        "/v1/embed/images",
+        json=request_for(allowed),
+        headers=headers,
+    )
+    rejected = [
+        client.post(
+            "/v1/embed/images",
+            json=request_for(source),
+            headers=headers,
+        )
+        for source in (
+            forbidden_media,
+            forbidden_collision,
+            forbidden_root_tmp,
+        )
+    ]
+
+    assert accepted.status_code == 200
+    assert [response.status_code for response in rejected] == [400, 400, 400]
+    assert len(runtime.image_calls) == 1
+
+
 def test_worker_checks_identity_before_reading_sources(tmp_path: Path) -> None:
     runtime = FakeVisionRuntime()
     missing = tmp_path / "missing.png"
@@ -1949,6 +2017,27 @@ def test_worker_default_port_matches_reserved_worker_layout() -> None:
 
     assert settings.host == "127.0.0.1"
     assert settings.port == 8783
+
+
+def test_worker_settings_scope_product_data_to_three_nested_directories() -> None:
+    settings = VisionWorkerSettings(
+        api_key=TOKEN,
+        product_data_subdirectory="product",
+        _env_file=None,
+    )
+
+    assert settings.allowed_input_subdirectories() == (
+        "product/visual-index",
+        "product/thumbnails",
+        "product/tmp",
+    )
+
+    with pytest.raises(ValueError):
+        VisionWorkerSettings(
+            api_key=TOKEN,
+            product_data_subdirectory="../product",
+            _env_file=None,
+        )
 
 
 def test_worker_settings_resolve_only_reviewed_siglip_quality_profiles() -> None:
