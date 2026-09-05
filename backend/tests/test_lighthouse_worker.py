@@ -669,6 +669,36 @@ def test_generation_store_rejects_symlinked_cache_ancestors(tmp_path: Path) -> N
     assert list(external_root.iterdir()) == []
 
 
+def test_generation_store_reads_named_generation_through_macos_file_id_path(
+    tmp_path: Path,
+) -> None:
+    logical_root = tmp_path / "cache"
+    writer = LighthouseGenerationStore(
+        logical_root,
+        DEFAULT_LIGHTHOUSE_SPECIFICATION,
+    )
+    generation_id = writer.build_generation(
+        video_id="video-1",
+        source_sha256=SOURCE_SHA256,
+        source_size_bytes=10,
+        duration_seconds=4.0,
+        windows=[_encoded_window()],
+    )
+    expected = writer.generation_descriptor("video-1", generation_id)
+    assert expected is not None
+    metadata = tmp_path.stat()
+    stable_root = Path(f"/.vol/{metadata.st_dev}/{metadata.st_ino}")
+    if not stable_root.is_dir():
+        pytest.skip("macOS file-id paths are unavailable")
+
+    reader = LighthouseGenerationStore(
+        stable_root / "cache",
+        DEFAULT_LIGHTHOUSE_SPECIFICATION,
+    )
+
+    assert reader.generation_descriptor("video-1", generation_id) == expected
+
+
 def test_generation_store_fsyncs_generation_and_activation_directories(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -913,8 +913,15 @@ class LighthouseGenerationStore:
             if generations.is_symlink() or not generations.is_dir():
                 return None
             generation = generations / generation_id
-            generation.resolve().relative_to(
-                generations.resolve(strict=True)
+            # A retained macOS file-id path has the form
+            # ``/.vol/<device>/<inode>/...``.  The complete path is valid, but
+            # ``/<device>`` is intentionally not a traversable directory on
+            # its own, so strict pathlib resolution rejects the capability.
+            # Every real ancestor and the generation itself are checked for
+            # symlinks separately; non-strict resolution keeps the containment
+            # guard while remaining compatible with the retained path.
+            generation.resolve(strict=False).relative_to(
+                generations.resolve(strict=False)
             )
         except (OSError, ValueError):
             return None
