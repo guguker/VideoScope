@@ -10,6 +10,7 @@ from pathlib import Path
 import secrets
 import stat
 from threading import Lock
+import traceback
 from types import MappingProxyType
 from typing import Literal, Self
 
@@ -759,6 +760,7 @@ class ProductBenchmarkEnvironment:
         self._scratch_root: RetainedDirectory | None = None
         self._borrowed_descriptors: list[int] = []
         self._fastembed_snapshot: object | None = None
+        self._embedding: object | None = None
         self._vector_index: object | None = None
         self._search_adapter: ProductBenchmarkSearchAdapter | None = None
         self._asset_resolver: LocalAssetResolver | None = None
@@ -768,6 +770,7 @@ class ProductBenchmarkEnvironment:
         ] = ()
         self._adapter_closed = False
         self._vector_index_closed = False
+        self._embedding_closed = False
         self._scratch_root_closed = True
         self._fastembed_source_root_closed = True
         self._media_root_closed = True
@@ -1007,17 +1010,6 @@ class ProductBenchmarkEnvironment:
                         ) from error
                 self._adapter_closed = True
             verification_failure: BenchmarkEnvironmentError | None = None
-            if self._fastembed_snapshot is not None:
-                try:
-                    verify_fastembed_snapshot(self._fastembed_snapshot)
-                except (KeyboardInterrupt, SystemExit):
-                    raise
-                except BaseException as error:
-                    verification_failure = BenchmarkEnvironmentError(
-                        "FastEmbed benchmark snapshot failed final verification"
-                    )
-                    verification_failure.__cause__ = error
-                    verification_failure.__suppress_context__ = True
             try:
                 if not self._vector_index_closed:
                     if self._vector_index is not None:
@@ -1035,6 +1027,33 @@ class ProductBenchmarkEnvironment:
                                 "Qdrant benchmark snapshot could not be closed"
                             ) from error
                     self._vector_index_closed = True
+                if not self._embedding_closed:
+                    if self._embedding is not None:
+                        close = getattr(self._embedding, "close", None)
+                        if not callable(close):
+                            raise BenchmarkEnvironmentError(
+                                "FastEmbed benchmark close contract is invalid"
+                            )
+                        try:
+                            close()
+                        except (KeyboardInterrupt, SystemExit):
+                            raise
+                        except BaseException as error:
+                            raise BenchmarkEnvironmentError(
+                                "FastEmbed benchmark model could not be closed"
+                            ) from error
+                    self._embedding_closed = True
+                if self._fastembed_snapshot is not None:
+                    try:
+                        verify_fastembed_snapshot(self._fastembed_snapshot)
+                    except (KeyboardInterrupt, SystemExit):
+                        raise
+                    except BaseException as error:
+                        verification_failure = BenchmarkEnvironmentError(
+                            "FastEmbed benchmark snapshot failed final verification"
+                        )
+                        verification_failure.__cause__ = error
+                        verification_failure.__suppress_context__ = True
                 self._close_borrowed_descriptors()
                 self._release_external_fastembed_source()
                 if not self._scratch_root_closed:
@@ -1415,6 +1434,7 @@ def open_product_benchmark_environment(
         environment._release_external_fastembed_source()
         environment._fastembed_snapshot = fastembed_snapshot
         embedding = fastembed_snapshot.create_embedding()
+        environment._embedding = embedding
         ensure_embedding_ready = getattr(embedding, "ensure_ready", None)
         if not callable(ensure_embedding_ready) or ensure_embedding_ready() is not True:
             raise BenchmarkEnvironmentError(
@@ -1543,6 +1563,7 @@ def open_product_benchmark_environment(
         )
         return environment
     except BaseException as setup_error:
+        traceback.clear_frames(setup_error.__traceback__)
         try:
             environment.close()
         except BaseException as cleanup_error:

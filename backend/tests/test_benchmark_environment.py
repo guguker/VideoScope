@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 from types import SimpleNamespace
+import weakref
 
 import pytest
 from pydantic import Field
@@ -141,6 +142,17 @@ class _FastEmbedding:
 
     def __init__(self, events: list[str]) -> None:
         self._events = events
+        self.loaded = True
+        self.close_calls = 0
+        self.close_failures = 0
+
+    def close(self) -> bool:
+        self.close_calls += 1
+        self._events.append("fastembed.close")
+        if self.close_calls <= self.close_failures:
+            raise RuntimeError("semantic embedding is busy")
+        self.loaded = False
+        return True
 
     def ensure_ready(self) -> bool:
         self._events.append("fastembed.ensure_ready")
@@ -472,10 +484,11 @@ def test_opens_lexical_environment_from_verified_private_snapshots_only(
     environment.close()
     environment.close()
 
-    assert state.events[-4:] == [
+    assert state.events[-5:] == [
         "adapter.close",
-        "fastembed.verify",
         "qdrant.close",
+        "fastembed.close",
+        "fastembed.verify",
         "product.close",
     ]
     assert state.adapter.close_calls == 1
@@ -484,6 +497,81 @@ def test_opens_lexical_environment_from_verified_private_snapshots_only(
     assert not environment.scratch_root.exists()
     assert list(state.scratch_parent.iterdir()) == []
     assert _tree(Path("product/data")) == source_before
+
+
+def test_environment_close_releases_embedding_through_retained_index_reference(
+    environment_fakes: SimpleNamespace,
+) -> None:
+    state = environment_fakes
+    environment = open_product_benchmark_environment(state.settings, state.scratch_parent)
+    stale_embedding = state.index.embedding
+    assert stale_embedding.loaded is True
+    environment.close()
+    environment.close()
+    assert stale_embedding.loaded is False
+    assert stale_embedding.close_calls == 1
+
+
+def test_busy_embedding_keeps_environment_snapshot_and_owner_until_close_retry(
+    environment_fakes: SimpleNamespace,
+) -> None:
+    state = environment_fakes
+    environment = open_product_benchmark_environment(state.settings, state.scratch_parent)
+    stale_embedding = state.index.embedding
+    stale_embedding.close_failures = 1
+    with pytest.raises(BenchmarkEnvironmentError, match="FastEmbed.*closed"):
+        environment.close()
+    assert environment.scratch_root.is_dir()
+    assert state.product.close_calls == 0
+    assert environment.is_closed is False
+    assert stale_embedding.loaded is True
+    environment.close()
+    assert stale_embedding.loaded is False
+    assert environment.is_closed is True
+    assert state.product.close_calls == 1
+
+
+def test_interrupted_environment_setup_releases_model_retained_by_traceback(
+    environment_fakes: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = environment_fakes
+    models: list[weakref.ReferenceType[object]] = []
+
+    class Model:
+        pass
+
+    class InterruptedEmbedding(_FastEmbedding):
+        def __init__(self, events: list[str]) -> None:
+            super().__init__(events)
+            self.model: object | None = Model()
+            models.append(weakref.ref(self.model))
+
+        def ensure_ready(self) -> bool:
+            retained_model = self.model
+            assert retained_model is not None
+            raise KeyboardInterrupt("warmup interrupted")
+
+        def close(self) -> bool:
+            self.model = None
+            return super().close()
+
+    monkeypatch.setattr(
+        _FastSnapshot, "create_embedding", lambda snapshot: InterruptedEmbedding(snapshot._events)
+    )
+    remove = environment_module._PrivateScratch.remove
+
+    def checked_remove(scratch):  # type: ignore[no-untyped-def]
+        assert models and models[0]() is None
+        return remove(scratch)
+
+    monkeypatch.setattr(environment_module._PrivateScratch, "remove", checked_remove)
+    with pytest.raises(KeyboardInterrupt) as captured:
+        open_product_benchmark_environment(state.settings, state.scratch_parent)
+    assert captured.value is not None
+    assert models[0]() is None
+    assert state.product.close_calls == 1
+    assert list(state.scratch_parent.iterdir()) == []
 
 
 def test_external_reviewed_fastembed_source_is_retained_exactly_and_released_after_copy(
@@ -1047,6 +1135,7 @@ def test_warm_profile_rejects_an_embedding_that_did_not_finish_warming(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     state = environment_fakes
+    created: list[_FastEmbedding] = []
 
     class UnreadyEmbedding(_FastEmbedding):
         def ensure_ready(self) -> bool:
@@ -1055,7 +1144,9 @@ def test_warm_profile_rejects_an_embedding_that_did_not_finish_warming(
 
     def create_unready(snapshot: _FastSnapshot) -> _FastEmbedding:
         snapshot._events.append("fastembed.create_embedding")
-        return UnreadyEmbedding(snapshot._events)
+        embedding = UnreadyEmbedding(snapshot._events)
+        created.append(embedding)
+        return embedding
 
     monkeypatch.setattr(_FastSnapshot, "create_embedding", create_unready)
 
@@ -1070,6 +1161,9 @@ def test_warm_profile_rejects_an_embedding_that_did_not_finish_warming(
         "fastembed.ensure_ready",
     ]
     assert state.events[-2:] == ["fastembed.verify", "product.close"]
+    assert len(created) == 1
+    assert created[0].loaded is False
+    assert created[0].close_calls == 1
     assert state.product.close_calls == 1
     assert list(state.scratch_parent.iterdir()) == []
 

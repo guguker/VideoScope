@@ -4,6 +4,8 @@ import pytest
 import sys
 import types
 from pathlib import Path
+from threading import Event, Thread
+import weakref
 
 from videoscope.search.embeddings import HashEmbedding, SemanticEmbedding
 
@@ -677,3 +679,47 @@ def test_strict_semantic_embedding_discards_vectors_when_snapshot_changes_during
 
     assert verifier_calls >= 3
     assert embedding.backend == "unavailable"
+
+
+def test_semantic_embedding_close_waits_for_loading_and_never_reloads_or_falls_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entered, finish = Event(), Event()
+    model_refs: list[weakref.ReferenceType[object]] = []
+
+    class BlockingModel:
+        def __init__(self, **_kwargs: object) -> None:
+            model_refs.append(weakref.ref(self))
+            entered.set()
+            assert finish.wait(3)
+
+        def embed(self, texts):  # type: ignore[no-untyped-def]
+            return iter(np.ones(16) for _ in texts)
+
+    monkeypatch.setitem(sys.modules, "fastembed", types.SimpleNamespace(TextEmbedding=BlockingModel))
+    monkeypatch.setattr(
+        "videoscope.search.embeddings._EMBEDDING_CLOSE_TIMEOUT_SECONDS", 0.01
+    )
+    embedding = SemanticEmbedding(model_name="test", dimensions=16)
+    results: list[bool] = []
+    thread = Thread(target=lambda: results.append(embedding.ensure_ready()))
+    thread.start()
+    try:
+        assert entered.wait(2)
+        with pytest.raises(RuntimeError, match="embedding.*busy"):
+            embedding.close()
+        assert embedding.ensure_ready() is False
+    finally:
+        finish.set()
+        thread.join(timeout=3)
+    assert not thread.is_alive()
+    assert results == [True]
+    assert embedding.close() is True
+    assert embedding.close() is False
+    assert model_refs[0]() is None
+    assert embedding.backend == "unavailable"
+    with pytest.raises(RuntimeError, match="closed"):
+        embedding.embed([])
+    with pytest.raises(RuntimeError, match="closed"):
+        embedding.embed_query("must not use fallback")
+    assert len(model_refs) == 1
