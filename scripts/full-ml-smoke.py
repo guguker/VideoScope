@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from hashlib import sha256
 from ipaddress import ip_address
 import json
@@ -158,6 +160,83 @@ _ML_ENVIRONMENT_ROLE_BINDINGS = {
 _WORKER_START_TIMEOUT_SECONDS = 300.0
 _WORKER_BINDING_TIMEOUT_SECONDS = 5.0
 _PRODUCT_SNAPSHOT_CLOSE_ATTEMPTS = 16
+
+_DIAGNOSTIC_TIMELINE: ContextVar[object | None] = ContextVar(
+    "videoscope_smoke_diagnostic_timeline", default=None,
+)
+_DIAGNOSTIC_FAILURE: ContextVar[bool] = ContextVar(
+    "videoscope_smoke_diagnostic_failure", default=False,
+)
+_DIAGNOSTIC_CALL_STAGES = {
+    ("vision", "health_failed"): "vision.health",
+    ("vision", "image_embedding_failed"): "vision.image_embedding",
+    ("vision", "text_embedding_failed"): "vision.text_embedding",
+    ("vision", "rfdetr_failed"): "vision.rfdetr",
+    ("vision", "ingestion_resource_release_failed"): "vision.release_detector",
+    ("whisper", "health_failed"): "whisper.health",
+    ("whisper", "transcription_failed"): "whisper.transcribe",
+    ("ocr", "health_failed"): "ocr.health",
+    ("ocr", "read_failed"): "ocr.read",
+    ("ocr", "ingestion_resource_release_failed"): "ocr.release",
+    ("lighthouse", "health_failed"): "lighthouse.health",
+    ("lighthouse", "generation_failed"): "lighthouse.generation",
+    ("lighthouse", "search_failed"): "lighthouse.search",
+    ("qwen", "health_failed"): "qwen.health",
+    ("qwen", "judge_failed"): "qwen.judge",
+    ("ffmpeg", "synthetic_fixture_failed"): "fixture",
+    ("product", "product_integration_failed"): "product.integration",
+}
+_DIAGNOSTIC_STAGES = frozenset(_DIAGNOSTIC_CALL_STAGES.values()) | frozenset({
+    "workers.start", "workers.wait_ready", "workers.close", "monitor.start",
+    "monitor.finish", "monitor.close", "cleanup.ocr", "cleanup.toolchain",
+    "workspace.cleanup", "code.final", "product.index", "product.runtime.close",
+    "product.export",
+    *(f"product.profile.{profile}" for profile in _EXECUTED_FROZEN_PROFILE_IDS),
+})
+_DIAGNOSTIC_EVENT_IDS = frozenset(
+    f"{stage}.{phase}"
+    for stage in _DIAGNOSTIC_STAGES
+    for phase in ("begin", "end", "error")
+)
+
+
+def _diagnostic_event(event_id: str) -> None:
+    timeline = _DIAGNOSTIC_TIMELINE.get()
+    if timeline is None:
+        return
+    if event_id not in _DIAGNOSTIC_EVENT_IDS:
+        _DIAGNOSTIC_FAILURE.set(True)
+        return
+    try:
+        timeline.record_event(event_id)  # type: ignore[attr-defined]
+    except Exception:
+        # Never skip cleanup or discard a newly returned worker owner because
+        # observing its boundary failed. The diagnostic wrapper rejects the
+        # sidecar through this sticky, path-free flag after native cleanup.
+        _DIAGNOSTIC_FAILURE.set(True)
+
+
+@contextmanager
+def _diagnostic_stage(stage: str):  # type: ignore[no-untyped-def]
+    if _DIAGNOSTIC_TIMELINE.get() is None:
+        yield
+        return
+    _diagnostic_event(f"{stage}.begin")
+    try:
+        yield
+    except BaseException:
+        try:
+            _diagnostic_event(f"{stage}.error")
+        except BaseException:
+            # A diagnostic callback must not replace an inference/cleanup error.
+            pass
+        raise
+    _diagnostic_event(f"{stage}.end")
+
+
+def _diagnostic_call(stage: str, operation: Callable[[], object]) -> object:
+    with _diagnostic_stage(stage):
+        return operation()
 
 
 class SmokeError(RuntimeError):
@@ -336,11 +415,24 @@ class _NativeProcessTreeRSSMonitor:
         self._host_started = False
         self._host_finished = False
         self.diagnostic_measurement: dict[str, object] | None = None
+        self._timeline: object | None = None
+
+    def attach_diagnostic(self, timeline: object) -> None:
+        if self._process_started or self._host_started or self._timeline is not None:
+            raise SmokeContractError("diagnostic_monitor_invalid_state", component="resources")
+        self._process_sampler.attach_diagnostic_observer(
+            timeline.observe_process_snapshot,  # type: ignore[attr-defined]
+        )
+        self._timeline = timeline
 
     def start(self) -> None:
         try:
             self._host_sampler.start()
             self._host_started = True
+            if self._timeline is not None:
+                self._timeline.record_host_sampler_epoch(  # type: ignore[attr-defined]
+                    self._host_sampler.started_monotonic_ns,
+                )
             self._process_sampler.start()
             self._process_started = True
         except MeasurementUnavailableError as error:
@@ -1897,6 +1989,10 @@ def _wait_for_product_job(
 
 
 def _close_product_runtime(runtime: object) -> None:
+    _diagnostic_call("product.runtime.close", lambda: _close_product_runtime_untraced(runtime))
+
+
+def _close_product_runtime_untraced(runtime: object) -> None:
     close = getattr(runtime, "close", None)
     if not callable(close):
         raise SmokeContractError(
@@ -2151,19 +2247,20 @@ def run_disposable_product_integration(
             plan_factory=plan_factory,
             wakeup=_QueueWakeup(runtime.queue),
         )
-        _video, job = coordinator.create_ingest(
-            video_id=video_id,
-            original_name="full-ml-smoke.mp4",
-            stored_name=stored_name,
-            media_path=str(destination),
-            size_bytes=size_bytes,
-            source_sha256=source_sha256,
-        )
-        _wait_for_product_job(
-            repository,
-            job.job_id,
-            timeout_seconds=1800,
-        )
+        with _diagnostic_stage("product.index"):
+            _video, job = coordinator.create_ingest(
+                video_id=video_id,
+                original_name="full-ml-smoke.mp4",
+                stored_name=stored_name,
+                media_path=str(destination),
+                size_bytes=size_bytes,
+                source_sha256=source_sha256,
+            )
+            _wait_for_product_job(
+                repository,
+                job.job_id,
+                timeout_seconds=1800,
+            )
 
         asset_records = repository.find_assets_by_sha256_bounded(
             source_sha256,
@@ -2190,203 +2287,204 @@ def run_disposable_product_integration(
         _close_product_runtime(runtime)
         runtime = None
         for profile_id in _EXECUTED_FROZEN_PROFILE_IDS:
-            profile = get_profile(profile_id)
-            environment: object | None = None
-            session: object | None = None
-            profile_error: BaseException | None = None
-            profile_evidence_count = 0
-            profile_execution_receipt: object | None = None
-            try:
+            with _diagnostic_stage(f"product.profile.{profile_id}"):
+                profile = get_profile(profile_id)
+                environment: object | None = None
+                session: object | None = None
+                profile_error: BaseException | None = None
+                profile_evidence_count = 0
+                profile_execution_receipt: object | None = None
                 try:
-                    environment = open_product_benchmark_environment(
-                        settings,
-                        root,
-                        profile_id=profile_id,
+                    try:
+                        environment = open_product_benchmark_environment(
+                            settings,
+                            root,
+                            profile_id=profile_id,
+                            execution_mode="warm",
+                        )
+                    except BenchmarkEnvironmentCleanupError as error:
+                        try:
+                            _close_product_snapshot_environment(error.environment)
+                        except Exception as cleanup_error:
+                            raise SmokeInfrastructureError(
+                                "product_snapshot_cleanup_failed",
+                                component="product",
+                            ) from cleanup_error
+                        raise SmokeInfrastructureError(
+                            "product_snapshot_open_failed",
+                            component="product",
+                        ) from error
+                    except ProductSnapshotCleanupError as error:
+                        try:
+                            _retry_product_snapshot_cleanup(error)
+                        except Exception as cleanup_error:
+                            raise SmokeInfrastructureError(
+                                "product_snapshot_cleanup_failed",
+                                component="product",
+                            ) from cleanup_error
+                        raise SmokeInfrastructureError(
+                            "product_snapshot_open_failed",
+                            component="product",
+                        ) from error
+                    probe_sources = getattr(environment, "probe_worker_sources", None)
+                    if not callable(probe_sources):
+                        raise SmokeContractError(
+                            "product_worker_source_probe_unavailable",
+                            component="product",
+                        )
+                    expected_probe_roles = {
+                        "dense_siglip": ("vision",),
+                        "temporal_refinement": ("vision",),
+                        "lighthouse": ("vision",),
+                        "qwen_verification": ("qwen", "vision"),
+                    }.get(profile_id, ())
+                    if probe_sources() != expected_probe_roles:
+                        raise SmokeContractError(
+                            "product_worker_source_probe_invalid",
+                            component="product",
+                        )
+                    asset_resolver = getattr(environment, "asset_resolver", None)
+                    resolve_asset = getattr(asset_resolver, "resolve", None)
+                    search_adapter = getattr(environment, "search_adapter", None)
+                    open_session = getattr(search_adapter, "open_session", None)
+                    if not callable(resolve_asset) or not callable(open_session):
+                        raise SmokeContractError(
+                            "product_snapshot_contract_invalid",
+                            component="product",
+                        )
+                    resolved_asset = resolve_asset(portable_asset)
+                    session = open_session(
+                        profile,
+                        (resolved_asset,),
                         execution_mode="warm",
                     )
-                except BenchmarkEnvironmentCleanupError as error:
-                    try:
-                        _close_product_snapshot_environment(error.environment)
-                    except Exception as cleanup_error:
-                        raise SmokeInfrastructureError(
-                            "product_snapshot_cleanup_failed",
+                    if any(
+                        session.capability_state(resolved_asset, capability) != "complete"
+                        for capability in profile.required_capabilities
+                    ):
+                        raise SmokeContractError(
+                            "product_generation_binding_incomplete",
                             component="product",
-                        ) from cleanup_error
-                    raise SmokeInfrastructureError(
-                        "product_snapshot_open_failed",
-                        component="product",
-                    ) from error
-                except ProductSnapshotCleanupError as error:
-                    try:
-                        _retry_product_snapshot_cleanup(error)
-                    except Exception as cleanup_error:
-                        raise SmokeInfrastructureError(
-                            "product_snapshot_cleanup_failed",
+                        )
+                    identities = session.identities()
+                    index_components = {
+                        identity.component_id for identity in identities.index_identities
+                    }
+                    config_components = {
+                        identity.component_id for identity in identities.config_identities
+                    }
+                    expected_index_components = {"text_vector_generations"}
+                    if "visual_dense" in profile.required_capabilities:
+                        expected_index_components.add("visual_generations")
+                    if "lighthouse" in profile.required_capabilities:
+                        expected_index_components.add("lighthouse_generations")
+                    if (
+                        not expected_index_components <= index_components
+                        or "benchmark_product_environment" not in config_components
+                    ):
+                        raise SmokeContractError(
+                            "product_generation_identity_incomplete",
                             component="product",
-                        ) from cleanup_error
-                    raise SmokeInfrastructureError(
-                        "product_snapshot_open_failed",
-                        component="product",
-                    ) from error
-                probe_sources = getattr(environment, "probe_worker_sources", None)
-                if not callable(probe_sources):
-                    raise SmokeContractError(
-                        "product_worker_source_probe_unavailable",
-                        component="product",
+                        )
+                    results = session.search(
+                        _QUERY,
+                        (resolved_asset,),
+                        limit=profile.search_plan.result_limit,
                     )
-                expected_probe_roles = {
-                    "dense_siglip": ("vision",),
-                    "temporal_refinement": ("vision",),
-                    "lighthouse": ("vision",),
-                    "qwen_verification": ("qwen", "vision"),
-                }.get(profile_id, ())
-                if probe_sources() != expected_probe_roles:
-                    raise SmokeContractError(
-                        "product_worker_source_probe_invalid",
-                        component="product",
+                    if not results:
+                        raise SmokeContractError(
+                            "product_search_returned_no_evidence",
+                            component="product",
+                        )
+                    for result in results:
+                        if (
+                            result.asset_id != portable_asset.asset_id
+                            or not math.isfinite(float(result.start_seconds))
+                            or not math.isfinite(float(result.end_seconds))
+                            or result.start_seconds < 0
+                            or result.end_seconds <= result.start_seconds
+                            or result.end_seconds > asset.duration_seconds + 0.05
+                        ):
+                            raise SmokeContractError(
+                                "product_search_evidence_invalid",
+                                component="product",
+                            )
+                    execution_receipt_reader = getattr(
+                        session,
+                        "last_search_execution_receipt",
+                        None,
                     )
-                asset_resolver = getattr(environment, "asset_resolver", None)
-                resolve_asset = getattr(asset_resolver, "resolve", None)
-                search_adapter = getattr(environment, "search_adapter", None)
-                open_session = getattr(search_adapter, "open_session", None)
-                if not callable(resolve_asset) or not callable(open_session):
-                    raise SmokeContractError(
-                        "product_snapshot_contract_invalid",
-                        component="product",
+                    if not callable(execution_receipt_reader):
+                        raise SmokeContractError(
+                            "product_search_execution_receipt_invalid",
+                            component="product",
+                        )
+                    profile_execution_receipt = (
+                        _validate_product_search_execution_receipt(
+                            profile,
+                            execution_receipt_reader(),
+                        )
                     )
-                resolved_asset = resolve_asset(portable_asset)
-                session = open_session(
-                    profile,
-                    (resolved_asset,),
-                    execution_mode="warm",
-                )
-                if any(
-                    session.capability_state(resolved_asset, capability) != "complete"
-                    for capability in profile.required_capabilities
-                ):
-                    raise SmokeContractError(
-                        "product_generation_binding_incomplete",
-                        component="product",
+                    profile_evidence_count = int(
+                        getattr(profile_execution_receipt, "total_evidence_count")
                     )
-                identities = session.identities()
-                index_components = {
-                    identity.component_id for identity in identities.index_identities
-                }
-                config_components = {
-                    identity.component_id for identity in identities.config_identities
-                }
-                expected_index_components = {"text_vector_generations"}
-                if "visual_dense" in profile.required_capabilities:
-                    expected_index_components.add("visual_generations")
-                if "lighthouse" in profile.required_capabilities:
-                    expected_index_components.add("lighthouse_generations")
-                if (
-                    not expected_index_components <= index_components
-                    or "benchmark_product_environment" not in config_components
-                ):
-                    raise SmokeContractError(
-                        "product_generation_identity_incomplete",
-                        component="product",
-                    )
-                results = session.search(
-                    _QUERY,
-                    (resolved_asset,),
-                    limit=profile.search_plan.result_limit,
-                )
-                if not results:
+                    if profile_id == "lexical_qdrant":
+                        first = results[0]
+                        if first.end_seconds - first.start_seconds < 0.2:
+                            raise SmokeContractError(
+                                "product_export_interval_invalid",
+                                component="product",
+                            )
+                        export_interval = (
+                            float(first.start_seconds),
+                            float(first.end_seconds),
+                        )
+                except BaseException as error:
+                    profile_error = error
+                    raise
+                finally:
+                    cleanup_failure: BaseException | None = None
+                    if session is not None:
+                        try:
+                            session.close()
+                        except BaseException as error:
+                            if isinstance(error, (KeyboardInterrupt, SystemExit)):
+                                cleanup_failure = error
+                            else:
+                                cleanup_failure = SmokeInfrastructureError(
+                                    "product_search_cleanup_failed",
+                                    component="product",
+                                )
+                                cleanup_failure.__cause__ = error
+                    if environment is not None:
+                        try:
+                            _close_product_snapshot_environment(environment)
+                        except BaseException as error:
+                            cleanup_failure = cleanup_failure or error
+                    if cleanup_failure is not None:
+                        raise cleanup_failure from profile_error
+                if profile_evidence_count <= 0:
                     raise SmokeContractError(
                         "product_search_returned_no_evidence",
                         component="product",
                     )
-                for result in results:
-                    if (
-                        result.asset_id != portable_asset.asset_id
-                        or not math.isfinite(float(result.start_seconds))
-                        or not math.isfinite(float(result.end_seconds))
-                        or result.start_seconds < 0
-                        or result.end_seconds <= result.start_seconds
-                        or result.end_seconds > asset.duration_seconds + 0.05
-                    ):
-                        raise SmokeContractError(
-                            "product_search_evidence_invalid",
-                            component="product",
-                        )
-                execution_receipt_reader = getattr(
-                    session,
-                    "last_search_execution_receipt",
-                    None,
-                )
-                if not callable(execution_receipt_reader):
+                if profile_execution_receipt is None:
                     raise SmokeContractError(
                         "product_search_execution_receipt_invalid",
                         component="product",
                     )
-                profile_execution_receipt = (
-                    _validate_product_search_execution_receipt(
-                        profile,
-                        execution_receipt_reader(),
-                    )
-                )
-                profile_evidence_count = int(
-                    getattr(profile_execution_receipt, "total_evidence_count")
-                )
-                if profile_id == "lexical_qdrant":
-                    first = results[0]
-                    if first.end_seconds - first.start_seconds < 0.2:
-                        raise SmokeContractError(
-                            "product_export_interval_invalid",
-                            component="product",
-                        )
-                    export_interval = (
-                        float(first.start_seconds),
-                        float(first.end_seconds),
-                    )
-            except BaseException as error:
-                profile_error = error
-                raise
-            finally:
-                cleanup_failure: BaseException | None = None
-                if session is not None:
-                    try:
-                        session.close()
-                    except BaseException as error:
-                        if isinstance(error, (KeyboardInterrupt, SystemExit)):
-                            cleanup_failure = error
-                        else:
-                            cleanup_failure = SmokeInfrastructureError(
-                                "product_search_cleanup_failed",
-                                component="product",
-                            )
-                            cleanup_failure.__cause__ = error
-                if environment is not None:
-                    try:
-                        _close_product_snapshot_environment(environment)
-                    except BaseException as error:
-                        cleanup_failure = cleanup_failure or error
-                if cleanup_failure is not None:
-                    raise cleanup_failure from profile_error
-            if profile_evidence_count <= 0:
-                raise SmokeContractError(
-                    "product_search_returned_no_evidence",
-                    component="product",
-                )
-            if profile_execution_receipt is None:
-                raise SmokeContractError(
-                    "product_search_execution_receipt_invalid",
-                    component="product",
-                )
-            evidence_count += profile_evidence_count
-            profile_receipts[profile_id] = {
-                "close": "complete",
-                "status": "complete",
-                "generation_bound": True,
-                "evidence_count": profile_evidence_count,
-                "component_execution": _product_search_execution_payload(
-                    profile_execution_receipt
-                ),
-                "open": "complete",
-                "search": "complete",
-            }
+                evidence_count += profile_evidence_count
+                profile_receipts[profile_id] = {
+                    "close": "complete",
+                    "status": "complete",
+                    "generation_bound": True,
+                    "evidence_count": profile_evidence_count,
+                    "component_execution": _product_search_execution_payload(
+                        profile_execution_receipt
+                    ),
+                    "open": "complete",
+                    "search": "complete",
+                }
         profile_receipts["internvideo"] = {
             "status": "not_configured",
             "reason_code": "provider_not_configured",
@@ -2410,16 +2508,17 @@ def run_disposable_product_integration(
         export_lock = ExclusiveRuntimeLock(settings.data_dir)
         try:
             export_lock.acquire_existing()
-            exported = export(
-                "phase0-full-path",
-                [
-                    ClipSelection(
-                        video_id=video_id,
-                        start=export_interval[0],
-                        end=export_interval[1],
-                    )
-                ],
-            )
+            with _diagnostic_stage("product.export"):
+                exported = export(
+                    "phase0-full-path",
+                    [
+                        ClipSelection(
+                            video_id=video_id,
+                            start=export_interval[0],
+                            end=export_interval[1],
+                        )
+                    ],
+                )
         except SmokeError:
             raise
         except Exception as error:
@@ -2591,7 +2690,8 @@ def _infrastructure_call(
     operation: Callable[[], object],
 ) -> object:
     try:
-        return operation()
+        stage = _DIAGNOSTIC_CALL_STAGES.get((component, code))
+        return operation() if stage is None else _diagnostic_call(stage, operation)
     except SmokeError:
         raise
     except BaseException as error:
@@ -3613,11 +3713,11 @@ def execute(
         workspace = _allocate_workspace(resolved_root)
         try:
             worker_cluster = _validate_worker_cluster(
-                selected.start_workers(
+                _diagnostic_call("workers.start", lambda: selected.start_workers(
                     resolved_root,
                     resolved_models_root,
                     execution_environment,
-                )
+                ))
             )
         except SmokeError:
             raise
@@ -3647,7 +3747,13 @@ def execute(
                     "rss_monitor_contract_invalid",
                     component="resources",
                 )
-            start_monitor()
+            timeline = _DIAGNOSTIC_TIMELINE.get()
+            if timeline is not None:
+                attach = getattr(resource_monitor, "attach_diagnostic", None)
+                if not callable(attach):
+                    raise SmokeContractError("diagnostic_monitor_unavailable", component="resources")
+                attach(timeline)
+            _diagnostic_call("monitor.start", start_monitor)
             monitor_started = True
         except SmokeError:
             raise
@@ -3663,7 +3769,7 @@ def execute(
             ) from error
 
         try:
-            worker_cluster.wait_ready()  # type: ignore[attr-defined]
+            _diagnostic_call("workers.wait_ready", worker_cluster.wait_ready)  # type: ignore[attr-defined]
         except SmokeError:
             raise
         except Exception as error:
@@ -3770,14 +3876,14 @@ def execute(
             try:
                 close = getattr(clients.ocr, "close", None)
                 if callable(close):
-                    close()
+                    _diagnostic_call("cleanup.ocr", close)
                 cleanup["ocr"] = "complete"
             except Exception:
                 record_cleanup_failure(
                     "ocr", SmokeInfrastructureError("ocr_cleanup_failed", component="ocr")
                 )
         try:
-            current_identity = toolchain.verify_current()
+            current_identity = _diagnostic_call("cleanup.toolchain", toolchain.verify_current)
             if current_identity != toolchain_identity:
                 raise SmokeContractError(
                     "attestation_changed",
@@ -3792,7 +3898,7 @@ def execute(
             )
         if monitor_started and finish_monitor is not None:
             try:
-                raw_measurement = finish_monitor()
+                raw_measurement = _diagnostic_call("monitor.finish", finish_monitor)
                 resource_measurement = _validate_resource_measurement(raw_measurement)
                 cleanup["measurement"] = "complete"
             except SmokeError as error:
@@ -3808,7 +3914,7 @@ def execute(
                 raw_measurement = resource_monitor.diagnostic_measurement
         if close_monitor is not None:
             try:
-                close_monitor()
+                _diagnostic_call("monitor.close", close_monitor)
                 cleanup["monitor"] = "complete"
             except SmokeError as error:
                 record_cleanup_failure("monitor", error)
@@ -3819,7 +3925,7 @@ def execute(
                 )
         if worker_cluster is not None:
             try:
-                worker_cluster.close()  # type: ignore[attr-defined]
+                _diagnostic_call("workers.close", worker_cluster.close)  # type: ignore[attr-defined]
                 cleanup["workers"] = "complete"
             except SmokeError as error:
                 record_cleanup_failure("workers", error)
@@ -3829,17 +3935,20 @@ def execute(
                     SmokeInfrastructureError("managed_worker_cleanup_failed", component="workers"),
                 )
         try:
-            _verify_disposable_root(resolved_root, root_identity)
-            _restore_disposable_baseline(
-                resolved_root,
-                workspace_baseline,
-            )
-            _verify_disposable_root(resolved_root, root_identity)
+            with _diagnostic_stage("workspace.cleanup"):
+                _verify_disposable_root(resolved_root, root_identity)
+                _restore_disposable_baseline(
+                    resolved_root,
+                    workspace_baseline,
+                )
+                _verify_disposable_root(resolved_root, root_identity)
             cleanup["workspace"] = "complete"
         except SmokeError as error:
             record_cleanup_failure("workspace", error)
         try:
-            code_sha_after = _validated_code_sha(selected.code_identity_resolver)
+            code_sha_after = _diagnostic_call(
+                "code.final", lambda: _validated_code_sha(selected.code_identity_resolver),
+            )
             if code_sha_after != code_sha:
                 raise SmokeContractError(
                     "code_identity_changed",

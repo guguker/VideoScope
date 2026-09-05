@@ -1505,9 +1505,11 @@ def test_rejects_code_identity_drift_after_cleanup(tmp_path: Path) -> None:
     assert captured.value.code == "code_identity_changed"
 
 
+@pytest.mark.parametrize("diagnostic", [False, True])
 def test_production_product_integration_uses_durable_generation_pinned_path(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    diagnostic: bool,
 ) -> None:
     script = _load_script()
     root = tmp_path / "smoke"
@@ -1774,14 +1776,25 @@ def test_production_product_integration_uses_durable_generation_pinned_path(
                 )
             )
 
-    receipt = script.run_disposable_product_integration(
-        root,
-        fixture,
-        script.SmokeClients(*(object() for _ in range(5))),
-        Toolchain(),
-        settings,
-    )
-
+    trace = _DiagnosticTrace()
+    token = script._DIAGNOSTIC_TIMELINE.set(trace if diagnostic else None)
+    try:
+        receipt = script.run_disposable_product_integration(
+            root,
+            fixture,
+            script.SmokeClients(*(object() for _ in range(5))),
+            Toolchain(),
+            settings,
+        )
+    finally:
+        script._DIAGNOSTIC_TIMELINE.reset(token)
+    if diagnostic:
+        stages = (
+            "product.index", "product.runtime.close",
+            *(f"product.profile.{profile}" for profile in script._EXECUTED_FROZEN_PROFILE_IDS),
+            "product.export",
+        )
+        assert trace.events == [f"{stage}.{phase}" for stage in stages for phase in ("begin", "end")]
     assert receipt == _complete_product_receipt()
     assert events == [
         "repository.initialize",
@@ -2482,3 +2495,127 @@ def test_native_resource_monitor_runs_process_and_host_samplers_fail_closed(
         "host.finish",
         "process.close",
     ]
+
+
+class _DiagnosticTrace:
+    def __init__(self) -> None:
+        self.events: list[str] = []
+
+    def record_event(self, event_id: str) -> None:
+        self.events.append(event_id)
+
+
+def test_diagnostic_stage_preserves_success_and_primary_failure() -> None:
+    script = _load_script()
+    trace = _DiagnosticTrace()
+    token = script._DIAGNOSTIC_TIMELINE.set(trace)
+    try:
+        assert script._diagnostic_call('workers.wait_ready', lambda: 42) == 42
+        primary = RuntimeError('private model response /Users/example')
+        def fail() -> None:
+            raise primary
+        with pytest.raises(RuntimeError) as caught:
+            script._diagnostic_call('vision.image_embedding', fail)
+        assert caught.value is primary
+    finally:
+        script._DIAGNOSTIC_TIMELINE.reset(token)
+    assert trace.events == [
+        'workers.wait_ready.begin', 'workers.wait_ready.end',
+        'vision.image_embedding.begin', 'vision.image_embedding.error',
+    ]
+    assert 'private' not in json.dumps(trace.events)
+
+
+def test_diagnostic_stage_preserves_primary_when_observer_fails_on_error() -> None:
+    script = _load_script()
+    primary = ValueError('primary inference failure')
+    class BrokenTrace(_DiagnosticTrace):
+        def record_event(self, event_id: str) -> None:
+            if event_id.endswith('.error'):
+                raise RuntimeError('private observer exception')
+            super().record_event(event_id)
+    token = script._DIAGNOSTIC_TIMELINE.set(BrokenTrace())
+    try:
+        def fail() -> None:
+            raise primary
+        with pytest.raises(ValueError) as caught:
+            script._diagnostic_call('vision.image_embedding', fail)
+        assert caught.value is primary
+    finally:
+        script._DIAGNOSTIC_TIMELINE.reset(token)
+
+
+def test_opt_in_timeline_keeps_frozen_smoke_receipt_and_cleanup_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script = _load_script()
+    root = tmp_path / 'smoke'
+    root.mkdir(mode=0o700)
+    models = _models_root(tmp_path)
+    expected_events: list[str] = []
+    expected = script.execute(root, models_root=models,
+        environ=_offline_environment(root, models),
+        dependencies=_dependencies(script, expected_events))
+    observed_events: list[str] = []
+    trace = _DiagnosticTrace()
+    monkeypatch.setattr(_ResourceMonitor, 'attach_diagnostic', lambda self, value: None, raising=False)
+    token = script._DIAGNOSTIC_TIMELINE.set(trace)
+    try:
+        actual = script.execute(root, models_root=models,
+            environ=_offline_environment(root, models),
+            dependencies=_dependencies(script, observed_events))
+    finally:
+        script._DIAGNOSTIC_TIMELINE.reset(token)
+    assert actual == expected
+    assert observed_events == expected_events
+    assert list(root.iterdir()) == []
+    for stage in (
+        'workers.start', 'monitor.start', 'workers.wait_ready',
+        'vision.image_embedding', 'vision.text_embedding', 'vision.rfdetr',
+        'vision.release_detector', 'whisper.transcribe', 'ocr.read', 'ocr.release',
+        'lighthouse.generation', 'lighthouse.search', 'product.integration',
+        'qwen.judge', 'cleanup.ocr', 'cleanup.toolchain', 'monitor.finish',
+        'monitor.close', 'workers.close', 'workspace.cleanup', 'code.final',
+    ):
+        assert f'{stage}.begin' in trace.events
+        assert f'{stage}.end' in trace.events
+    assert trace.events.index('monitor.start.end') < trace.events.index('workers.wait_ready.begin')
+    assert trace.events.index('monitor.finish.end') < trace.events.index('workers.close.begin')
+
+
+def test_diagnostic_monitor_contract_failure_still_closes_owned_workers(tmp_path: Path) -> None:
+    script = _load_script()
+    root = tmp_path / 'smoke'; root.mkdir(mode=0o700)
+    models = _models_root(tmp_path); events: list[str] = []
+    token = script._DIAGNOSTIC_TIMELINE.set(_DiagnosticTrace())
+    try:
+        with pytest.raises(script.SmokeContractError, match='diagnostic_monitor_unavailable'):
+            script.execute(root, models_root=models,
+                environ=_offline_environment(root, models), dependencies=_dependencies(script, events))
+    finally:
+        script._DIAGNOSTIC_TIMELINE.reset(token)
+    assert 'workers.close' in events
+    assert list(root.iterdir()) == []
+
+
+@pytest.mark.parametrize('failed_event', ['workers.start.end', 'workers.close.begin'])
+def test_event_observation_failure_cannot_skip_operation_or_lose_ownership(failed_event: str) -> None:
+    script = _load_script()
+    class BrokenTrace(_DiagnosticTrace):
+        def record_event(self, event_id: str) -> None:
+            if event_id == failed_event:
+                raise RuntimeError('private diagnostic details')
+            super().record_event(event_id)
+    trace_token = script._DIAGNOSTIC_TIMELINE.set(BrokenTrace())
+    failure_token = script._DIAGNOSTIC_FAILURE.set(False)
+    owned = object(); called = []
+    try:
+        def operation() -> object:
+            called.append(True)
+            return owned
+        assert script._diagnostic_call(failed_event.rsplit('.', 1)[0], operation) is owned
+        assert called == [True]
+        assert script._DIAGNOSTIC_FAILURE.get() is True
+    finally:
+        script._DIAGNOSTIC_TIMELINE.reset(trace_token)
+        script._DIAGNOSTIC_FAILURE.reset(failure_token)

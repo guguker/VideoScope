@@ -107,7 +107,11 @@ future work does not inherit a stale decision.
 The default next objective is Phase 0 of `docs/ml-autonomy-plan.md`: establish a
 reproducible and trustworthy baseline before training. Phase 0 remains open:
 the clean `1b11a54` control completed all five profiles and direct verifier, but
-its full smoke failed the unchanged zero-swap gate. Exact evidence is retained in
+its first full smoke and one unchanged owner-confirmed quiet-window control
+failed the unchanged zero-swap gate (446 and 116 swapin pages). An opt-in
+diagnostic stage/RSS timeline now preserves model lifecycle and coverage; the
+next control measures it from a new clean checkout.
+Exact evidence is retained in
 `docs/benchmarks/phase0/negative-controls/1b11a54/README.md`; no accepted baseline
 bundle, training or later phase is active. The active scope is Phase 0 only;
 a Phase 1 read-only dataset audit requires a separately authorized goal.

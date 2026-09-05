@@ -194,7 +194,31 @@ measurements.
 All measured runs held an exclusive agent-helper lease. The earliest swapin
 event occurred at 0.253 seconds; 268 of 446 pages preceded the late Metal ramp.
 System-wide counters do not establish which process caused these events. Neither
-a leak nor a host-cold state is proven. The next bounded control requires an
-owner-provided quiet host window and one unchanged smoke, retaining this first
-rejection. Do not close owner applications, subtract background pressure, change
-the zero-swap criterion, or retry without a recorded change in conditions.
+a leak nor a host-cold state is proven. This first rejection remains unchanged.
+
+The owner then confirmed a quiet Mac window, and one predeclared unchanged smoke
+ran at the same clean `1b11a54`. It again completed all eight steps, five profiles
+and export, with complete cleanup and an empty disposable root. The
+[host-ready rejection](negative-controls/1b11a54/host-ready-rejection.json) binds
+the exact smoke and launch receipts: the collector again returned exit code 3
+with no bundle because **116 swapin pages (1,900,544 bytes)** were observed.
+Swapout and Metal recovery were zero; OOM was not observed. Peak process-tree
+RSS was 10,616,471,552 bytes and peak system-wide Metal in-use 11,155,505,152
+bytes. The host measurement lasted 103.190759375 seconds; the enclosing launcher
+took 104.709 seconds. These are separate timing scopes, and RSS and Metal remain
+non-additive measurements.
+
+All 116 pages occurred before the late Metal rise first crossed 4 GiB at
+89.373 seconds; 64 pages occurred within the first 5.085 seconds. This timing
+does not attribute swapins to Lighthouse or any other model or process. The
+quiet-window hypothesis did not satisfy the unchanged zero-swap gate, and
+host-cold state remains unproven. The new rejection is a resource/infrastructure
+failure; the initial model-quality ledger and all negative quality observations
+above remain unchanged.
+
+The new opt-in [diagnostic control](diagnostic-timeline.md) records stage
+boundaries and RSS by worker role on a shared monotonic timeline, preserving
+model lifecycle and smoke coverage. Its real clean-checkout measurement remains
+pending. No further identical run is planned. Do not close owner
+applications, subtract background pressure, change the zero-swap criterion,
+or infer a model-residency cause without the missing attribution evidence.

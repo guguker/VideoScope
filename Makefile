@@ -1,4 +1,4 @@
-.PHONY: install install-backend install-ml install-vision install-whisper install-ocr install-video vision-worker whisper-worker qwen-worker worker-platform-check ml-attest-offline full-ml-smoke lock-vision lock-whisper lock-ocr lock-ocr-check lock-lighthouse install-lighthouse lighthouse-worker models models-base models-ml models-vision models-whisper models-ocr models-video models-lighthouse index-visual index-visual-quality index-lighthouse dev test test-backend test-frontend build demo
+.PHONY: install install-backend install-ml install-vision install-whisper install-ocr install-video vision-worker whisper-worker qwen-worker worker-platform-check ml-attest-offline full-ml-smoke full-ml-smoke-diagnostic lock-vision lock-whisper lock-ocr lock-ocr-check lock-lighthouse install-lighthouse lighthouse-worker models models-base models-ml models-vision models-whisper models-ocr models-video models-lighthouse index-visual index-visual-quality index-lighthouse dev test test-backend test-frontend build demo
 
 install:
 	./scripts/bootstrap.sh
@@ -22,7 +22,8 @@ ml-attest-offline:
 		UV_OFFLINE=1 \
 		"$(CURDIR)/.venv/bin/python" -I -m videoscope.ml_environment_attestation
 
-full-ml-smoke:
+full-ml-smoke full-ml-smoke-diagnostic:
+	@$(if $(filter full-ml-smoke-diagnostic,$@),: "$${VIDEOSCOPE_FULL_ML_SMOKE_TIMELINE:?VIDEOSCOPE_FULL_ML_SMOKE_TIMELINE must select a new private timeline file}",:)
 	@: "$${HF_HOME:?HF_HOME must select the reviewed Hugging Face cache}"
 	@: "$${VIDEOSCOPE_OCR_MODEL_ROOT:?VIDEOSCOPE_OCR_MODEL_ROOT must select the reviewed OCR model root}"
 	@: "$${VIDEOSCOPE_FULL_ML_SMOKE_ROOT:?VIDEOSCOPE_FULL_ML_SMOKE_ROOT must select an existing mode-0700 disposable root}"
@@ -55,9 +56,9 @@ full-ml-smoke:
 		VIDEOSCOPE_VISION_WORKER_INPUT_ROOT="$$VIDEOSCOPE_FULL_ML_SMOKE_ROOT" \
 		VIDEOSCOPE_WHISPER_WORKER_INPUT_ROOT="$$VIDEOSCOPE_FULL_ML_SMOKE_ROOT/product/media" \
 		VIDEOSCOPE_WHISPER_WORKER_WORK_ROOT="$$VIDEOSCOPE_FULL_ML_SMOKE_ROOT/tmp/whisper-worker" \
-		"$(CURDIR)/.venv/bin/python" -I "$(CURDIR)/scripts/full-ml-smoke.py" \
+		$(if $(filter full-ml-smoke-diagnostic,$@),"$(CURDIR)/.venv/bin/python" -I "$(CURDIR)/scripts/full-ml-smoke-diagnostic.py","$(CURDIR)/.venv/bin/python" -I "$(CURDIR)/scripts/full-ml-smoke.py") \
 			--root "$$VIDEOSCOPE_FULL_ML_SMOKE_ROOT" \
-			--models-root "$$VIDEOSCOPE_FULL_ML_SMOKE_MODELS_ROOT"
+			--models-root "$$VIDEOSCOPE_FULL_ML_SMOKE_MODELS_ROOT" $(if $(filter full-ml-smoke-diagnostic,$@),--timeline "$$VIDEOSCOPE_FULL_ML_SMOKE_TIMELINE")
 
 lock-vision: worker-platform-check
 	.venv/bin/uv pip compile workers/vision/pyproject.toml --python .venv/bin/python --generate-hashes --output-file workers/vision/requirements.lock --custom-compile-command 'make lock-vision'

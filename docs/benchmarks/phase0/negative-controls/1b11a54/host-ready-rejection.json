@@ -1,0 +1,121 @@
+{
+  "code_sha": "1b11a5420e2fc66417f314c03192c1a853f8c843",
+  "collector": {
+    "bundle_written": false,
+    "exit_code": 3,
+    "stderr": {
+      "error": "invalid_evidence",
+      "message": "Phase-0 evidence is invalid"
+    }
+  },
+  "decision": "Owner-confirmed quiet host window did not satisfy the unchanged zero-swap gate. Retain the rejection. No further identical run; inspect remaining production model residency and attribution evidence before choosing a bounded change.",
+  "evidence_kind": "rejected_phase0_host_ready_control",
+  "functional_status": "ready",
+  "phase0_complete": false,
+  "plan": {
+    "agent_helper_process_lease": "No parallel tools, shell readers, Python, tests or scans; root polls existing launcher only.",
+    "changed_condition": "Owner explicitly confirmed Mac readiness after being asked to finish other heavy workloads and avoid starting them during the smoke.",
+    "code_sha": "1b11a5420e2fc66417f314c03192c1a853f8c843",
+    "coverage_changed": false,
+    "declared_at_utc": "2026-09-05T15:22:27.087058+00:00",
+    "declared_before_inference": true,
+    "external_data_import": false,
+    "host_cold_state": "not_established",
+    "hypothesis": "One owner-confirmed quiet host window may eliminate system-wide swapins without changing serving runtime or smoke coverage.",
+    "later_phases": false,
+    "maximum_attempts": 1,
+    "owner_readiness_confirmed": true,
+    "previous_smoke_sha256": "2d8cf07fddafee4b683ec5456b7d705f6f1f773f8851303884ced6db7d560b49",
+    "runtime_changed": false,
+    "schema_version": 1,
+    "training": false,
+    "zero_swap_gate_changed": false
+  },
+  "pressure_deltas": {
+    "metal_recovery_count": 0,
+    "swapins_bytes": 1900544,
+    "swapins_pages": 116,
+    "swapouts_bytes": 0,
+    "swapouts_pages": 0
+  },
+  "private_plan_sha256": "9743c7b29778a2e35e11cc102d84dc65b7ade19684a5e969296c8e85e9f22216",
+  "reason_code": "full_ml_smoke_invalid",
+  "schema_version": 1,
+  "smoke_root_empty": true,
+  "source_receipts": [
+    {
+      "byte_size": 123324,
+      "file": "full-ml-smoke-host-ready-1.json",
+      "sha256": "5d21e035ee630ddee8fa1b26d0ade855b70f1ad0699ed03aa592b38056bbdc07"
+    },
+    {
+      "byte_size": 642,
+      "file": "host-ready-control-launch-result.json",
+      "sha256": "cb2e25bcfe3c91728a75feb187fbbe5c1c4b436d6c78fefe8d739e6aa7e4d0e6"
+    }
+  ],
+  "status": "rejected",
+  "swapin_events": [
+    {
+      "elapsed_nanoseconds": 255433042,
+      "metal_in_use_system_memory_bytes": 1191444480,
+      "swapins_delta_pages": 4
+    },
+    {
+      "elapsed_nanoseconds": 3306746375,
+      "metal_in_use_system_memory_bytes": 1244872704,
+      "swapins_delta_pages": 4
+    },
+    {
+      "elapsed_nanoseconds": 3559855125,
+      "metal_in_use_system_memory_bytes": 1270300672,
+      "swapins_delta_pages": 24
+    },
+    {
+      "elapsed_nanoseconds": 4829473833,
+      "metal_in_use_system_memory_bytes": 1180811264,
+      "swapins_delta_pages": 8
+    },
+    {
+      "elapsed_nanoseconds": 5084661667,
+      "metal_in_use_system_memory_bytes": 1185087488,
+      "swapins_delta_pages": 24
+    },
+    {
+      "elapsed_nanoseconds": 9661475167,
+      "metal_in_use_system_memory_bytes": 2875523072,
+      "swapins_delta_pages": 4
+    },
+    {
+      "elapsed_nanoseconds": 10166995125,
+      "metal_in_use_system_memory_bytes": 2904244224,
+      "swapins_delta_pages": 4
+    },
+    {
+      "elapsed_nanoseconds": 35308356750,
+      "metal_in_use_system_memory_bytes": 3859922944,
+      "swapins_delta_pages": 4
+    },
+    {
+      "elapsed_nanoseconds": 53250079792,
+      "metal_in_use_system_memory_bytes": 1180663808,
+      "swapins_delta_pages": 28
+    },
+    {
+      "elapsed_nanoseconds": 87343162333,
+      "metal_in_use_system_memory_bytes": 1250017280,
+      "swapins_delta_pages": 4
+    },
+    {
+      "elapsed_nanoseconds": 87853517375,
+      "metal_in_use_system_memory_bytes": 1254277120,
+      "swapins_delta_pages": 4
+    },
+    {
+      "elapsed_nanoseconds": 88863481417,
+      "metal_in_use_system_memory_bytes": 1266139136,
+      "swapins_delta_pages": 4
+    }
+  ],
+  "workspace_cleanup": "complete"
+}

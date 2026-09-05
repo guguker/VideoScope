@@ -6,7 +6,7 @@ They are **not an accepted Phase-0 bundle** and are not promotion evidence.
 Only the previously frozen `regression_seen` clips and synthetic smoke media
 were used. No weights were trained, external data imported or user state changed.
 
-[rejection.json](rejection.json) binds the twelve exact source receipts by byte
+[rejection.json](rejection.json) binds the twelve exact initial source receipts by byte
 size and SHA-256. It records the actual collector exit code 3, no bundle output,
 the independently checked contracts and six observed swapin events. The separate
 [diagnostic error ledger](error-ledger-diagnostic.json) distinguishes the resource
@@ -31,6 +31,17 @@ failure from product/direct execution errors and model-quality failures.
 - [Predeclared run order](run-order.json): batch, direct verifier, then smoke;
   no simultaneous agent helper processes during measured runs. Host-cold state
   and ownership of the system-wide swapins are not established.
+
+The owner subsequently confirmed a quiet Mac window. The one predeclared,
+unchanged [host-ready smoke](full-ml-smoke-host-ready-1.json) also completed all
+eight steps, five profiles and export, with matching source SHA and complete
+cleanup. Its [launch receipt](host-ready-control-launch-result.json) records an
+empty smoke root. The separate [host-ready rejection](host-ready-rejection.json)
+binds both exact receipts and records collector exit code 3, no bundle, and
+**116 swapin pages (1,900,544 bytes)** with zero swapout or Metal recovery.
+This is a resource/infrastructure failure, separate from the model misses in
+the unchanged initial diagnostic ledger. The first 446-page rejection remains
+retained; a quiet window did not establish a zero-swap baseline.
 
 The exact raw JSON files contain stable IDs, hashes and numeric/typed
 observations. They contain no private paths, queries, source media, credentials
@@ -64,10 +75,17 @@ and `phase0_rejected_output` to a new, nonexistent output directory:
 
 Expected: exit code `3`, `invalid_evidence`, and no output bundle. An accepted
 baseline requires an unchanged full smoke passing the strict resource gate and
-successful collection of all four shared-ID artifacts. The next bounded control
-is one run after the owner confirms a quiet host window. Preserve every rejected
-attempt and do not change the gate or infer that time elapsed means host readiness.
+successful collection of all four shared-ID artifacts. To replay the host-ready
+rejection, substitute `full-ml-smoke-host-ready-1.json` for the smoke input and use
+another new output directory; the expected result is the same.
 
 The [repository replay receipt](repository-replay.json) records a fresh invocation
-using these twelve copied files: byte hashes and local links passed, the unchanged
+using the twelve initial copied files: byte hashes and local links passed, the unchanged
 collector again returned `3`, and no output directory was created.
+
+The next bounded change adds diagnostic stage boundaries and RSS by worker role
+on a shared monotonic timeline. It changes observation only, preserving model
+lifecycle, coverage and the acceptance gate. The current system-wide samples
+cannot establish a Lighthouse cause or another process's ownership of the
+swapins. Preserve both rejections; do not run another identical smoke or infer
+host-cold state from owner readiness or elapsed time.

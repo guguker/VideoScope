@@ -134,6 +134,10 @@ def test_phase_zero_evidence_commands_use_isolated_python_entrypoints() -> None:
 
     assert (
         '"$(CURDIR)/.venv/bin/python" -I '
+        '"$(CURDIR)/scripts/full-ml-smoke-diagnostic.py"'
+    ) in makefile
+    assert (
+        '"$(CURDIR)/.venv/bin/python" -I '
         '"$(CURDIR)/scripts/full-ml-smoke.py"'
     ) in makefile
     assert ".venv/bin/python -I scripts/phase0-rollback-proof.py" in phase_zero
@@ -153,6 +157,7 @@ def test_phase_zero_entrypoints_ignore_hostile_pythonpath(tmp_path: Path) -> Non
     python = ROOT / ".venv" / "bin" / "python"
     commands = (
         [python, "-I", ROOT / "scripts" / "full-ml-smoke.py", "--help"],
+        [python, "-I", ROOT / "scripts" / "full-ml-smoke-diagnostic.py", "--help"],
         [python, "-I", ROOT / "scripts" / "phase0-evidence.py", "--help"],
         [
             python,
