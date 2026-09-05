@@ -1,0 +1,986 @@
+{
+  "batch_receipt_published": false,
+  "classification_note": "Persisted profile model_miss_count counts queries without relevant intervals; zero does not imply absence of false positives or a passed precision guardrail.",
+  "code_sha": "ea10ad0577484c74696e432bc09ef55a73721811",
+  "dataset_revision": "8cda261148ce3f459e08c3762017cec86970ab7c85d36eaa77ef9f832a2ae6a1",
+  "decision": "Reject the incomplete five-profile batch. Preserve measured four-profile diagnostics and correct the reranker candidate contract before repeating proof at a clean revision.",
+  "evidence_kind": "infrastructure_diagnostic",
+  "evidence_use": "regression_only",
+  "failed_profile_id": "qwen_verification",
+  "failure_classification": {
+    "category": "infrastructure_error",
+    "component": "candidate_reranker_contract",
+    "failed_profile_quality": "not_available_no_manifest",
+    "logged_failure_occurrences": 3,
+    "logged_occurrences_are_not_a_complete_case_error_count": true,
+    "message_code": "candidate_reranker_changed_pinned_candidate_set"
+  },
+  "indexing": {
+    "complete_job_count": 10,
+    "failed_stage_attempt_count": 0,
+    "inspection": "immutable_read_only_sqlite_no_wal_sidecars",
+    "private_database_sha256": "e308de461ff59e5135981041c72703f297d65d6d8baf57cc9b5b56b4f5bd0484",
+    "provision_receipt_sha256": "cfdcc2a86bb4821466b8ccd2941e913dc7c1d579efdb4011bf462e3224fd86da",
+    "ready_video_count": 10,
+    "stage_counts": [
+      {
+        "attempt_count": 10,
+        "stage_kind": "lighthouse",
+        "state": "complete",
+        "video_count": 10
+      },
+      {
+        "attempt_count": 10,
+        "stage_kind": "objects",
+        "state": "complete",
+        "video_count": 10
+      },
+      {
+        "attempt_count": 10,
+        "stage_kind": "ocr",
+        "state": "complete",
+        "video_count": 10
+      },
+      {
+        "attempt_count": 10,
+        "stage_kind": "scenes",
+        "state": "complete",
+        "video_count": 10
+      },
+      {
+        "attempt_count": 10,
+        "stage_kind": "speech",
+        "state": "complete",
+        "video_count": 10
+      },
+      {
+        "attempt_count": 10,
+        "stage_kind": "text_vectors",
+        "state": "complete",
+        "video_count": 10
+      },
+      {
+        "attempt_count": 10,
+        "stage_kind": "visual_dense",
+        "state": "complete",
+        "video_count": 10
+      }
+    ],
+    "status": "complete"
+  },
+  "persisted_profile_count": 4,
+  "persisted_profile_manifests": "retained_privately_hashes_only_in_this_control",
+  "private_batch_stderr_sha256": "d35a1510171d77f8e462881e50275c1826d77ca7f48e3b5a110623d32f18c233",
+  "private_registry_sha256": "b8fad1607a10fe5cb4a0866cd587b3d2b1435214e2c1b8f5e1fca9c7d4ba686a",
+  "profiles": [
+    {
+      "manifest_audit": "passed",
+      "manifest_byte_size": 64819,
+      "manifest_schema_version": 3,
+      "manifest_sha256": "57b0431057c7da1efe3c32c13f879bb01856b21d80baa09e9ab48825e2212654",
+      "measurement_evidence_status": "complete",
+      "measurement_status": "complete",
+      "profile_id": "lexical_qdrant",
+      "quality_metric_scope": "all_aggregate_metrics_without_slice_rows",
+      "quality_metrics": [
+        {
+          "name": "candidate_recall_at_50",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "completed_case_count",
+          "unit": "count",
+          "value": 5.0
+        },
+        {
+          "name": "error_count",
+          "unit": "count",
+          "value": 0.0
+        },
+        {
+          "name": "error_rate",
+          "unit": "ratio",
+          "value": 0.0
+        },
+        {
+          "name": "false_positive_rate",
+          "unit": "ratio",
+          "value": 0.5714285714285714
+        },
+        {
+          "name": "hard_negative_hit_rate",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "infrastructure_failure_count",
+          "unit": "count",
+          "value": 0.0
+        },
+        {
+          "name": "infrastructure_failure_rate",
+          "unit": "ratio",
+          "value": 0.0
+        },
+        {
+          "name": "mean_boundary_error_seconds",
+          "unit": "seconds",
+          "value": 1.6333575658137394
+        },
+        {
+          "name": "mean_end_boundary_error_seconds",
+          "unit": "seconds",
+          "value": 3.2667151316274787
+        },
+        {
+          "name": "mean_latency_ms",
+          "unit": "milliseconds",
+          "value": 1607.9787165857852
+        },
+        {
+          "name": "mean_start_boundary_error_seconds",
+          "unit": "seconds",
+          "value": 0.0
+        },
+        {
+          "name": "mean_temporal_iou",
+          "unit": "ratio",
+          "value": 0.9020176326463472
+        },
+        {
+          "name": "model_miss_count",
+          "unit": "count",
+          "value": 0.0
+        },
+        {
+          "name": "model_miss_rate",
+          "unit": "ratio",
+          "value": 0.0
+        },
+        {
+          "name": "mrr",
+          "unit": "ratio",
+          "value": 0.7666666666666666
+        },
+        {
+          "name": "ndcg_at_10",
+          "unit": "ratio",
+          "value": 0.8403142945053556
+        },
+        {
+          "name": "p50_latency_ms",
+          "unit": "milliseconds",
+          "value": 1609.9920829292387
+        },
+        {
+          "name": "p95_latency_ms",
+          "unit": "milliseconds",
+          "value": 1623.7274589948356
+        },
+        {
+          "name": "precision_at_5",
+          "unit": "ratio",
+          "value": 0.24000000000000002
+        },
+        {
+          "name": "recall_at_1",
+          "unit": "ratio",
+          "value": 0.6
+        },
+        {
+          "name": "recall_at_10",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "recall_at_20",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "recall_at_3",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "recall_at_5",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "total_case_count",
+          "unit": "count",
+          "value": 5.0
+        }
+      ],
+      "run_id": "phase0-proof17-ea10ad0-lexical_qdrant",
+      "run_status": "complete",
+      "system_metrics": [
+        {
+          "name": "active_immutable_artifact_allocated_bytes",
+          "unit": "bytes",
+          "value": 610304.0
+        },
+        {
+          "name": "active_immutable_artifact_file_count",
+          "unit": "count",
+          "value": 3.0
+        },
+        {
+          "name": "active_immutable_artifact_logical_bytes",
+          "unit": "bytes",
+          "value": 594517.0
+        },
+        {
+          "name": "benchmark_scratch_allocated_bytes_baseline",
+          "unit": "bytes",
+          "value": 1127759872.0
+        },
+        {
+          "name": "benchmark_scratch_allocated_bytes_final",
+          "unit": "bytes",
+          "value": 1127759872.0
+        },
+        {
+          "name": "benchmark_scratch_allocated_bytes_growth",
+          "unit": "bytes",
+          "value": 0.0
+        },
+        {
+          "name": "benchmark_scratch_file_count_baseline",
+          "unit": "count",
+          "value": 8.0
+        },
+        {
+          "name": "benchmark_scratch_file_count_final",
+          "unit": "count",
+          "value": 8.0
+        },
+        {
+          "name": "benchmark_scratch_file_count_growth",
+          "unit": "count",
+          "value": 0.0
+        },
+        {
+          "name": "benchmark_scratch_logical_bytes_baseline",
+          "unit": "bytes",
+          "value": 1127737963.0
+        },
+        {
+          "name": "benchmark_scratch_logical_bytes_final",
+          "unit": "bytes",
+          "value": 1127737963.0
+        },
+        {
+          "name": "benchmark_scratch_logical_bytes_growth",
+          "unit": "bytes",
+          "value": 0.0
+        },
+        {
+          "name": "process_tree_rss_sample_count",
+          "unit": "count",
+          "value": 142.0
+        },
+        {
+          "name": "sampled_peak_process_tree_rss_bytes",
+          "unit": "bytes",
+          "value": 4386914304.0
+        },
+        {
+          "name": "sampled_process_tree_rss_baseline_bytes",
+          "unit": "bytes",
+          "value": 4386652160.0
+        },
+        {
+          "name": "sampled_process_tree_rss_increment_bytes",
+          "unit": "bytes",
+          "value": 262144.0
+        }
+      ]
+    },
+    {
+      "manifest_audit": "passed",
+      "manifest_byte_size": 66329,
+      "manifest_schema_version": 3,
+      "manifest_sha256": "391053c1e16b09fba4f3b48878d0eb461444dedd67828b00944c15c43c75b0ce",
+      "measurement_evidence_status": "complete",
+      "measurement_status": "complete",
+      "profile_id": "dense_siglip",
+      "quality_metric_scope": "all_aggregate_metrics_without_slice_rows",
+      "quality_metrics": [
+        {
+          "name": "candidate_recall_at_50",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "completed_case_count",
+          "unit": "count",
+          "value": 5.0
+        },
+        {
+          "name": "error_count",
+          "unit": "count",
+          "value": 0.0
+        },
+        {
+          "name": "error_rate",
+          "unit": "ratio",
+          "value": 0.0
+        },
+        {
+          "name": "false_positive_rate",
+          "unit": "ratio",
+          "value": 0.5714285714285714
+        },
+        {
+          "name": "hard_negative_hit_rate",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "infrastructure_failure_count",
+          "unit": "count",
+          "value": 0.0
+        },
+        {
+          "name": "infrastructure_failure_rate",
+          "unit": "ratio",
+          "value": 0.0
+        },
+        {
+          "name": "mean_boundary_error_seconds",
+          "unit": "seconds",
+          "value": 1.5644444444444443
+        },
+        {
+          "name": "mean_end_boundary_error_seconds",
+          "unit": "seconds",
+          "value": 0.005555555555555536
+        },
+        {
+          "name": "mean_latency_ms",
+          "unit": "milliseconds",
+          "value": 2629.3405004311353
+        },
+        {
+          "name": "mean_start_boundary_error_seconds",
+          "unit": "seconds",
+          "value": 3.123333333333333
+        },
+        {
+          "name": "mean_temporal_iou",
+          "unit": "ratio",
+          "value": 0.9028176326463472
+        },
+        {
+          "name": "model_miss_count",
+          "unit": "count",
+          "value": 0.0
+        },
+        {
+          "name": "model_miss_rate",
+          "unit": "ratio",
+          "value": 0.0
+        },
+        {
+          "name": "mrr",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "ndcg_at_10",
+          "unit": "ratio",
+          "value": 0.9754430630676099
+        },
+        {
+          "name": "p50_latency_ms",
+          "unit": "milliseconds",
+          "value": 1811.658542137593
+        },
+        {
+          "name": "p95_latency_ms",
+          "unit": "milliseconds",
+          "value": 6259.6510839648545
+        },
+        {
+          "name": "precision_at_5",
+          "unit": "ratio",
+          "value": 0.24000000000000002
+        },
+        {
+          "name": "recall_at_1",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "recall_at_10",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "recall_at_20",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "recall_at_3",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "recall_at_5",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "total_case_count",
+          "unit": "count",
+          "value": 5.0
+        }
+      ],
+      "run_id": "phase0-proof17-ea10ad0-dense_siglip",
+      "run_status": "complete",
+      "system_metrics": [
+        {
+          "name": "active_immutable_artifact_allocated_bytes",
+          "unit": "bytes",
+          "value": 610304.0
+        },
+        {
+          "name": "active_immutable_artifact_file_count",
+          "unit": "count",
+          "value": 3.0
+        },
+        {
+          "name": "active_immutable_artifact_logical_bytes",
+          "unit": "bytes",
+          "value": 594517.0
+        },
+        {
+          "name": "benchmark_scratch_allocated_bytes_baseline",
+          "unit": "bytes",
+          "value": 1127759872.0
+        },
+        {
+          "name": "benchmark_scratch_allocated_bytes_final",
+          "unit": "bytes",
+          "value": 1127759872.0
+        },
+        {
+          "name": "benchmark_scratch_allocated_bytes_growth",
+          "unit": "bytes",
+          "value": 0.0
+        },
+        {
+          "name": "benchmark_scratch_file_count_baseline",
+          "unit": "count",
+          "value": 8.0
+        },
+        {
+          "name": "benchmark_scratch_file_count_final",
+          "unit": "count",
+          "value": 8.0
+        },
+        {
+          "name": "benchmark_scratch_file_count_growth",
+          "unit": "count",
+          "value": 0.0
+        },
+        {
+          "name": "benchmark_scratch_logical_bytes_baseline",
+          "unit": "bytes",
+          "value": 1127737963.0
+        },
+        {
+          "name": "benchmark_scratch_logical_bytes_final",
+          "unit": "bytes",
+          "value": 1127737963.0
+        },
+        {
+          "name": "benchmark_scratch_logical_bytes_growth",
+          "unit": "bytes",
+          "value": 0.0
+        },
+        {
+          "name": "process_tree_rss_sample_count",
+          "unit": "count",
+          "value": 233.0
+        },
+        {
+          "name": "sampled_peak_process_tree_rss_bytes",
+          "unit": "bytes",
+          "value": 5372870656.0
+        },
+        {
+          "name": "sampled_process_tree_rss_baseline_bytes",
+          "unit": "bytes",
+          "value": 4637605888.0
+        },
+        {
+          "name": "sampled_process_tree_rss_increment_bytes",
+          "unit": "bytes",
+          "value": 735264768.0
+        }
+      ]
+    },
+    {
+      "manifest_audit": "passed",
+      "manifest_byte_size": 66519,
+      "manifest_schema_version": 3,
+      "manifest_sha256": "4d2948c18a639e4c96112e9790159caad5d25e213dd093e1ad60f0f6df51a9bc",
+      "measurement_evidence_status": "complete",
+      "measurement_status": "complete",
+      "profile_id": "temporal_refinement",
+      "quality_metric_scope": "all_aggregate_metrics_without_slice_rows",
+      "quality_metrics": [
+        {
+          "name": "candidate_recall_at_50",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "completed_case_count",
+          "unit": "count",
+          "value": 5.0
+        },
+        {
+          "name": "error_count",
+          "unit": "count",
+          "value": 0.0
+        },
+        {
+          "name": "error_rate",
+          "unit": "ratio",
+          "value": 0.0
+        },
+        {
+          "name": "false_positive_rate",
+          "unit": "ratio",
+          "value": 0.5714285714285714
+        },
+        {
+          "name": "hard_negative_hit_rate",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "infrastructure_failure_count",
+          "unit": "count",
+          "value": 0.0
+        },
+        {
+          "name": "infrastructure_failure_rate",
+          "unit": "ratio",
+          "value": 0.0
+        },
+        {
+          "name": "mean_boundary_error_seconds",
+          "unit": "seconds",
+          "value": 1.5644444444444443
+        },
+        {
+          "name": "mean_end_boundary_error_seconds",
+          "unit": "seconds",
+          "value": 0.005555555555555536
+        },
+        {
+          "name": "mean_latency_ms",
+          "unit": "milliseconds",
+          "value": 2707.449541799724
+        },
+        {
+          "name": "mean_start_boundary_error_seconds",
+          "unit": "seconds",
+          "value": 3.123333333333333
+        },
+        {
+          "name": "mean_temporal_iou",
+          "unit": "ratio",
+          "value": 0.9028176326463472
+        },
+        {
+          "name": "model_miss_count",
+          "unit": "count",
+          "value": 0.0
+        },
+        {
+          "name": "model_miss_rate",
+          "unit": "ratio",
+          "value": 0.0
+        },
+        {
+          "name": "mrr",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "ndcg_at_10",
+          "unit": "ratio",
+          "value": 0.9754430630676099
+        },
+        {
+          "name": "p50_latency_ms",
+          "unit": "milliseconds",
+          "value": 2558.9607909787446
+        },
+        {
+          "name": "p95_latency_ms",
+          "unit": "milliseconds",
+          "value": 3146.9909590668976
+        },
+        {
+          "name": "precision_at_5",
+          "unit": "ratio",
+          "value": 0.24000000000000002
+        },
+        {
+          "name": "recall_at_1",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "recall_at_10",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "recall_at_20",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "recall_at_3",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "recall_at_5",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "total_case_count",
+          "unit": "count",
+          "value": 5.0
+        }
+      ],
+      "run_id": "phase0-proof17-ea10ad0-temporal_refinement",
+      "run_status": "complete",
+      "system_metrics": [
+        {
+          "name": "active_immutable_artifact_allocated_bytes",
+          "unit": "bytes",
+          "value": 610304.0
+        },
+        {
+          "name": "active_immutable_artifact_file_count",
+          "unit": "count",
+          "value": 3.0
+        },
+        {
+          "name": "active_immutable_artifact_logical_bytes",
+          "unit": "bytes",
+          "value": 594517.0
+        },
+        {
+          "name": "benchmark_scratch_allocated_bytes_baseline",
+          "unit": "bytes",
+          "value": 1127759872.0
+        },
+        {
+          "name": "benchmark_scratch_allocated_bytes_final",
+          "unit": "bytes",
+          "value": 1127759872.0
+        },
+        {
+          "name": "benchmark_scratch_allocated_bytes_growth",
+          "unit": "bytes",
+          "value": 0.0
+        },
+        {
+          "name": "benchmark_scratch_file_count_baseline",
+          "unit": "count",
+          "value": 8.0
+        },
+        {
+          "name": "benchmark_scratch_file_count_final",
+          "unit": "count",
+          "value": 8.0
+        },
+        {
+          "name": "benchmark_scratch_file_count_growth",
+          "unit": "count",
+          "value": 0.0
+        },
+        {
+          "name": "benchmark_scratch_logical_bytes_baseline",
+          "unit": "bytes",
+          "value": 1127737963.0
+        },
+        {
+          "name": "benchmark_scratch_logical_bytes_final",
+          "unit": "bytes",
+          "value": 1127737963.0
+        },
+        {
+          "name": "benchmark_scratch_logical_bytes_growth",
+          "unit": "bytes",
+          "value": 0.0
+        },
+        {
+          "name": "process_tree_rss_sample_count",
+          "unit": "count",
+          "value": 242.0
+        },
+        {
+          "name": "sampled_peak_process_tree_rss_bytes",
+          "unit": "bytes",
+          "value": 5367627776.0
+        },
+        {
+          "name": "sampled_process_tree_rss_baseline_bytes",
+          "unit": "bytes",
+          "value": 5279924224.0
+        },
+        {
+          "name": "sampled_process_tree_rss_increment_bytes",
+          "unit": "bytes",
+          "value": 87703552.0
+        }
+      ]
+    },
+    {
+      "manifest_audit": "passed",
+      "manifest_byte_size": 66561,
+      "manifest_schema_version": 3,
+      "manifest_sha256": "54c453ce8d41ba5b4b674eb3010a0ada51eac7bd9572a23241fea1d0a08378b5",
+      "measurement_evidence_status": "complete",
+      "measurement_status": "complete",
+      "profile_id": "lighthouse",
+      "quality_metric_scope": "all_aggregate_metrics_without_slice_rows",
+      "quality_metrics": [
+        {
+          "name": "candidate_recall_at_50",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "completed_case_count",
+          "unit": "count",
+          "value": 5.0
+        },
+        {
+          "name": "error_count",
+          "unit": "count",
+          "value": 0.0
+        },
+        {
+          "name": "error_rate",
+          "unit": "ratio",
+          "value": 0.0
+        },
+        {
+          "name": "false_positive_rate",
+          "unit": "ratio",
+          "value": 0.5714285714285714
+        },
+        {
+          "name": "hard_negative_hit_rate",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "infrastructure_failure_count",
+          "unit": "count",
+          "value": 0.0
+        },
+        {
+          "name": "infrastructure_failure_rate",
+          "unit": "ratio",
+          "value": 0.0
+        },
+        {
+          "name": "mean_boundary_error_seconds",
+          "unit": "seconds",
+          "value": 1.5616666666666665
+        },
+        {
+          "name": "mean_end_boundary_error_seconds",
+          "unit": "seconds",
+          "value": 0.0
+        },
+        {
+          "name": "mean_latency_ms",
+          "unit": "milliseconds",
+          "value": 2689.947333233431
+        },
+        {
+          "name": "mean_start_boundary_error_seconds",
+          "unit": "seconds",
+          "value": 3.123333333333333
+        },
+        {
+          "name": "mean_temporal_iou",
+          "unit": "ratio",
+          "value": 0.951594121420967
+        },
+        {
+          "name": "model_miss_count",
+          "unit": "count",
+          "value": 0.0
+        },
+        {
+          "name": "model_miss_rate",
+          "unit": "ratio",
+          "value": 0.0
+        },
+        {
+          "name": "mrr",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "ndcg_at_10",
+          "unit": "ratio",
+          "value": 0.9754430630676099
+        },
+        {
+          "name": "p50_latency_ms",
+          "unit": "milliseconds",
+          "value": 2603.5358749795705
+        },
+        {
+          "name": "p95_latency_ms",
+          "unit": "milliseconds",
+          "value": 3199.030540883541
+        },
+        {
+          "name": "precision_at_5",
+          "unit": "ratio",
+          "value": 0.24000000000000002
+        },
+        {
+          "name": "recall_at_1",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "recall_at_10",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "recall_at_20",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "recall_at_3",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "recall_at_5",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "total_case_count",
+          "unit": "count",
+          "value": 5.0
+        }
+      ],
+      "run_id": "phase0-proof17-ea10ad0-lighthouse",
+      "run_status": "complete",
+      "system_metrics": [
+        {
+          "name": "active_immutable_artifact_allocated_bytes",
+          "unit": "bytes",
+          "value": 610304.0
+        },
+        {
+          "name": "active_immutable_artifact_file_count",
+          "unit": "count",
+          "value": 3.0
+        },
+        {
+          "name": "active_immutable_artifact_logical_bytes",
+          "unit": "bytes",
+          "value": 594517.0
+        },
+        {
+          "name": "benchmark_scratch_allocated_bytes_baseline",
+          "unit": "bytes",
+          "value": 1127759872.0
+        },
+        {
+          "name": "benchmark_scratch_allocated_bytes_final",
+          "unit": "bytes",
+          "value": 1127759872.0
+        },
+        {
+          "name": "benchmark_scratch_allocated_bytes_growth",
+          "unit": "bytes",
+          "value": 0.0
+        },
+        {
+          "name": "benchmark_scratch_file_count_baseline",
+          "unit": "count",
+          "value": 8.0
+        },
+        {
+          "name": "benchmark_scratch_file_count_final",
+          "unit": "count",
+          "value": 8.0
+        },
+        {
+          "name": "benchmark_scratch_file_count_growth",
+          "unit": "count",
+          "value": 0.0
+        },
+        {
+          "name": "benchmark_scratch_logical_bytes_baseline",
+          "unit": "bytes",
+          "value": 1127737963.0
+        },
+        {
+          "name": "benchmark_scratch_logical_bytes_final",
+          "unit": "bytes",
+          "value": 1127737963.0
+        },
+        {
+          "name": "benchmark_scratch_logical_bytes_growth",
+          "unit": "bytes",
+          "value": 0.0
+        },
+        {
+          "name": "process_tree_rss_sample_count",
+          "unit": "count",
+          "value": 245.0
+        },
+        {
+          "name": "sampled_peak_process_tree_rss_bytes",
+          "unit": "bytes",
+          "value": 5447958528.0
+        },
+        {
+          "name": "sampled_process_tree_rss_baseline_bytes",
+          "unit": "bytes",
+          "value": 5319163904.0
+        },
+        {
+          "name": "sampled_process_tree_rss_increment_bytes",
+          "unit": "bytes",
+          "value": 128794624.0
+        }
+      ]
+    }
+  ],
+  "promotion_eligible": false,
+  "reason_code": "benchmark_execution_failed",
+  "schema_version": 1,
+  "source_use": "existing_regression_seen_prepared_inputs",
+  "status": "rejected"
+}

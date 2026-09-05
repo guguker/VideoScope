@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "status": "rejected",
+  "evidence_kind": "infrastructure_diagnostic",
+  "code_sha": "ea10ad0577484c74696e432bc09ef55a73721811",
+  "receipt_file": "ea10ad0-first-smoke.json",
+  "receipt_sha256": "386e97c00fca788bf19f64a557834727ee00e9f55ac28d54a7ad7bef42635929",
+  "receipt_byte_size": 329061,
+  "functional_status": "ready",
+  "component_steps_complete": 8,
+  "profiles": {
+    "dense_siglip": "complete",
+    "internvideo": "not_configured",
+    "lexical_qdrant": "complete",
+    "lighthouse": "complete",
+    "qwen_verification": "complete",
+    "temporal_refinement": "complete"
+  },
+  "guardrail_unchanged": true,
+  "reason_code": "full_ml_smoke_invalid",
+  "classification": "nonzero_system_swapins",
+  "pressure_deltas": {
+    "metal_recovery_count": 0,
+    "swapins_bytes": 5160960,
+    "swapins_pages": 315,
+    "swapouts_bytes": 0,
+    "swapouts_pages": 0
+  },
+  "peak_process_tree_rss_bytes": 10265329664,
+  "peak_metal_bytes": 11165057024,
+  "oom": {
+    "status": "not_observed"
+  },
+  "elapsed_nanoseconds": 291041571291,
+  "helper_process_lease": "No parallel agent shell, Python, tests or file scans during entire measurement; root polled existing launcher only.",
+  "host_cold_start": "not_established",
+  "model_attribution": "not_established",
+  "model_quality_scored": false,
+  "workspace_cleanup": "complete",
+  "decision": "Retain exact rejected receipt. Continue independent frozen batch and direct verifier checks; do not claim Phase 0 completion."
+}
