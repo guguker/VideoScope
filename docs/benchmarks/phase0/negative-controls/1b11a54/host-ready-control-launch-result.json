@@ -1,0 +1,23 @@
+{
+  "code_sha": "1b11a5420e2fc66417f314c03192c1a853f8c843",
+  "elapsed_seconds": 104.709,
+  "launcher_exit_code": 0,
+  "oom": {
+    "status": "not_observed"
+  },
+  "peak_metal_bytes": 11155505152,
+  "peak_process_tree_rss_bytes": 10616471552,
+  "pressure_deltas": {
+    "metal_recovery_count": 0,
+    "swapins_bytes": 1900544,
+    "swapins_pages": 116,
+    "swapouts_bytes": 0,
+    "swapouts_pages": 0
+  },
+  "raw_receipt_byte_size": 123324,
+  "raw_receipt_sha256": "5d21e035ee630ddee8fa1b26d0ade855b70f1ad0699ed03aa592b38056bbdc07",
+  "schema_version": 1,
+  "smoke_root_empty": true,
+  "status": "ready",
+  "workspace_cleanup": "complete"
+}

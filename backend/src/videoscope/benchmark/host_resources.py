@@ -741,6 +741,12 @@ class HostResourceSampler:
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
 
+    @property
+    def started_monotonic_ns(self) -> int | None:
+        """Existing sampler epoch for optional diagnostic alignment only."""
+        with self._lock:
+            return self._start_ns
+
     def start(self) -> None:
         with self._lock:
             if self._state != "new":

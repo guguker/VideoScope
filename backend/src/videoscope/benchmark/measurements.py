@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import deque
+from collections.abc import Callable
 import ctypes
 import ctypes.util
 from dataclasses import asdict, dataclass, field
@@ -12,6 +13,7 @@ from pathlib import Path
 import platform
 import stat
 import threading
+from time import monotonic_ns
 from typing import Iterable, Literal, Protocol
 
 from .schema import (
@@ -471,6 +473,10 @@ class ProcessTreeRssSampler:
         provider: ProcessSnapshotProvider,
         managed_workers: tuple[ManagedProcessBinding, ...] = (),
         expected_provider_identity: str | None = None,
+        diagnostic_observer: Callable[
+            [int, tuple[ManagedProcessBinding, ...], tuple[ProcessRecord, ...], int, int],
+            None,
+        ] | None = None,
     ) -> None:
         _require_pid(root_pid, "process root pid")
         _validate_managed_workers(managed_workers)
@@ -496,6 +502,17 @@ class ProcessTreeRssSampler:
         self._lock = threading.Lock()
         self._started = False
         self._finished = False
+        self._diagnostic_observer = None
+        if diagnostic_observer is not None:
+            self.attach_diagnostic_observer(diagnostic_observer)
+
+    def attach_diagnostic_observer(self, observer: Callable[..., None]) -> None:
+        """Attach an opt-in observer before the existing sampler starts."""
+        if self._started or self._finished or self._diagnostic_observer is not None:
+            raise MeasurementError("process_diagnostic_observer_invalid_state")
+        if not callable(observer):
+            raise MeasurementUnavailableError("process_diagnostic_observer_unavailable")
+        self._diagnostic_observer = observer
 
     def start(self) -> None:
         if self._started or self._finished:
@@ -563,6 +580,13 @@ class ProcessTreeRssSampler:
                 self._samples.append(sample)
 
     def _sample_once(self) -> int:
+        observer = self._diagnostic_observer
+        snapshot_started_ns = None
+        if observer is not None:
+            try:
+                snapshot_started_ns = monotonic_ns()
+            except Exception:
+                raise MeasurementError("process_diagnostic_clock_invalid") from None
         if self._provider.identity != self._provider_identity:
             raise MeasurementError("process_provider_identity_changed")
         try:
@@ -583,6 +607,19 @@ class ProcessTreeRssSampler:
             raise
         except Exception:
             raise MeasurementError("process_sample_failed") from None
+
+        snapshot_finished_ns = None
+        if observer is not None:
+            try:
+                snapshot_finished_ns = monotonic_ns()
+            except Exception:
+                raise MeasurementError("process_diagnostic_clock_invalid") from None
+            if (
+                type(snapshot_started_ns) is not int
+                or type(snapshot_finished_ns) is not int
+                or not 0 <= snapshot_started_ns <= snapshot_finished_ns <= (1 << 63) - 1
+            ):
+                raise MeasurementError("process_diagnostic_clock_invalid")
 
         by_pid: dict[int, ProcessRecord] = {}
         children: dict[int, list[int]] = {}
@@ -630,6 +667,14 @@ class ProcessTreeRssSampler:
         total = sum(by_pid[pid].rss_bytes for pid in included)
         if total > _MAX_RSS_BYTES:
             raise MeasurementError("process_rss_overflow")
+        if observer is not None:
+            try:
+                observer(
+                    self._root_pid, self._managed_workers, tuple(records),
+                    snapshot_started_ns, snapshot_finished_ns,
+                )
+            except Exception:
+                raise MeasurementError("process_diagnostic_observer_failed") from None
         return total
 
     def _stop_and_join(self) -> None:

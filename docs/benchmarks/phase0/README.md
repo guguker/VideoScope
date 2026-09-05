@@ -8,8 +8,13 @@ accepted by the unchanged collector.
 
 The latest [clean `1b11a54` control](negative-controls/1b11a54/README.md) retains
 all five completed profiles, the ten-case verifier, six-environment attestation
-and rollback proof. Its functionally ready smoke was rejected for 446 swapin
-pages. No accepted four-file evidence bundle has been published.
+and rollback proof. Its first functionally ready smoke was rejected for 446
+swapin pages. One unchanged smoke after the owner confirmed a quiet Mac window
+was also [rejected](negative-controls/1b11a54/host-ready-rejection.json), for 116
+swapin pages. Both failures are retained; no accepted four-file evidence bundle
+has been published. An opt-in [diagnostic stage/RSS timeline](diagnostic-timeline.md)
+is implemented without changing model lifecycle, smoke coverage or the gate. Its
+next control must run from a new clean checkout.
 
 The collector never starts a model. It validates already produced JSON and
 publishes one create-once directory containing:
