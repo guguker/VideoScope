@@ -8,7 +8,11 @@ from videoscope.artifacts import (
     StageSpecification,
     StageState,
 )
-from videoscope.repository import Repository, SegmentRecord
+from videoscope.repository import (
+    ExternalIndexReleaseSnapshot,
+    Repository,
+    SegmentRecord,
+)
 from videoscope.search.service import (
     EvaluationSearchConfiguration,
     ProductSearchExecutionTrace,
@@ -1276,6 +1280,223 @@ class _PinnedLighthouseProvider:
                 query,
             )
         ]
+
+
+def _released_external_indexes(
+    visual: _PinnedVisualProvider,
+    lighthouse: _PinnedLighthouseProvider,
+) -> ExternalIndexReleaseSnapshot:
+    visual_descriptor = visual.generation_descriptor(
+        "video-1",
+        visual.generation_id,
+    )
+    lighthouse_descriptor = lighthouse.generation_descriptor(
+        "video-1",
+        lighthouse.generation_id,
+    )
+    assert visual_descriptor is not None
+    assert lighthouse_descriptor is not None
+    return ExternalIndexReleaseSnapshot(
+        job_backed_video_ids=frozenset({"video-1"}),
+        visual_dense={"video-1": visual_descriptor},
+        lighthouse={"video-1": lighthouse_descriptor},
+    )
+
+
+def _external_only_evaluation_configuration() -> EvaluationSearchConfiguration:
+    return EvaluationSearchConfiguration(
+        modalities=("lighthouse", "visual"),
+        modality_weights=(("lighthouse", 1.0), ("visual", 1.0)),
+        text_search="disabled",
+        visual_search="dense_siglip",
+        temporal_refinement=True,
+        lighthouse=True,
+        reranker="none",
+        reranker_trigger="disabled",
+        reranker_candidate_limit=0,
+        result_limit=20,
+    )
+
+
+def test_pinned_evaluation_uses_job_release_without_provider_active_pointers(
+    tmp_path,
+) -> None:
+    repository, specifications, index, _service = _ready_generation_search_service(
+        tmp_path
+    )
+    visual = _PinnedVisualProvider()
+    lighthouse = _PinnedLighthouseProvider()
+    release = _released_external_indexes(visual, lighthouse)
+    repository.get_external_index_release_snapshot = (  # type: ignore[method-assign]
+        lambda _video_ids: release
+    )
+
+    def reject_active_pointer(_video_id: str) -> str:
+        raise AssertionError("job-owned releases must not use provider active pointers")
+
+    visual.active_generation_id = reject_active_pointer  # type: ignore[method-assign]
+    lighthouse.active_generation_id = reject_active_pointer  # type: ignore[method-assign]
+    service = SearchService(
+        repository,
+        index,
+        moment_search=lighthouse,
+        visual_search=visual,
+        temporal_refiner=_PinnedTemporalRefiner(),
+        query_router=_ForbiddenQueryRouter(),  # type: ignore[arg-type]
+        specification_resolver=lambda: specifications,
+        media_root=tmp_path,
+    )
+    session = service.open_pinned_evaluation(
+        _external_only_evaluation_configuration(),
+        (_pinned_asset_binding(),),
+    )
+
+    assert session.capability_state("video-1", "visual_dense") == "complete"
+    assert session.capability_state("video-1", "lighthouse") == "complete"
+    assert session.search("winning basket", ("video-1",), limit=20)
+    assert visual.search_calls == [{"video-1": visual.generation_id}]
+    assert lighthouse.search_calls == [{"video-1": lighthouse.generation_id}]
+    session.close()
+
+
+def test_pinned_job_release_binding_drift_invalidates_session(tmp_path) -> None:
+    repository, specifications, index, _service = _ready_generation_search_service(
+        tmp_path
+    )
+    visual = _PinnedVisualProvider()
+    lighthouse = _PinnedLighthouseProvider()
+    release = [_released_external_indexes(visual, lighthouse)]
+    repository.get_external_index_release_snapshot = (  # type: ignore[method-assign]
+        lambda _video_ids: release[0]
+    )
+    service = SearchService(
+        repository,
+        index,
+        moment_search=lighthouse,
+        visual_search=visual,
+        temporal_refiner=_PinnedTemporalRefiner(),
+        specification_resolver=lambda: specifications,
+        media_root=tmp_path,
+    )
+    session = service.open_pinned_evaluation(
+        _external_only_evaluation_configuration(),
+        (_pinned_asset_binding(),),
+    )
+    release[0] = ExternalIndexReleaseSnapshot(
+        job_backed_video_ids=frozenset({"video-1"}),
+        visual_dense={},
+        lighthouse=release[0].lighthouse,
+    )
+
+    assert session.capability_state("video-1", "visual_dense") == "stale"
+    with pytest.raises(SearchDependencyError, match="changed"):
+        session.search("winning basket", ("video-1",), limit=20)
+    with pytest.raises(SearchDependencyError, match="final identity"):
+        session.close()
+
+
+def test_pinned_job_release_missing_does_not_fall_back_to_active_pointer(
+    tmp_path,
+) -> None:
+    repository, specifications, index, _service = _ready_generation_search_service(
+        tmp_path
+    )
+    visual = _PinnedVisualProvider()
+    lighthouse = _PinnedLighthouseProvider()
+    release = _released_external_indexes(visual, lighthouse)
+    repository.get_external_index_release_snapshot = (  # type: ignore[method-assign]
+        lambda _video_ids: ExternalIndexReleaseSnapshot(
+            job_backed_video_ids=release.job_backed_video_ids,
+            visual_dense={},
+            lighthouse=release.lighthouse,
+        )
+    )
+
+    def reject_active_pointer(_video_id: str) -> str:
+        raise AssertionError("job-owned releases must not use provider active pointers")
+
+    visual.active_generation_id = reject_active_pointer  # type: ignore[method-assign]
+    lighthouse.active_generation_id = reject_active_pointer  # type: ignore[method-assign]
+    service = SearchService(
+        repository,
+        index,
+        moment_search=lighthouse,
+        visual_search=visual,
+        temporal_refiner=_PinnedTemporalRefiner(),
+        specification_resolver=lambda: specifications,
+        media_root=tmp_path,
+    )
+    session = service.open_pinned_evaluation(
+        _external_only_evaluation_configuration(),
+        (_pinned_asset_binding(),),
+    )
+
+    assert session.capability_state("video-1", "visual_dense") == "missing"
+    with pytest.raises(
+        SearchDependencyError,
+        match="required pinned capability visual_dense is unavailable",
+    ):
+        session.search("winning basket", ("video-1",), limit=20)
+    assert visual.search_calls == []
+    assert lighthouse.search_calls == []
+    session.close()
+
+
+def test_pinned_job_release_drift_during_search_discards_result_and_trace(
+    tmp_path,
+) -> None:
+    repository, specifications, index, _service = _ready_generation_search_service(
+        tmp_path
+    )
+    visual = _PinnedVisualProvider()
+    lighthouse = _PinnedLighthouseProvider()
+    release = [_released_external_indexes(visual, lighthouse)]
+    repository.get_external_index_release_snapshot = (  # type: ignore[method-assign]
+        lambda _video_ids: release[0]
+    )
+    original_search = visual.search_generations
+
+    def search_then_change_release(
+        query: str,
+        *,
+        generation_bindings: dict[str, dict[str, object]],
+        limit: int,
+    ) -> list[EvidenceHit]:
+        hits = original_search(
+            query,
+            generation_bindings=generation_bindings,
+            limit=limit,
+        )
+        changed_visual = dict(release[0].visual_dense["video-1"])
+        changed_visual["content_sha256"] = "8" * 64
+        release[0] = ExternalIndexReleaseSnapshot(
+            job_backed_video_ids=release[0].job_backed_video_ids,
+            visual_dense={"video-1": changed_visual},
+            lighthouse=release[0].lighthouse,
+        )
+        return hits
+
+    visual.search_generations = search_then_change_release  # type: ignore[method-assign]
+    service = SearchService(
+        repository,
+        index,
+        moment_search=lighthouse,
+        visual_search=visual,
+        temporal_refiner=_PinnedTemporalRefiner(),
+        specification_resolver=lambda: specifications,
+        media_root=tmp_path,
+    )
+    session = service.open_pinned_evaluation(
+        _external_only_evaluation_configuration(),
+        (_pinned_asset_binding(),),
+    )
+
+    with pytest.raises(SearchDependencyError, match="changed"):
+        session.search("winning basket", ("video-1",), limit=20)
+    with pytest.raises(RuntimeError, match="trace is unavailable"):
+        session.last_search_execution_trace()
+    with pytest.raises(SearchDependencyError, match="final identity"):
+        session.close()
 
 
 class _PinnedTemporalRefiner:
