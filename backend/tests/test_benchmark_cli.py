@@ -1054,7 +1054,7 @@ def test_lexical_measurement_preflight_probes_native_rss_and_storage(
     assert summary["reason_code"] is None
     assert summary["process_provider_identity"] == provider.identity
     assert str(summary["measurement_protocol_identity"]).startswith(
-        "process-tree-rss-50ms-contained-storage@2:"
+        "process-tree-rss-50ms-contained-storage@3:"
     )
     assert summary["storage_root_ids"] == [
         "active-text-vector-storage",

@@ -48,7 +48,7 @@
     "promotion_policy_schema_version": 2,
     "evaluation_search_plan_schema_version": 1,
     "measurement_evidence_schema_version": 1,
-    "measurement_protocol_identity_prefix": "process-tree-rss-50ms-contained-storage@2"
+    "measurement_protocol_identity_prefix": "process-tree-rss-50ms-contained-storage@3"
   },
   "profiles": [
     {

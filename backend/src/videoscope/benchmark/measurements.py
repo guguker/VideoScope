@@ -30,7 +30,7 @@ from .schema import (
 
 PROCESS_RSS_SAMPLE_INTERVAL_SECONDS = 0.05
 MEASUREMENT_PROTOCOL_IDENTITY_PREFIX = (
-    "process-tree-rss-50ms-contained-storage@2"
+    "process-tree-rss-50ms-contained-storage@3"
 )
 MAX_PROCESS_RECORDS = 100_000
 _MAX_RSS_BYTES = (1 << 63) - 1
@@ -489,7 +489,6 @@ class ProcessTreeRssSampler:
         self._provider_identity = expected_provider_identity or provider.identity
         self._managed_workers = managed_workers
         self._root_identity: tuple[str, str] | None = None
-        self._observed_identities: dict[int, tuple[str, str]] = {}
         self._samples: list[int] = []
         self._error: MeasurementError | None = None
         self._stop = threading.Event()
@@ -623,12 +622,10 @@ class ProcessTreeRssSampler:
             ):
                 raise MeasurementError("managed_worker_identity_changed")
 
-        for pid in included:
-            record = by_pid[pid]
-            identity = (record.start_token, record.executable_identity)
-            previous = self._observed_identities.setdefault(pid, identity)
-            if previous != identity:
-                raise MeasurementError("process_identity_changed")
+        # Unmanaged descendants can legitimately exec another binary or exit
+        # and have their PID reused between 50 ms samples.  Membership in the
+        # current rooted snapshot is sufficient for their RSS.  The root and
+        # every declared long-lived worker remain identity-bound above.
 
         total = sum(by_pid[pid].rss_bytes for pid in included)
         if total > _MAX_RSS_BYTES:
