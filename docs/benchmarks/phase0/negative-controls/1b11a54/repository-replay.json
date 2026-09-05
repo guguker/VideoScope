@@ -1,0 +1,14 @@
+{
+  "bundle_written": false,
+  "byte_hash_checks": "pass",
+  "code_sha": "1b11a5420e2fc66417f314c03192c1a853f8c843",
+  "collector_exit_code": 3,
+  "collector_stderr": {
+    "error": "invalid_evidence",
+    "message": "Phase-0 evidence is invalid"
+  },
+  "evidence_kind": "repository_receipt_replay",
+  "exact_source_receipt_count": 12,
+  "local_document_links": "pass",
+  "schema_version": 1
+}

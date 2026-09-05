@@ -1,0 +1,283 @@
+{
+  "attempts": [
+    {
+      "candidate_id": "proposal-panel-light-top-gesture-negative",
+      "case_id": "panel-light-top-gesture-negative",
+      "error_code": null,
+      "latency_ms": 20191.905250074342,
+      "prediction": {
+        "confidence": 0.9,
+        "facts": [
+          {
+            "fact_id": "matches_query",
+            "predicted": true
+          }
+        ],
+        "predicted_jersey": null
+      },
+      "prepared_input_byte_size": 782967,
+      "prepared_input_sha256": "3939304753591a688247c6ef42bcba85b55b0fabbb2bd2c107f7bd6287324883",
+      "proposal_rank": 1,
+      "proposal_score": 0.0,
+      "status": "model_miss"
+    },
+    {
+      "candidate_id": "proposal-panel-light-top-gesture-positive",
+      "case_id": "panel-light-top-gesture-positive",
+      "error_code": null,
+      "latency_ms": 17002.77266604826,
+      "prediction": {
+        "confidence": 0.9,
+        "facts": [
+          {
+            "fact_id": "matches_query",
+            "predicted": true
+          }
+        ],
+        "predicted_jersey": null
+      },
+      "prepared_input_byte_size": 945255,
+      "prepared_input_sha256": "7fefaa3adc740a8e764b188188ba787651d512cf7d7f28dabf995dc4fb6aeb26",
+      "proposal_rank": 2,
+      "proposal_score": 0.0,
+      "status": "match"
+    },
+    {
+      "candidate_id": "proposal-panel-roundtable-negative",
+      "case_id": "panel-roundtable-negative",
+      "error_code": null,
+      "latency_ms": 24323.32433317788,
+      "prediction": {
+        "confidence": 0.9,
+        "facts": [
+          {
+            "fact_id": "matches_query",
+            "predicted": true
+          }
+        ],
+        "predicted_jersey": null
+      },
+      "prepared_input_byte_size": 866950,
+      "prepared_input_sha256": "b3731b367380115bc40202e7b1d298bd58fa9192b4ef70403e88aa480159fb47",
+      "proposal_rank": 3,
+      "proposal_score": 0.0,
+      "status": "model_miss"
+    },
+    {
+      "candidate_id": "proposal-panel-roundtable-positive",
+      "case_id": "panel-roundtable-positive",
+      "error_code": null,
+      "latency_ms": 52281.14458406344,
+      "prediction": {
+        "confidence": 0.99,
+        "facts": [
+          {
+            "fact_id": "matches_query",
+            "predicted": true
+          }
+        ],
+        "predicted_jersey": null
+      },
+      "prepared_input_byte_size": 4915894,
+      "prepared_input_sha256": "6b8d2e1b103660ddd1caf7f8404d7a36bdc5db087414487f96178b1a97c568bf",
+      "proposal_rank": 4,
+      "proposal_score": 0.0,
+      "status": "match"
+    },
+    {
+      "candidate_id": "proposal-sports-abstain",
+      "case_id": "sports-abstain",
+      "error_code": null,
+      "latency_ms": 20542.459917021915,
+      "prediction": {
+        "confidence": 0.0,
+        "facts": [
+          {
+            "fact_id": "ball_through_hoop",
+            "predicted": false
+          },
+          {
+            "fact_id": "shooter_outside_arc",
+            "predicted": null
+          },
+          {
+            "fact_id": "shot_attempt",
+            "predicted": true
+          },
+          {
+            "fact_id": "three_point_signal",
+            "predicted": null
+          }
+        ],
+        "predicted_jersey": null
+      },
+      "prepared_input_byte_size": 2981704,
+      "prepared_input_sha256": "b82bac93bb0aa1af32ed5624cbf986bb577e9c7a635d774c57a2f3ed5a3a954b",
+      "proposal_rank": 5,
+      "proposal_score": 0.0,
+      "status": "model_miss"
+    },
+    {
+      "candidate_id": "proposal-sports-commercial-positive",
+      "case_id": "sports-commercial-positive",
+      "error_code": null,
+      "latency_ms": 43584.98266711831,
+      "prediction": {
+        "confidence": 0.0,
+        "facts": [
+          {
+            "fact_id": "matches_query",
+            "predicted": null
+          }
+        ],
+        "predicted_jersey": null
+      },
+      "prepared_input_byte_size": 4020157,
+      "prepared_input_sha256": "30217cc33264b685f4ebc9bc39cd0d2083e84805e9936946c6d04b429f6d0902",
+      "proposal_rank": 6,
+      "proposal_score": 0.0,
+      "status": "model_miss"
+    },
+    {
+      "candidate_id": "proposal-sports-commercial-slate-negative",
+      "case_id": "sports-commercial-slate-negative",
+      "error_code": null,
+      "latency_ms": 13098.20883302018,
+      "prediction": {
+        "confidence": 0.0,
+        "facts": [
+          {
+            "fact_id": "matches_query",
+            "predicted": false
+          }
+        ],
+        "predicted_jersey": null
+      },
+      "prepared_input_byte_size": 1027665,
+      "prepared_input_sha256": "43a1fec52a5d8e88e0743ac524f3a8746867108d2a0709a3bfeebadb80e8dd23",
+      "proposal_rank": 7,
+      "proposal_score": 0.0,
+      "status": "match"
+    },
+    {
+      "candidate_id": "proposal-sports-made-free-throw",
+      "case_id": "sports-made-free-throw",
+      "error_code": null,
+      "latency_ms": 54124.32949990034,
+      "prediction": {
+        "confidence": 0.0,
+        "facts": [
+          {
+            "fact_id": "ball_through_hoop",
+            "predicted": false
+          },
+          {
+            "fact_id": "shooter_outside_arc",
+            "predicted": null
+          },
+          {
+            "fact_id": "shot_attempt",
+            "predicted": false
+          },
+          {
+            "fact_id": "three_point_signal",
+            "predicted": null
+          }
+        ],
+        "predicted_jersey": null
+      },
+      "prepared_input_byte_size": 4987913,
+      "prepared_input_sha256": "4f6ea5056153761d7d05737c315c797615d135f99092fc1d46f05bb8a3566588",
+      "proposal_rank": 8,
+      "proposal_score": 0.0,
+      "status": "model_miss"
+    },
+    {
+      "candidate_id": "proposal-sports-made-three-blue-15",
+      "case_id": "sports-made-three-blue-15",
+      "error_code": null,
+      "latency_ms": 43298.48183388822,
+      "prediction": {
+        "confidence": 0.0,
+        "facts": [
+          {
+            "fact_id": "ball_through_hoop",
+            "predicted": false
+          },
+          {
+            "fact_id": "shooter_outside_arc",
+            "predicted": null
+          },
+          {
+            "fact_id": "shot_attempt",
+            "predicted": false
+          },
+          {
+            "fact_id": "three_point_signal",
+            "predicted": null
+          }
+        ],
+        "predicted_jersey": null
+      },
+      "prepared_input_byte_size": 6882258,
+      "prepared_input_sha256": "884d52b34becf01adf940c2b979a67651e436f6deda03bf001f3b0973c9aa31b",
+      "proposal_rank": 9,
+      "proposal_score": 0.0,
+      "status": "model_miss"
+    },
+    {
+      "candidate_id": "proposal-sports-made-three-white-9",
+      "case_id": "sports-made-three-white-9",
+      "error_code": null,
+      "latency_ms": 39297.66149981879,
+      "prediction": {
+        "confidence": 0.0,
+        "facts": [
+          {
+            "fact_id": "ball_through_hoop",
+            "predicted": false
+          },
+          {
+            "fact_id": "shooter_outside_arc",
+            "predicted": null
+          },
+          {
+            "fact_id": "shot_attempt",
+            "predicted": false
+          },
+          {
+            "fact_id": "three_point_signal",
+            "predicted": null
+          }
+        ],
+        "predicted_jersey": null
+      },
+      "prepared_input_byte_size": 5345772,
+      "prepared_input_sha256": "aa203e4639b33bceb61c31fc96da56cb96a20df1d133ea777e2a7cfea6aeeb49",
+      "proposal_rank": 10,
+      "proposal_score": 0.0,
+      "status": "model_miss"
+    }
+  ],
+  "candidate_set_revision": "afecb0793cd37471ccc6791fcbcec1346f18517e2024154fc378ae334a171f40",
+  "code_sha": "1b11a5420e2fc66417f314c03192c1a853f8c843",
+  "created_at": "2026-09-05T13:56:35.434719Z",
+  "dataset_id": "video-verifier-private-regression",
+  "dataset_revision": "2758ce6fd86c4ad921ae29bff83126a31a5ddbfabdca79748c58fa3d42f1763b",
+  "dataset_version": "1.0.0",
+  "finished_at": "2026-09-05T14:02:03.218382Z",
+  "run_id": "phase0-proof18-qwen-1b11a54",
+  "run_status": "complete",
+  "schema_version": 1,
+  "strict_no_fallback": true,
+  "summary": {
+    "case_count": 10,
+    "infrastructure_error_count": 0,
+    "match_count": 3,
+    "model_miss_count": 7
+  },
+  "verifier_identity": {
+    "component_id": "video_verifier",
+    "identity": "{\"contract\":\"qwen-worker-v4\",\"fps\":2.0,\"input_root_sha256\":\"e1648e51de915bdb9f2b9fe07649226b45e77ec3829e93c9d8b594f5d4f7fed0\",\"max_tokens\":320,\"mode\":\"isolated-worker\",\"model\":\"mlx-community/Qwen3.5-9B-MLX-4bit@938d8919941c6e7efd3c7150eff7fe9d12afa631\",\"prompt_protocol_sha256\":\"0519f326e5fbd47784d8cfa3d0fe67b8e6893fbca227b0bdb1a84f5782045d54\",\"runtime_identity\":\"videoscope-qwen-worker-v4|python==3.12.13|platform==aarch64-apple-darwin-macos14plus|runtime-manifest-sha256:0481dda4b0aef9927d5f9adb1a5f7292f997cac39a6d59ecef0087913d80335f|model-manifest-sha256:abaeb6d14ccbdc1741cccea700edd3385eb7cb3d215796b465c4d5a1a0504fe0\",\"source_bundle_sha256\":\"98b6eb1311e95dd30aa89f01ee8590eac840ddf8164715b843ea7bfc6aeda5ff\"}"
+  }
+}
