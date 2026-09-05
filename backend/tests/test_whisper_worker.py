@@ -1084,14 +1084,21 @@ class FakeResponse:
 
 
 class FakeHTTPClient:
-    def __init__(self, *, health: object, response: object) -> None:
+    def __init__(
+        self,
+        *,
+        health: object,
+        response: object,
+        health_timeout: float = 5.0,
+    ) -> None:
         self.health = health
         self.response = response
+        self.health_timeout = health_timeout
         self.posts: list[tuple[str, object, dict[str, str], float]] = []
 
     def get(self, _url: str, *, headers: dict[str, str], timeout: float) -> FakeResponse:
         assert headers == {"Authorization": f"Bearer {TOKEN}"}
-        assert timeout == 5.0
+        assert timeout == self.health_timeout
         return FakeResponse(self.health)
 
     def post(
@@ -1288,6 +1295,25 @@ def test_client_status_requires_exact_health_identity(tmp_path: Path) -> None:
         ),
     )
     assert unavailable_client.status().detail == "Whisper worker model is unavailable"
+
+
+def test_client_status_uses_explicit_health_timeout(tmp_path: Path) -> None:
+    transport = FakeHTTPClient(
+        health=_health(),
+        response=_response(),
+        health_timeout=17.0,
+    )
+    client = WhisperWorkerClient(
+        endpoint="http://127.0.0.1:8784",
+        api_key=TOKEN,
+        input_root=tmp_path,
+        expected_model_identity=MODEL_IDENTITY,
+        timeout=1.0,
+        health_timeout=17.0,
+        client=transport,
+    )
+
+    assert client.status().ready is True
 
 
 def test_runtime_dependency_identity_checks_every_locked_distribution(

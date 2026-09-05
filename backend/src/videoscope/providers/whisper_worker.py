@@ -2130,6 +2130,7 @@ class WhisperWorkerClient:
         input_root: Path,
         expected_model_identity: str,
         timeout: float = 600.0,
+        health_timeout: float = 5.0,
         client: HTTPClient | None = None,
         request_id_factory: Callable[[], str] | None = None,
     ) -> None:
@@ -2140,6 +2141,10 @@ class WhisperWorkerClient:
             raise ValueError("expected Whisper model identity must be immutable")
         if not 0 < timeout <= 3600:
             raise ValueError("Whisper worker timeout must be between 0 and 3600 seconds")
+        if not 0 < health_timeout <= 3600:
+            raise ValueError(
+                "Whisper worker health timeout must be between 0 and 3600 seconds"
+            )
         resolved_root = _validate_real_directory(
             Path(input_root),
             label="Whisper worker input root",
@@ -2154,6 +2159,7 @@ class WhisperWorkerClient:
         initial_root.close()
         self.expected_model_identity = expected_model_identity
         self.timeout = timeout
+        self.health_timeout = health_timeout
         self.client = client
         self.request_id_factory = request_id_factory or (lambda: uuid4().hex)
         self._client_lock = Lock()
@@ -2194,7 +2200,7 @@ class WhisperWorkerClient:
             response = self._http_client().get(
                 f"{self.endpoint}/v1/health",
                 headers=self._headers(),
-                timeout=min(self.timeout, 5.0),
+                timeout=self.health_timeout,
             )
             response.raise_for_status()
             capability = WhisperHealthResponse.model_validate(response.json())

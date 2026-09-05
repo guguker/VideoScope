@@ -1725,6 +1725,7 @@ def build_real_clients(settings: object, root: Path) -> SmokeClients:
                 whisper_revision,
             ),
             timeout=settings.whisper_worker_timeout,
+            health_timeout=_WORKER_START_TIMEOUT_SECONDS,
         )
     except Exception as error:
         raise SmokeInfrastructureError(
