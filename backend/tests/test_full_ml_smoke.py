@@ -1222,7 +1222,9 @@ def test_infrastructure_failure_is_typed_and_cli_output_is_sanitized(
     captured = capsys.readouterr()
 
     assert exit_code == script.EXIT_INFRASTRUCTURE
-    assert captured.out == ""
+    diagnostic = json.loads(captured.out)
+    assert diagnostic["status"] == "failed"
+    assert diagnostic["diagnostics"]["resources"]["status"] == "measured"
     payload = json.loads(captured.err)
     assert payload == {
         "error": {
@@ -1239,6 +1241,214 @@ def test_infrastructure_failure_is_typed_and_cli_output_is_sanitized(
     }
     assert "secret-token" not in captured.err
     assert str(root) not in captured.err
+    assert "secret-token" not in captured.out
+    assert str(root) not in captured.out
+
+
+@pytest.mark.parametrize("cleanup_fails", [False, True])
+def test_late_failure_keeps_measurement_progress_and_cleanup_receipt(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    cleanup_fails: bool,
+) -> None:
+    from videoscope.benchmark.phase0_evidence import (
+        Phase0EvidenceError,
+        validate_full_ml_smoke,
+    )
+
+    script = _load_script()
+    root = tmp_path / "private-user-path"
+    root.mkdir(mode=0o700)
+    models_root = _models_root(tmp_path)
+    dependencies = _dependencies(script, [])
+
+    def fail_judge(*_args: object, **_kwargs: object) -> object:
+        raise RuntimeError(f"HTTP 409 {root} secret-token raw model response")
+
+    monkeypatch.setattr(_Qwen, "judge_video", fail_judge)
+    if cleanup_fails:
+        def fail_close(*_args: object) -> None:
+            raise RuntimeError(f"private cleanup failure {root} secret-token")
+        monkeypatch.setattr(_OCR, "close", fail_close)
+    real_execute = script.execute
+    monkeypatch.setattr(
+        script,
+        "execute",
+        lambda *_args, **_kwargs: real_execute(
+            root,
+            models_root=models_root,
+            environ=_offline_environment(root, models_root),
+            dependencies=dependencies,
+        ),
+    )
+
+    assert script.main(["--root", str(root), "--models-root", str(models_root)]) == (
+        script.EXIT_INFRASTRUCTURE
+    )
+    captured = capsys.readouterr()
+    report = json.loads(captured.out)
+    compact = json.loads(captured.err)
+    assert compact["error"]["code"] == "judge_failed"
+    assert "diagnostics" not in compact
+    assert report["status"] == "failed"
+    assert report["oom"]["status"] == "unknown"
+    diagnostic = report["diagnostics"]
+    assert diagnostic["code_sha_before"] == diagnostic["code_sha_after"] == "a" * 40
+    assert diagnostic["product_integration"] == _complete_product_receipt()
+    assert len(diagnostic["steps"]) == 7
+    assert diagnostic["steps"][-1]["id"] == "lighthouse.search"
+    resources = diagnostic["resources"]
+    assert resources["status"] == "measured"
+    assert resources["oom"]["status"] == "unknown"
+    assert resources["host_resources"] == _host_resource_receipt().to_portable_dict()
+    assert resources["process_tree"]["samples_bytes"] == [10_000_000, 12_345_678, 11_000_000]
+    assert diagnostic["cleanup"]["ocr"] == ("failed" if cleanup_fails else "complete")
+    assert diagnostic["cleanup"]["workspace"] == "complete"
+    assert diagnostic["secondary_errors"] == (
+        [{"code": "ocr_cleanup_failed", "kind": "infrastructure", "component": "ocr"}]
+        if cleanup_fails else []
+    )
+    for output in (captured.out, captured.err):
+        assert str(root) not in output
+        assert "secret-token" not in output
+        assert "raw model response" not in output
+    with pytest.raises(Phase0EvidenceError, match="full_ml_smoke_invalid"):
+        validate_full_ml_smoke(report, code_sha="a" * 40, memory_limit_bytes=16 * 1024**3)
+    assert list(root.iterdir()) == []
+
+
+def test_failure_before_measurement_emits_explicit_unavailable_diagnostic(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script = _load_script()
+    root = tmp_path / "missing-private-root"
+    monkeypatch.setattr(script, "production_dependencies", lambda: pytest.fail("no dependencies"))
+    assert script.main(["--root", str(root), "--models-root", str(tmp_path)]) == (
+        script.EXIT_CONFIGURATION
+    )
+    captured = capsys.readouterr()
+    report = json.loads(captured.out)
+    assert report["status"] == "failed"
+    assert report["diagnostics"]["resources"]["status"] == "unavailable"
+    assert report["diagnostics"]["steps"] == []
+    assert str(root) not in captured.out + captured.err
+
+
+def test_preflight_failure_retains_known_code_identity(tmp_path: Path) -> None:
+    script = _load_script()
+    root = tmp_path / "smoke"
+    root.mkdir(mode=0o700)
+    models_root = _models_root(tmp_path)
+
+    def fail_attestation(*_args: object) -> object:
+        raise RuntimeError("secret-token private environment diagnostics")
+
+    dependencies = _dependencies(script, [])._replace(attest_ml_environment=fail_attestation)
+    with pytest.raises(script.SmokeInfrastructureError) as caught:
+        script.execute(
+            root, models_root=models_root,
+            environ=_offline_environment(root, models_root), dependencies=dependencies,
+        )
+    report = script._error_payload(caught.value, include_diagnostics=True)
+    assert report["diagnostics"]["code_sha_before"] == "a" * 40
+    assert report["diagnostics"]["resources"]["status"] == "unavailable"
+    assert "secret-token" not in json.dumps(report)
+
+
+def test_partial_component_progress_survives_infrastructure_failure(tmp_path: Path) -> None:
+    script = _load_script()
+    root = tmp_path / "smoke"
+    root.mkdir(mode=0o700)
+    models_root = _models_root(tmp_path)
+    with pytest.raises(script.SmokeInfrastructureError) as caught:
+        script.execute(
+            root,
+            models_root=models_root,
+            environ=_offline_environment(root, models_root),
+            dependencies=_dependencies(script, [], ocr_read_outcome="failed"),
+        )
+    report = script._error_payload(caught.value, include_diagnostics=True)
+    assert [step["id"] for step in report["diagnostics"]["steps"]] == [
+        "vision.image_embedding", "vision.text_embedding", "vision.rfdetr", "whisper.transcribe",
+    ]
+    assert report["diagnostics"]["product_integration"] is None
+
+
+def test_measurement_contract_failure_retains_only_valid_independent_fields(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script = _load_script()
+    root = tmp_path / "smoke"
+    root.mkdir(mode=0o700)
+    models_root = _models_root(tmp_path)
+    monkeypatch.setattr(
+        _ResourceMonitor, "finish",
+        lambda _self: {
+            "process_tree": {"samples_bytes": ("secret-token /private/source",)},
+            "host_resources": _host_resource_receipt(),
+            "secret": str(root),
+        },
+    )
+    with pytest.raises(script.SmokeContractError) as caught:
+        script.execute(
+            root, models_root=models_root,
+            environ=_offline_environment(root, models_root),
+            dependencies=_dependencies(script, []),
+        )
+    assert caught.value.code == "rss_measurement_contract_invalid"
+    report = script._error_payload(caught.value, include_diagnostics=True)
+    diagnostic = report["diagnostics"]
+    assert len(diagnostic["steps"]) == 8
+    assert diagnostic["cleanup"]["measurement"] == "failed"
+    assert diagnostic["cleanup"]["workspace"] == "complete"
+    assert diagnostic["resources"]["status"] == "partial"
+    assert diagnostic["resources"]["process_tree"] is None
+    assert diagnostic["resources"]["host_resources"] == _host_resource_receipt().to_portable_dict()
+    encoded = json.dumps(report)
+    assert "secret-token" not in encoded
+    assert str(root) not in encoded
+
+
+def test_negative_diagnostic_omits_unbounded_or_arbitrary_step_observations() -> None:
+    script = _load_script()
+    valid = script._step("vision.image_embedding", dimensions=768, vector_count=1)
+    invalid = script._step("vision.text_embedding", dimensions=1_000_001, vector_count=1)
+    assert script._diagnostic_steps([valid, invalid]) == [valid]
+    invalid = script._step("vision.text_embedding", dimensions=768, vector_count="secret-token")
+    assert script._diagnostic_steps([valid, invalid]) == [valid]
+
+
+def test_invalid_measurement_diagnostic_cannot_replace_primary_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script = _load_script()
+    root = tmp_path / "smoke"
+    root.mkdir(mode=0o700)
+    models_root = _models_root(tmp_path)
+
+    class BrokenMeasurement:
+        @property
+        def process_tree(self) -> object:
+            raise RuntimeError("secret-token invalid measurement getter")
+
+        @property
+        def host_resources(self) -> object:
+            raise RuntimeError("secret-token invalid measurement getter")
+
+    monkeypatch.setattr(_ResourceMonitor, "finish", lambda _self: BrokenMeasurement())
+    with pytest.raises(script.SmokeInfrastructureError) as caught:
+        script.execute(
+            root, models_root=models_root,
+            environ=_offline_environment(root, models_root),
+            dependencies=_dependencies(script, [], fail_image=True),
+        )
+    assert caught.value.code == "image_embedding_failed"
+    report = script._error_payload(caught.value, include_diagnostics=True)
+    assert report["diagnostics"]["resources"]["status"] == "unavailable"
+    assert "secret-token" not in json.dumps(report)
 
 
 def test_product_integration_receipt_can_complete_the_full_smoke(
@@ -1809,7 +2019,9 @@ def test_out_of_memory_is_not_collapsed_into_infrastructure_failure(
     captured = capsys.readouterr()
 
     assert exit_code == script.EXIT_OUT_OF_MEMORY
-    assert captured.out == ""
+    report = json.loads(captured.out)
+    assert report["oom"] == {"status": "observed"}
+    assert report["diagnostics"]["resources"]["oom"] == {"status": "observed"}
     assert json.loads(captured.err) == {
         "error": {
             "code": "out_of_memory",
@@ -2177,8 +2389,10 @@ def test_native_resource_monitor_rejects_orchestrator_only_measurement() -> None
     assert captured.value.code == "external_worker_process_binding_unavailable"
 
 
+@pytest.mark.parametrize("process_failure", [False, True])
 def test_native_resource_monitor_runs_process_and_host_samplers_fail_closed(
     monkeypatch: pytest.MonkeyPatch,
+    process_failure: bool,
 ) -> None:
     script = _load_script()
     events: list[str] = []
@@ -2204,6 +2418,8 @@ def test_native_resource_monitor_runs_process_and_host_samplers_fail_closed(
 
         def finish(self) -> SimpleNamespace:
             events.append("process.finish")
+            if process_failure:
+                raise script.MeasurementUnavailableError("managed_worker_unavailable")
             return SimpleNamespace(
                 baseline_bytes=100,
                 increment_bytes=50,
@@ -2241,11 +2457,24 @@ def test_native_resource_monitor_runs_process_and_host_samplers_fail_closed(
 
     monitor = script.build_resource_monitor(bindings)
     monitor.start()
-    measurement = monitor.finish()
+    if process_failure:
+        with pytest.raises(script.SmokeInfrastructureError) as caught:
+            monitor.finish()
+        assert caught.value.code == "native_rss_measurement_unavailable"
+        diagnostic = script._diagnostic_resources(
+            monitor.diagnostic_measurement,
+            error=caught.value,
+            all_workers_managed=True,
+        )
+        assert diagnostic["status"] == "partial"
+        assert diagnostic["process_tree"] is None
+        assert diagnostic["host_resources"] == _host_resource_receipt().to_portable_dict()
+        assert diagnostic["oom"]["status"] == "unknown"
+    else:
+        measurement = monitor.finish()
+        assert measurement["host_resources"] == _host_resource_receipt()
+        assert measurement["process_tree"].peak_bytes == 150
     monitor.close()
-
-    assert measurement["host_resources"] == _host_resource_receipt()
-    assert measurement["process_tree"].peak_bytes == 150
     assert events == [
         "host.start",
         "process.start",

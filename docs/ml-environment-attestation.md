@@ -160,6 +160,14 @@ Whisper, Lighthouse and Qwen workers as measured subprocess descendants and
 runs OCR as a child. Both OCR instances receive an explicit allowlisted
 environment; their HOME, cache, TMPDIR and copied control/frame bundle remain
 inside separate disposable roots and never inherit the caller's ambient paths.
+Typed configuration, infrastructure, OOM and contract failures also write one
+`status: failed` JSON to stdout, so redirecting the command preserves a negative
+artifact. Stderr retains the compact error classifier and the exit code remains
+nonzero. Failure diagnostics contain available validated raw measurements,
+completed steps, identities and cleanup outcomes; missing measurement parts
+remain unavailable. An ambiguous worker failure keeps OOM `unknown`. These
+diagnostics never satisfy the successful-smoke evidence validator. Interruptions
+and unexpected internal errors still use only the compact stderr error contract.
 The successful schema-v2 receipt must contain:
 
 - the exact ML-environment manifest/attestation identities and the path-free

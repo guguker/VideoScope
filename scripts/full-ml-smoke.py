@@ -166,6 +166,7 @@ class SmokeError(RuntimeError):
     def __init__(self, code: str, *, component: str | None = None) -> None:
         self.code = code
         self.component = component
+        self.diagnostics: dict[str, object] | None = None
         super().__init__(f"full ML smoke failed ({code})")
 
 
@@ -334,6 +335,7 @@ class _NativeProcessTreeRSSMonitor:
         self._process_finished = False
         self._host_started = False
         self._host_finished = False
+        self.diagnostic_measurement: dict[str, object] | None = None
 
     def start(self) -> None:
         try:
@@ -404,6 +406,12 @@ class _NativeProcessTreeRSSMonitor:
                 failure.__cause__ = error
         finally:
             self._host_finished = True
+        # Retain independently completed samplers for negative diagnostics only.
+        # A partial pair still fails the serving/evidence measurement contract.
+        self.diagnostic_measurement = {
+            "process_tree": process_receipt,
+            "host_resources": host_receipt,
+        }
         if failure is not None:
             raise failure
         if process_receipt is None or host_receipt is None:
@@ -2711,8 +2719,10 @@ def _run_components(
     settings: object,
     clients: SmokeClients,
     fixture: SmokeFixture,
+    *,
+    completed_steps: list[dict[str, object]] | None = None,
 ) -> list[dict[str, object]]:
-    steps: list[dict[str, object]] = []
+    steps = completed_steps if completed_steps is not None else []
 
     vision_status = _infrastructure_call(
         "vision",
@@ -3356,10 +3366,7 @@ def _validate_process_tree_measurement(value: object) -> dict[str, object]:
     }
 
 
-def _validate_resource_measurement(value: object) -> dict[str, object]:
-    process_value = _measurement_field(value, "process_tree")
-    host_value = _measurement_field(value, "host_resources")
-    process_tree = _validate_process_tree_measurement(process_value)
+def _validate_host_resource_measurement(host_value: object) -> dict[str, object]:
     if not isinstance(host_value, HostResourceMeasurementReceipt):
         raise SmokeContractError(
             "host_resource_measurement_contract_invalid",
@@ -3379,10 +3386,83 @@ def _validate_resource_measurement(value: object) -> dict[str, object]:
             "host_resource_measurement_contract_invalid",
             component="resources",
         ) from error
+    return host_resources
+
+
+def _validate_resource_measurement(value: object) -> dict[str, object]:
     return {
+        "process_tree": _validate_process_tree_measurement(
+            _measurement_field(value, "process_tree")
+        ),
+        "host_resources": _validate_host_resource_measurement(
+            _measurement_field(value, "host_resources")
+        ),
+    }
+
+
+def _diagnostic_resources(
+    value: object,
+    *,
+    error: SmokeError,
+    all_workers_managed: bool,
+) -> dict[str, object]:
+    """Keep validated independent receipts; never infer OOM absence from samples."""
+    process_tree: dict[str, object] | None = None
+    host_resources: dict[str, object] | None = None
+    try:
+        process_tree = _validate_process_tree_measurement(
+            _measurement_field(value, "process_tree")
+        )
+    except Exception:
+        pass
+    try:
+        host_resources = _validate_host_resource_measurement(
+            _measurement_field(value, "host_resources")
+        )
+    except Exception:
+        pass
+    return {
+        "status": (
+            "measured" if process_tree is not None and host_resources is not None
+            else "partial" if process_tree is not None or host_resources is not None
+            else "unavailable"
+        ),
         "process_tree": process_tree,
         "host_resources": host_resources,
+        "external_loopback_workers_included": all_workers_managed,
+        "oom": _error_payload(error).get(
+            "oom", {"status": "unknown", "reason_code": "smoke_incomplete"}
+        ),
     }
+
+
+def _diagnostic_steps(steps: list[dict[str, object]]) -> list[dict[str, object]]:
+    fields = {
+        "vision.image_embedding": {"dimensions", "vector_count"},
+        "vision.text_embedding": {"dimensions", "vector_count"},
+        "vision.rfdetr": {"detection_count"},
+        "whisper.transcribe": {"segment_count"},
+        "ocr.read": {"item_count"},
+        "lighthouse.generation": {"generation_count"},
+        "lighthouse.search": {"hit_count"},
+        "qwen.judge": {"judgement_count"},
+    }
+    output: list[dict[str, object]] = []
+    for step, (step_id, observations) in zip(steps, fields.items()):
+        raw = step.get("observations")
+        if (
+            step.get("id") != step_id
+            or step.get("status") != "complete"
+            or not isinstance(raw, dict)
+            or set(raw) != observations
+            or any(
+                type(value) is not int or not 0 <= value <= 1_000_000
+                for value in raw.values()
+            )
+        ):
+            break
+        output.append(_step(step_id, **raw))
+    return output
 
 
 def _resource_report(
@@ -3474,36 +3554,40 @@ def execute(
     workspace_baseline = _snapshot_workspace_baseline(resolved_root)
     selected = dependencies or production_dependencies()
     code_sha = _validated_code_sha(selected.code_identity_resolver)
+
+    def preflight_failure(error: SmokeError) -> SmokeError:
+        error.diagnostics = {"code_sha_before": code_sha}
+        return error
+
     try:
         ml_environment = _validated_ml_environment_receipt(
             selected.attest_ml_environment(resolved_root, environ)
         )
-    except SmokeError:
-        raise
+    except SmokeError as error:
+        raise preflight_failure(error)
     except Exception as error:
-        raise SmokeInfrastructureError(
-            "ml_environment_attestation_failed",
-            component="environment",
+        raise preflight_failure(
+            SmokeInfrastructureError(
+                "ml_environment_attestation_failed",
+                component="environment",
+            )
         ) from error
     try:
         toolchain = selected.attest_toolchain(environ)
         toolchain_identity = toolchain.verify_current()
-    except SmokeError:
-        raise
+    except SmokeError as error:
+        raise preflight_failure(error)
     except Exception as error:
         if _is_out_of_memory(error):
-            raise SmokeOutOfMemoryError(
-                "out_of_memory",
-                component="ffmpeg",
+            raise preflight_failure(
+                SmokeOutOfMemoryError("out_of_memory", component="ffmpeg")
             ) from error
-        raise SmokeInfrastructureError(
-            "attestation_failed",
-            component="ffmpeg",
+        raise preflight_failure(
+            SmokeInfrastructureError("attestation_failed", component="ffmpeg")
         ) from error
     if not _is_sha256(toolchain_identity, prefix=True):
-        raise SmokeContractError(
-            "attestation_contract_invalid",
-            component="ffmpeg",
+        raise preflight_failure(
+            SmokeContractError("attestation_contract_invalid", component="ffmpeg")
         )
     execution_environment = (
         _bind_attested_media_environment(environ, toolchain)
@@ -3519,10 +3603,11 @@ def execute(
     clients: SmokeClients | None = None
     primary_error: BaseException | None = None
     resource_measurement: dict[str, object] | None = None
+    raw_measurement: object | None = None
     settings: object | None = None
     product: dict[str, object] | None = None
     status: str | None = None
-    steps: list[dict[str, object]] | None = None
+    steps: list[dict[str, object]] = []
     code_sha_after: str | None = None
     try:
         workspace = _allocate_workspace(resolved_root)
@@ -3641,7 +3726,7 @@ def execute(
                 "client_bundle_invalid",
                 component="workers",
             )
-        steps = _run_components(settings, clients, fixture)
+        _run_components(settings, clients, fixture, completed_steps=steps)
         if selected.product_integration is None:
             raise SmokeContractError(
                 "product_integration_not_configured",
@@ -3667,15 +3752,29 @@ def execute(
         raise
     finally:
         cleanup_error: SmokeError | None = None
+        cleanup_errors: list[SmokeError] = []
+        cleanup = {
+            name: "not_started"
+            for name in (
+                "ocr", "toolchain", "measurement", "monitor", "workers", "workspace", "code"
+            )
+        }
+
+        def record_cleanup_failure(name: str, error: SmokeError) -> None:
+            nonlocal cleanup_error
+            cleanup[name] = "failed"
+            cleanup_errors.append(error)
+            cleanup_error = cleanup_error or error
+
         if clients is not None:
             try:
                 close = getattr(clients.ocr, "close", None)
                 if callable(close):
                     close()
+                cleanup["ocr"] = "complete"
             except Exception:
-                cleanup_error = SmokeInfrastructureError(
-                    "ocr_cleanup_failed",
-                    component="ocr",
+                record_cleanup_failure(
+                    "ocr", SmokeInfrastructureError("ocr_cleanup_failed", component="ocr")
                 )
         try:
             current_identity = toolchain.verify_current()
@@ -3684,44 +3783,50 @@ def execute(
                     "attestation_changed",
                     component="ffmpeg",
                 )
+            cleanup["toolchain"] = "complete"
         except SmokeError as error:
-            cleanup_error = cleanup_error or error
+            record_cleanup_failure("toolchain", error)
         except Exception:
-            cleanup_error = cleanup_error or SmokeInfrastructureError(
-                "attestation_failed",
-                component="ffmpeg",
+            record_cleanup_failure(
+                "toolchain", SmokeInfrastructureError("attestation_failed", component="ffmpeg")
             )
         if monitor_started and finish_monitor is not None:
             try:
-                resource_measurement = _validate_resource_measurement(
-                    finish_monitor()
-                )
+                raw_measurement = finish_monitor()
+                resource_measurement = _validate_resource_measurement(raw_measurement)
+                cleanup["measurement"] = "complete"
             except SmokeError as error:
-                cleanup_error = cleanup_error or error
+                record_cleanup_failure("measurement", error)
             except Exception:
-                cleanup_error = cleanup_error or SmokeInfrastructureError(
-                    "rss_measurement_failed",
-                    component="resources",
+                record_cleanup_failure(
+                    "measurement",
+                    SmokeInfrastructureError("rss_measurement_failed", component="resources"),
                 )
+            if raw_measurement is None and isinstance(
+                resource_monitor, _NativeProcessTreeRSSMonitor
+            ):
+                raw_measurement = resource_monitor.diagnostic_measurement
         if close_monitor is not None:
             try:
                 close_monitor()
+                cleanup["monitor"] = "complete"
             except SmokeError as error:
-                cleanup_error = cleanup_error or error
+                record_cleanup_failure("monitor", error)
             except Exception:
-                cleanup_error = cleanup_error or SmokeInfrastructureError(
-                    "rss_monitor_cleanup_failed",
-                    component="resources",
+                record_cleanup_failure(
+                    "monitor",
+                    SmokeInfrastructureError("rss_monitor_cleanup_failed", component="resources"),
                 )
         if worker_cluster is not None:
             try:
                 worker_cluster.close()  # type: ignore[attr-defined]
+                cleanup["workers"] = "complete"
             except SmokeError as error:
-                cleanup_error = cleanup_error or error
+                record_cleanup_failure("workers", error)
             except Exception:
-                cleanup_error = cleanup_error or SmokeInfrastructureError(
-                    "managed_worker_cleanup_failed",
-                    component="workers",
+                record_cleanup_failure(
+                    "workers",
+                    SmokeInfrastructureError("managed_worker_cleanup_failed", component="workers"),
                 )
         try:
             _verify_disposable_root(resolved_root, root_identity)
@@ -3730,8 +3835,9 @@ def execute(
                 workspace_baseline,
             )
             _verify_disposable_root(resolved_root, root_identity)
+            cleanup["workspace"] = "complete"
         except SmokeError as error:
-            cleanup_error = cleanup_error or error
+            record_cleanup_failure("workspace", error)
         try:
             code_sha_after = _validated_code_sha(selected.code_identity_resolver)
             if code_sha_after != code_sha:
@@ -3739,8 +3845,34 @@ def execute(
                     "code_identity_changed",
                     component="code",
                 )
+            cleanup["code"] = "complete"
         except SmokeError as error:
-            cleanup_error = cleanup_error or error
+            record_cleanup_failure("code", error)
+        reported_error = primary_error if primary_error is not None else cleanup_error
+        if isinstance(reported_error, SmokeError):
+            reported_error.diagnostics = {
+                "schema_version": 1,
+                "code_sha_before": code_sha,
+                "code_sha_after": code_sha_after,
+                **ml_environment,
+                "toolchain_identity": toolchain_identity,
+                "steps": _diagnostic_steps(steps),
+                "product_integration": product,
+                "resources": _diagnostic_resources(
+                    raw_measurement,
+                    error=reported_error,
+                    all_workers_managed=(
+                        worker_cluster is not None
+                        and worker_cluster.all_workers_managed  # type: ignore[attr-defined]
+                    ),
+                ),
+                "cleanup": cleanup,
+                "secondary_errors": [
+                    _error_payload(error)["error"]
+                    for error in cleanup_errors
+                    if error is not reported_error
+                ],
+            }
         if cleanup_error is not None and primary_error is None:
             raise cleanup_error
 
@@ -3780,7 +3912,9 @@ def execute(
     }
 
 
-def _error_payload(error: SmokeError) -> dict[str, object]:
+def _error_payload(
+    error: SmokeError, *, include_diagnostics: bool = False,
+) -> dict[str, object]:
     details: dict[str, object] = {
         "code": error.code,
         "kind": error.kind,
@@ -3802,6 +3936,15 @@ def _error_payload(error: SmokeError) -> dict[str, object]:
             "reason_code": "worker_failure_contract_missing_oom_code",
             "status": "unknown",
         }
+    if include_diagnostics:
+        payload["diagnostics"] = {
+            "schema_version": 1,
+            "steps": [],
+            "resources": _diagnostic_resources(
+                None, error=error, all_workers_managed=False,
+            ),
+            **(error.diagnostics or {}),
+        }
     return payload
 
 
@@ -3816,6 +3959,13 @@ def _write_json(stream: object, value: object) -> None:
         )
         + "\n"
     )
+
+
+def _write_failure(error: SmokeError) -> None:
+    # stdout remains one machine-readable artifact even for a negative run.
+    # stderr keeps the existing compact classifier and the exit status is nonzero.
+    _write_json(sys.stdout, _error_payload(error, include_diagnostics=True))
+    _write_json(sys.stderr, _error_payload(error))
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -3834,16 +3984,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             environ=os.environ,
         )
     except SmokeConfigurationError as error:
-        _write_json(sys.stderr, _error_payload(error))
+        _write_failure(error)
         return EXIT_CONFIGURATION
     except SmokeInfrastructureError as error:
-        _write_json(sys.stderr, _error_payload(error))
+        _write_failure(error)
         return EXIT_INFRASTRUCTURE
     except SmokeOutOfMemoryError as error:
-        _write_json(sys.stderr, _error_payload(error))
+        _write_failure(error)
         return EXIT_OUT_OF_MEMORY
     except SmokeContractError as error:
-        _write_json(sys.stderr, _error_payload(error))
+        _write_failure(error)
         return EXIT_CONTRACT
     except KeyboardInterrupt:
         _write_json(
