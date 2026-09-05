@@ -2772,6 +2772,12 @@ def _run_components(
     )
     steps.append(_step("vision.rfdetr", detection_count=len(detections)))
 
+    _infrastructure_call(
+        "vision",
+        "ingestion_resource_release_failed",
+        lambda: clients.vision.release_ingestion_resources(),  # type: ignore[attr-defined]
+    )
+
     whisper_status = _infrastructure_call(
         "whisper",
         "health_failed",
@@ -2860,6 +2866,13 @@ def _run_components(
     )
     steps.append(_step("lighthouse.search", hit_count=len(lighthouse_hits)))
 
+    return steps
+
+
+def _run_qwen_component(
+    clients: SmokeClients,
+    fixture: SmokeFixture,
+) -> dict[str, object]:
     qwen_status = _infrastructure_call(
         "qwen",
         "health_failed",
@@ -2877,8 +2890,7 @@ def _run_components(
     )
     if not isinstance(judgement, QwenVideoJudgement):
         raise SmokeContractError("judge_contract_invalid", component="qwen")
-    steps.append(_step("qwen.judge", judgement_count=1))
-    return steps
+    return _step("qwen.judge", judgement_count=1)
 
 
 def _validate_serialized_product_search_execution(
@@ -3640,6 +3652,7 @@ def execute(
                 ),
             )
         )
+        steps.append(_run_qwen_component(clients, fixture))
         status = "ready"
     except BaseException as error:
         primary_error = error

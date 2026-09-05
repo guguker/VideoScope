@@ -30,6 +30,8 @@ VISION_WORKER_RUNTIME_IDENTITY = (
     f"siglip-dtype=={SIGLIP_COMPUTE_DTYPE}|"
     f"rfdetr-backend=={RFDETR_COMPUTE_BACKEND}|"
     f"rfdetr-dtype=={RFDETR_COMPUTE_DTYPE}|"
+    "mps-residency==exclusive-vision-backbone-v1|"
+    "detector-release==stage-bound-v1|"
     f"lock-sha256:{VISION_WORKER_LOCK_SHA256}"
 )
 VISION_WORKER_PYTHON_VERSION = (3, 12, 13)
@@ -447,6 +449,10 @@ class VisionDetectRequest(VisionRequestIdentity):
     minimum_confidence: float = Field(ge=0, le=1)
 
 
+class VisionReleaseDetectorRequest(VisionRequestIdentity):
+    pass
+
+
 class VisionSourceProbeRequest(VisionRequestIdentity):
     relative_path: str = Field(min_length=1, max_length=240)
     expected_sha256: str = Field(pattern=_SHA256_RE.pattern)
@@ -520,14 +526,25 @@ class VisionDetectionResponse(VisionRequestIdentity):
         return self
 
 
+class VisionReleaseDetectorResponse(VisionRequestIdentity):
+    released: Literal[True]
+    siglip_loaded: bool
+    detector_loaded: Literal[False]
+
+
 class VisionHealthResponse(VisionIdentity):
     status: Literal["ok", "unavailable"]
     siglip_loaded: bool
     detector_loaded: bool
-    operations: list[Literal["probe", "embed_images", "embed_texts", "detect"]] = Field(
-        min_length=4,
-        max_length=4,
-    )
+    operations: list[
+        Literal[
+            "probe",
+            "embed_images",
+            "embed_texts",
+            "detect",
+            "release_detector",
+        ]
+    ] = Field(min_length=5, max_length=5)
     embedding_dimensions: int = Field(ge=1, le=MAX_EMBEDDING_DIMENSIONS)
     max_images: int = Field(ge=1, le=MAX_IMAGES)
     max_texts: int = Field(ge=1, le=MAX_TEXTS)
@@ -543,9 +560,31 @@ class VisionHealthResponse(VisionIdentity):
     @classmethod
     def validate_operations(
         cls,
-        value: list[Literal["probe", "embed_images", "embed_texts", "detect"]],
-    ) -> list[Literal["probe", "embed_images", "embed_texts", "detect"]]:
-        if value != ["probe", "embed_images", "embed_texts", "detect"]:
+        value: list[
+            Literal[
+                "probe",
+                "embed_images",
+                "embed_texts",
+                "detect",
+                "release_detector",
+            ]
+        ],
+    ) -> list[
+        Literal[
+            "probe",
+            "embed_images",
+            "embed_texts",
+            "detect",
+            "release_detector",
+        ]
+    ]:
+        if value != [
+            "probe",
+            "embed_images",
+            "embed_texts",
+            "detect",
+            "release_detector",
+        ]:
             raise ValueError("vision worker operations do not match the contract")
         return value
 

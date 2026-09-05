@@ -154,12 +154,15 @@ before a job completes.
   that mutable cloud boundary and require the attested isolated worker.
 - SigLIP and local RF-DETR run in one authenticated loopback-only vision worker
   with a dedicated hashed environment and an identity-bound MPS/float32 compute
-  contract. It accepts only bounded immutable image snapshots from allowlisted
-  `data/` subdirectories; see
+  contract. Only one vision backbone is resident at a time, and durable and
+  legacy indexing explicitly release RF-DETR at the object-stage boundary. It
+  accepts only bounded immutable image snapshots from allowlisted `data/`
+  subdirectories; see
   `docs/vision-worker.md`.
 - MLX Whisper runs in a separate authenticated loopback-only worker. A single
   bounded prompt/glossary snapshot is shared by the stage identity and request,
-  and media inference uses a private verified copy; see
+  media inference uses a private verified copy, and the pinned request-level
+  model cache is cleared after every outcome; see
   `docs/whisper-worker.md`.
 - Qwen runs locally through MLX in an authenticated loopback-only worker with a
   dedicated locked environment. The backend shares only one-use files under

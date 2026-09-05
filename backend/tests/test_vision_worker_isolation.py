@@ -49,6 +49,11 @@ def test_vision_worker_has_a_dedicated_exact_project_and_lock() -> None:
     assert "siglip-dtype==float32" in VISION_WORKER_RUNTIME_IDENTITY
     assert "rfdetr-backend==mps" in VISION_WORKER_RUNTIME_IDENTITY
     assert "rfdetr-dtype==float32" in VISION_WORKER_RUNTIME_IDENTITY
+    assert (
+        "mps-residency==exclusive-vision-backbone-v1"
+        in VISION_WORKER_RUNTIME_IDENTITY
+    )
+    assert "detector-release==stage-bound-v1" in VISION_WORKER_RUNTIME_IDENTITY
 
 
 def test_worker_and_client_contract_imports_do_not_load_ml_frameworks() -> None:

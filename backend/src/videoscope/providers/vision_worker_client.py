@@ -8,7 +8,7 @@ import os
 from pathlib import Path, PurePosixPath
 import stat
 from threading import Lock
-from time import monotonic
+from time import monotonic, sleep
 from typing import Protocol
 from urllib.parse import urlsplit
 from uuid import uuid4
@@ -30,6 +30,8 @@ from videoscope.providers.vision_worker_contract import (
     VisionEmbedTextsRequest,
     VisionHealthResponse,
     VisionImageItem,
+    VisionReleaseDetectorRequest,
+    VisionReleaseDetectorResponse,
     VisionSourceProbeRequest,
     VisionSourceProbeResponse,
     VisionTextItem,
@@ -37,6 +39,10 @@ from videoscope.providers.vision_worker_contract import (
     identity_fields,
     worker_input_root_identity,
 )
+
+
+_LIFECYCLE_RELEASE_INITIAL_BACKOFF_SECONDS = 0.05
+_LIFECYCLE_RELEASE_MAX_BACKOFF_SECONDS = 0.25
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,10 +80,15 @@ class HTTPClient(Protocol):
 
 
 class _BufferedJSONResponse:
-    def __init__(self, payload: object) -> None:
+    def __init__(self, payload: object, *, status_code: int = 200) -> None:
         self.payload = payload
+        self.status_code = status_code
 
     def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise RuntimeError(
+                f"Vision worker returned HTTP status {self.status_code}"
+            )
         return None
 
     def json(self) -> object:
@@ -110,7 +121,9 @@ class _BoundedHTTPClient:
             kwargs["json"] = json_payload
         with httpx.Client(trust_env=False, follow_redirects=False) as client:
             with client.stream(method, url, **kwargs) as response:
-                response.raise_for_status()
+                status_code = int(getattr(response, "status_code", 200))
+                if status_code != 429:
+                    response.raise_for_status()
                 raw_length = response.headers.get("Content-Length")
                 if raw_length is not None:
                     try:
@@ -133,7 +146,7 @@ class _BoundedHTTPClient:
             payload = json.loads(bytes(body), parse_constant=_reject_non_finite_json)
         except (UnicodeError, ValueError, TypeError) as error:
             raise RuntimeError("Vision worker returned invalid JSON") from error
-        return _BufferedJSONResponse(payload)
+        return _BufferedJSONResponse(payload, status_code=status_code)
 
     def get(
         self,
@@ -571,3 +584,53 @@ class VisionWorkerClient:
             )
             for detection in payload.detections
         ]
+
+    def release_ingestion_resources(self) -> None:
+        request = VisionReleaseDetectorRequest(
+            **identity_fields(
+                self.specification,
+                input_root_identity=self.input_root_identity,
+            ),
+            request_id=uuid4().hex,
+        )
+        deadline = monotonic() + self.timeout
+        backoff = _LIFECYCLE_RELEASE_INITIAL_BACKOFF_SECONDS
+        while True:
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                break
+            try:
+                response = self._http_client().post(
+                    f"{self.endpoint}/v1/lifecycle/release-detector",
+                    json=request.model_dump(mode="json"),
+                    headers=self._headers(json_request=True),
+                    timeout=remaining,
+                )
+                raw_payload = response.json()
+                busy = (
+                    getattr(response, "status_code", None) == 429
+                    and raw_payload == {"detail": "Vision worker is busy"}
+                )
+                if busy:
+                    if deadline - monotonic() <= backoff:
+                        break
+                    sleep(backoff)
+                    backoff = min(
+                        backoff * 2,
+                        _LIFECYCLE_RELEASE_MAX_BACKOFF_SECONDS,
+                    )
+                    continue
+                response.raise_for_status()
+                payload = VisionReleaseDetectorResponse.model_validate(raw_payload)
+                self._validate_response_identity(payload, request.request_id)
+                if (
+                    payload.released is not True
+                    or payload.detector_loaded is not False
+                ):
+                    raise ValueError("Vision worker detector remains loaded")
+                return
+            except Exception:
+                raise RuntimeError(
+                    "Vision worker ingestion resource release failed"
+                ) from None
+        raise RuntimeError("Vision worker ingestion resource release failed") from None

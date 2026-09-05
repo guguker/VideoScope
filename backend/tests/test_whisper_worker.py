@@ -13,6 +13,7 @@ import sys
 from threading import Event
 import textwrap
 from types import SimpleNamespace
+from weakref import ref
 
 from fastapi.testclient import TestClient
 import pytest
@@ -1254,6 +1255,7 @@ def test_whisper_runtime_identity_is_bound_to_exact_apple_python(
     assert whisper_worker_module._runtime_platform_is_exact() is True
     assert "python==3.12.13" in WHISPER_INFERENCE_RUNTIME_IDENTITY
     assert "darwin-arm64" in WHISPER_INFERENCE_RUNTIME_IDENTITY
+    assert "model-residency=request-scoped-v1" in WHISPER_INFERENCE_RUNTIME_IDENTITY
 
     monkeypatch.setattr(whisper_worker_module.platform, "machine", lambda: "x86_64")
     assert whisper_worker_module._runtime_platform_is_exact() is False
@@ -1546,6 +1548,19 @@ def test_mlx_runtime_normalizes_and_bounds_untrusted_model_output(
     (snapshot / "weights.safetensors").write_bytes(b"weights")
     captured: dict[str, object] = {}
     module = SimpleNamespace()
+    cache_events: list[str] = []
+
+    class ModelHolder:
+        model: object | None = object()
+        model_path: str | None = "retained-model"
+
+    def synchronize() -> None:
+        cache_events.append("synchronize")
+
+    def clear_cache() -> None:
+        assert ModelHolder.model is None
+        assert ModelHolder.model_path is None
+        cache_events.append("clear_cache")
 
     def transcribe(path: str, **kwargs: object) -> dict[str, object]:
         captured.update({"path": path, **kwargs})
@@ -1566,6 +1581,18 @@ def test_mlx_runtime_normalizes_and_bounds_untrusted_model_output(
 
     module.transcribe = transcribe
     monkeypatch.setitem(sys.modules, "mlx_whisper", module)
+    monkeypatch.setitem(
+        sys.modules,
+        "mlx_whisper.transcribe",
+        SimpleNamespace(
+            ModelHolder=ModelHolder,
+            mx=SimpleNamespace(
+                synchronize=synchronize,
+                clear_cache=clear_cache,
+            ),
+            transcribe=transcribe,
+        ),
+    )
     import huggingface_hub
 
     monkeypatch.setattr(
@@ -1615,6 +1642,284 @@ def test_mlx_runtime_normalizes_and_bounds_untrusted_model_output(
     assert captured["path_or_hf_repo"] == str(snapshot)
     assert captured["initial_prompt"] == PROMPT
     assert captured["word_timestamps"] is True
+    assert ModelHolder.model is None
+    assert ModelHolder.model_path is None
+    assert cache_events == ["synchronize", "clear_cache"]
+
+
+def _mlx_lifecycle_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    result_or_error: object,
+    clear_cache_error: Exception | None = None,
+) -> tuple[MLXWhisperWorkerRuntime, type[object], list[str]]:
+    events: list[str] = []
+
+    class ModelHolder:
+        model: object | None = None
+        model_path: str | None = None
+
+    def transcribe(_path: str, **_kwargs: object) -> object:
+        assert ModelHolder.model is None
+        assert ModelHolder.model_path is None
+        ModelHolder.model = object()
+        ModelHolder.model_path = "loaded-model"
+        events.append("transcribe")
+        if isinstance(result_or_error, BaseException):
+            raise result_or_error
+        return result_or_error
+
+    def synchronize() -> None:
+        assert ModelHolder.model is not None
+        events.append("synchronize")
+
+    def clear_cache() -> None:
+        assert ModelHolder.model is None
+        assert ModelHolder.model_path is None
+        events.append("clear_cache")
+        if clear_cache_error is not None:
+            raise clear_cache_error
+
+    package = SimpleNamespace(transcribe=transcribe)
+    transcribe_module = SimpleNamespace(
+        ModelHolder=ModelHolder,
+        mx=SimpleNamespace(
+            synchronize=synchronize,
+            clear_cache=clear_cache,
+        ),
+        transcribe=transcribe,
+    )
+    monkeypatch.setitem(sys.modules, "mlx_whisper", package)
+    monkeypatch.setitem(sys.modules, "mlx_whisper.transcribe", transcribe_module)
+    monkeypatch.setattr(
+        whisper_worker_module,
+        "_installed_dependency_identity",
+        lambda: WHISPER_DEPENDENCY_IDENTITY,
+    )
+    monkeypatch.setattr(
+        whisper_worker_module,
+        "_runtime_platform_is_exact",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        whisper_worker_module.gc,
+        "collect",
+        lambda: events.append("gc"),
+    )
+    runtime = MLXWhisperWorkerRuntime("mlx-community/whisper-test", "a" * 40)
+    monkeypatch.setattr(
+        runtime,
+        "_resolve_local_reference",
+        lambda *, force_hash=False: "/private/tmp/pinned-whisper",
+    )
+    return runtime, ModelHolder, events
+
+
+def _valid_mlx_result() -> dict[str, object]:
+    return {
+        "language": "ru",
+        "segments": [
+            {
+                "start": 1.0,
+                "end": 2.0,
+                "text": "valid",
+                "avg_logprob": -0.2,
+                "words": [],
+            }
+        ],
+    }
+
+
+@pytest.mark.parametrize(
+    "result_or_error, expected_error",
+    [
+        (RuntimeError("inference failed"), "inference failed"),
+        ({"language": "ru", "segments": [{"start": 2.0}]}, "mlx-whisper"),
+    ],
+)
+def test_mlx_runtime_releases_cached_model_after_failed_request(
+    monkeypatch: pytest.MonkeyPatch,
+    result_or_error: object,
+    expected_error: str,
+) -> None:
+    runtime, holder, events = _mlx_lifecycle_runtime(
+        monkeypatch,
+        result_or_error=result_or_error,
+    )
+
+    with pytest.raises(Exception, match=expected_error):
+        runtime.transcribe(
+            SimpleNamespace(language="ru", effective_prompt=None),
+            Path("source.mp4"),
+            12.0,
+        )
+
+    assert holder.model is None
+    assert holder.model_path is None
+    assert events == ["transcribe", "synchronize", "gc", "clear_cache"]
+    assert runtime.available is True
+
+
+def test_mlx_runtime_clears_failed_inference_traceback_before_allocator_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    model_references: list[object] = []
+
+    class Model:
+        pass
+
+    class ModelHolder:
+        model: object | None = None
+        model_path: str | None = None
+
+    def transcribe(_path: str, **_kwargs: object) -> object:
+        local_model = Model()
+        model_references.append(ref(local_model))
+        ModelHolder.model = local_model
+        ModelHolder.model_path = "loaded-model"
+        raise RuntimeError("inference failed with model frame")
+
+    def synchronize() -> None:
+        events.append("synchronize")
+
+    def clear_cache() -> None:
+        assert ModelHolder.model is None
+        assert model_references and model_references[0]() is None
+        events.append("clear_cache")
+
+    transcribe_module = SimpleNamespace(
+        ModelHolder=ModelHolder,
+        mx=SimpleNamespace(
+            synchronize=synchronize,
+            clear_cache=clear_cache,
+        ),
+        transcribe=transcribe,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "mlx_whisper",
+        SimpleNamespace(transcribe=transcribe),
+    )
+    monkeypatch.setitem(sys.modules, "mlx_whisper.transcribe", transcribe_module)
+    monkeypatch.setattr(
+        whisper_worker_module,
+        "_installed_dependency_identity",
+        lambda: WHISPER_DEPENDENCY_IDENTITY,
+    )
+    monkeypatch.setattr(
+        whisper_worker_module,
+        "_runtime_platform_is_exact",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        whisper_worker_module.gc,
+        "collect",
+        lambda: events.append("gc"),
+    )
+    runtime = MLXWhisperWorkerRuntime("mlx-community/whisper-test", "a" * 40)
+    monkeypatch.setattr(
+        runtime,
+        "_resolve_local_reference",
+        lambda *, force_hash=False: "/private/tmp/pinned-whisper",
+    )
+
+    with pytest.raises(RuntimeError, match="inference failed with model frame"):
+        runtime.transcribe(
+            SimpleNamespace(language="ru", effective_prompt=None),
+            Path("source.mp4"),
+            12.0,
+        )
+
+    assert events == ["synchronize", "gc", "clear_cache"]
+    assert ModelHolder.model is None
+    assert model_references[0]() is None
+
+
+def test_mlx_runtime_releases_model_when_post_inference_artifact_check_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime, holder, events = _mlx_lifecycle_runtime(
+        monkeypatch,
+        result_or_error=_valid_mlx_result(),
+    )
+
+    force_hash_calls = 0
+
+    def resolve(*, force_hash: bool = False) -> str:
+        nonlocal force_hash_calls
+        if force_hash:
+            force_hash_calls += 1
+        if force_hash_calls == 2:
+            raise RuntimeError("artifact changed")
+        return "/private/tmp/pinned-whisper"
+
+    monkeypatch.setattr(runtime, "_resolve_local_reference", resolve)
+
+    with pytest.raises(RuntimeError, match="artifact changed"):
+        runtime.transcribe(
+            SimpleNamespace(language="ru", effective_prompt=None),
+            Path("source.mp4"),
+            12.0,
+        )
+
+    assert holder.model is None
+    assert holder.model_path is None
+    assert events == ["transcribe", "synchronize", "gc", "clear_cache"]
+
+
+def test_mlx_runtime_latches_unavailable_when_cache_release_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime, holder, events = _mlx_lifecycle_runtime(
+        monkeypatch,
+        result_or_error=_valid_mlx_result(),
+        clear_cache_error=RuntimeError("cache stuck"),
+    )
+
+    with pytest.raises(RuntimeError, match="release MLX model memory"):
+        runtime.transcribe(
+            SimpleNamespace(language="ru", effective_prompt=None),
+            Path("source.mp4"),
+            12.0,
+        )
+
+    assert holder.model is None
+    assert holder.model_path is None
+    assert events == ["transcribe", "synchronize", "gc", "clear_cache"]
+    assert runtime.available is False
+    with pytest.raises(RuntimeError, match="runtime identity is unavailable"):
+        runtime.transcribe(
+            SimpleNamespace(language="ru", effective_prompt=None),
+            Path("source.mp4"),
+            12.0,
+        )
+
+
+def test_mlx_runtime_never_reuses_model_between_requests(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime, holder, events = _mlx_lifecycle_runtime(
+        monkeypatch,
+        result_or_error=_valid_mlx_result(),
+    )
+    request = SimpleNamespace(language="ru", effective_prompt=None)
+
+    runtime.transcribe(request, Path("source.mp4"), 12.0)
+    runtime.transcribe(request, Path("source.mp4"), 12.0)
+
+    assert holder.model is None
+    assert holder.model_path is None
+    assert events == [
+        "transcribe",
+        "synchronize",
+        "gc",
+        "clear_cache",
+        "transcribe",
+        "synchronize",
+        "gc",
+        "clear_cache",
+    ]
 
 
 def test_mlx_runtime_omits_zero_duration_timestamp_quantization() -> None:
@@ -1738,6 +2043,11 @@ def test_mlx_runtime_rejects_unreviewed_or_mutated_model_artifacts(
         lambda: True,
     )
     runtime = MLXWhisperWorkerRuntime("mlx-community/whisper-test", "a" * 40)
+    monkeypatch.setattr(
+        runtime,
+        "_mlx_runtime_module",
+        lambda: SimpleNamespace(),
+    )
 
     assert runtime.available is False
 
