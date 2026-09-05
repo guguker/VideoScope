@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "status": "rejected",
+  "code_sha": "08d23aa95a09410eb8d6d1c05a07fe507e9f756c",
+  "evidence_kind": "infrastructure_diagnostic",
+  "runner_exit_code": 2,
+  "reason_code": "profile_preflight_not_ready",
+  "stage_failure_counts": {
+    "objects": 5,
+    "visual_dense": 10,
+    "lighthouse": 10
+  },
+  "confirmed_defect": {
+    "component": "regression_fixture_video_identity",
+    "generated_length": 68,
+    "serving_maximum_length": 64,
+    "message_code": "invalid_visual_index_video_id"
+  },
+  "unresolved": [
+    "intermittent_objects_detection_request_failure"
+  ],
+  "model_quality_scored": false,
+  "source_use": "existing_regression_seen_prepared_inputs",
+  "decision": "Reject incomplete batch; correct fixture ID generation while preserving serving validators and full source identity."
+}
