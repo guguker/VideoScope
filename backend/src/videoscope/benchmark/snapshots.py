@@ -638,6 +638,10 @@ class RetainedDirectoryPath:
     def stable_path(self) -> Path:
         return self.root.stable_path.joinpath(*self.parts)
 
+    @property
+    def logical_path(self) -> Path:
+        return self.root.logical_path.joinpath(*self.parts)
+
     def child(self, relative_path: str) -> RetainedDirectoryPath:
         validated = _validated_relative_path(relative_path, max_depth=32)
         parts = (*self.parts, *PurePosixPath(validated).parts)
@@ -729,6 +733,14 @@ def _acquire_directory(value: _DirectoryInput) -> tuple[Path, int]:
     if isinstance(value, RetainedDirectoryPath):
         return value.stable_path, value._open_descriptor()
     return _open_directory_path(Path(value))
+
+
+def _directory_logical_path(value: _DirectoryInput, acquired_path: Path) -> Path:
+    if isinstance(value, RetainedDirectory):
+        return value.logical_path
+    if isinstance(value, RetainedDirectoryPath):
+        return value.logical_path
+    return acquired_path
 
 
 def _open_relative_directory(root_fd: int, parts: tuple[str, ...]) -> int:
@@ -1440,7 +1452,8 @@ def materialize_fastembed_snapshot(
 ) -> FastEmbedSnapshot:
     if not isinstance(manifest, FastEmbedSnapshotManifest):
         raise ValueError("FastEmbed snapshot manifest must be validated")
-    source_path, source_fd = _acquire_directory(source_root)
+    acquired_source_path, source_fd = _acquire_directory(source_root)
+    source_path = _directory_logical_path(source_root, acquired_source_path)
     scratch_fd: int | None = None
     repository: _HuggingFaceRepository | None = None
     staging_name = f".fastembed-{uuid4().hex}.partial"
