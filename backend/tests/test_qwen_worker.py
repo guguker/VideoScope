@@ -9,6 +9,7 @@ from threading import Event
 from types import SimpleNamespace
 import sys
 import time
+from weakref import ref
 
 from fastapi.testclient import TestClient
 import pytest
@@ -1160,7 +1161,13 @@ def test_mlx_runtime_stays_lazy_and_preserves_all_prompt_input_paths(
     video.write_bytes(b"video")
     storyboard.write_bytes(b"image")
     calls: list[tuple[str, object]] = []
-    fake_model = SimpleNamespace(config=SimpleNamespace())
+    fake_model = SimpleNamespace(
+        config=SimpleNamespace(),
+        language_model=SimpleNamespace(
+            _position_ids=None,
+            _rope_deltas=None,
+        ),
+    )
     fake_processor = object()
 
     def load(reference: str):  # type: ignore[no-untyped-def]
@@ -1195,6 +1202,12 @@ def test_mlx_runtime_stays_lazy_and_preserves_all_prompt_input_paths(
             generate=generate,
         ),
     )
+    fake_mlx = SimpleNamespace(
+        synchronize=lambda: None,
+        clear_cache=lambda: None,
+    )
+    monkeypatch.setitem(sys.modules, "mlx", SimpleNamespace(core=fake_mlx))
+    monkeypatch.setitem(sys.modules, "mlx.core", fake_mlx)
     runtime = MLXQwenWorkerRuntime(str(snapshot), None)
 
     assert runtime.available is True
@@ -1246,6 +1259,181 @@ def test_mlx_runtime_stays_lazy_and_preserves_all_prompt_input_paths(
         if name == "template" and "prompts" in payload
     ]
     assert any("visible dunk" in prompt for prompt in template_prompts)
+
+
+def _mlx_request_lifecycle_runtime(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    generate_error: Exception | None = None,
+    clear_cache_error: Exception | None = None,
+) -> tuple[MLXQwenWorkerRuntime, object, list[str], list[object]]:
+    snapshot = tmp_path / "model"
+    snapshot.mkdir()
+    (snapshot / "config.json").write_text("{}", encoding="utf-8")
+    (snapshot / "model.safetensors").write_bytes(b"weights")
+    events: list[str] = []
+    request_references: list[object] = []
+
+    class RequestState:
+        pass
+
+    class GenerationResult:
+        text = '{"matches_query":true,"confidence":0.9}'
+
+    language_model = SimpleNamespace(
+        _position_ids=None,
+        _rope_deltas=None,
+    )
+    model = SimpleNamespace(
+        config=SimpleNamespace(),
+        language_model=language_model,
+    )
+    processor = object()
+
+    def load(_reference: str):  # type: ignore[no-untyped-def]
+        events.append("load")
+        return model, processor
+
+    def apply_chat_template(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        return "prompt"
+
+    def generate(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        position_ids = RequestState()
+        rope_deltas = RequestState()
+        language_model._position_ids = position_ids
+        language_model._rope_deltas = rope_deltas
+        request_references.extend((ref(position_ids), ref(rope_deltas)))
+        events.append("generate")
+        if generate_error is not None:
+            failed_local = RequestState()
+            request_references.append(ref(failed_local))
+            raise generate_error
+        result = GenerationResult()
+        request_references.append(ref(result))
+        return result
+
+    def synchronize() -> None:
+        events.append("synchronize")
+
+    def clear_cache() -> None:
+        assert language_model._position_ids is None
+        assert language_model._rope_deltas is None
+        assert request_references
+        assert all(reference() is None for reference in request_references)
+        events.append("clear_cache")
+        if clear_cache_error is not None:
+            raise clear_cache_error
+
+    monkeypatch.setattr(
+        qwen_worker_module.importlib.util,
+        "find_spec",
+        lambda _name: object(),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "mlx_vlm",
+        SimpleNamespace(
+            load=load,
+            apply_chat_template=apply_chat_template,
+            generate=generate,
+        ),
+    )
+    fake_mlx = SimpleNamespace(
+        synchronize=synchronize,
+        clear_cache=clear_cache,
+    )
+    monkeypatch.setitem(sys.modules, "mlx", SimpleNamespace(core=fake_mlx))
+    monkeypatch.setitem(sys.modules, "mlx.core", fake_mlx)
+    monkeypatch.setattr(
+        qwen_worker_module.gc,
+        "collect",
+        lambda: events.append("gc"),
+    )
+    return MLXQwenWorkerRuntime(str(snapshot), None), model, events, request_references
+
+
+def test_mlx_runtime_clears_request_memory_without_reloading_weights(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime, model, events, _references = _mlx_request_lifecycle_runtime(
+        tmp_path,
+        monkeypatch,
+    )
+    video = tmp_path / "candidate.mp4"
+    video.write_bytes(b"video")
+    request = QwenJudgeRequest.model_validate(
+        {
+            **_request(tmp_path),
+            "prompt_kind": "generic_query",
+            "query": "visible dunk",
+        }
+    )
+
+    runtime.judge(request, video)
+    runtime.judge(request, video)
+
+    assert runtime.loaded is True
+    assert runtime.available is True
+    assert runtime._model is model
+    assert events == [
+        "load",
+        "generate",
+        "synchronize",
+        "gc",
+        "clear_cache",
+        "generate",
+        "synchronize",
+        "gc",
+        "clear_cache",
+    ]
+
+
+def test_mlx_runtime_clears_failed_generation_traceback_before_allocator_cache(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime, _model, events, _references = _mlx_request_lifecycle_runtime(
+        tmp_path,
+        monkeypatch,
+        generate_error=RuntimeError("generation failed"),
+    )
+    video = tmp_path / "candidate.mp4"
+    video.write_bytes(b"video")
+
+    with pytest.raises(RuntimeError, match="generation failed"):
+        runtime.judge(
+            QwenJudgeRequest.model_validate(_request(tmp_path)),
+            video,
+        )
+
+    assert events == ["load", "generate", "synchronize", "gc", "clear_cache"]
+    assert runtime.loaded is True
+    assert runtime.available is True
+
+
+def test_mlx_runtime_latches_unavailable_when_request_cleanup_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime, _model, events, _references = _mlx_request_lifecycle_runtime(
+        tmp_path,
+        monkeypatch,
+        clear_cache_error=RuntimeError("cache stuck"),
+    )
+    video = tmp_path / "candidate.mp4"
+    video.write_bytes(b"video")
+    request = QwenJudgeRequest.model_validate(_request(tmp_path))
+
+    with pytest.raises(RuntimeError, match="release MLX request memory"):
+        runtime.judge(request, video)
+
+    assert runtime.loaded is True
+    assert runtime.available is False
+    with pytest.raises(RuntimeError, match="runtime is unavailable"):
+        runtime.judge(request, video)
+    assert events == ["load", "generate", "synchronize", "gc", "clear_cache"]
 
 
 def test_pinned_worker_model_cannot_be_shadowed_by_a_relative_directory(

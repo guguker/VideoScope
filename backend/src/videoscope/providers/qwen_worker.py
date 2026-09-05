@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import gc
 from hashlib import sha256
 import importlib.metadata
 import importlib.util
@@ -17,6 +18,7 @@ import sys
 import tempfile
 from threading import BoundedSemaphore, Lock
 from time import monotonic
+import traceback
 from typing import Any, Literal, Protocol, Self
 from urllib.parse import urlsplit
 from uuid import uuid4
@@ -1779,6 +1781,7 @@ class MLXQwenWorkerRuntime:
         self._model_reference: str | None = None
         self._load_lock = Lock()
         self._inference_lock = Lock()
+        self._healthy = True
 
     @property
     def model_identity(self) -> str:
@@ -1813,6 +1816,8 @@ class MLXQwenWorkerRuntime:
 
     @property
     def available(self) -> bool:
+        if not self._healthy:
+            return False
         if self.loaded:
             return True
         if importlib.util.find_spec("mlx_vlm") is None:
@@ -1824,6 +1829,8 @@ class MLXQwenWorkerRuntime:
         return True
 
     def _load(self):  # type: ignore[no-untyped-def]
+        if not self._healthy:
+            raise RuntimeError("Qwen worker runtime is unavailable")
         if self.loaded:
             return self._model, self._processor
         with self._load_lock:
@@ -1835,8 +1842,107 @@ class MLXQwenWorkerRuntime:
             self._model, self._processor = load(reference)
             return self._model, self._processor
 
+    @staticmethod
+    def _mlx_runtime_module() -> Any:
+        mlx = importlib.import_module("mlx.core")
+        if (
+            not callable(getattr(mlx, "synchronize", None))
+            or not callable(getattr(mlx, "clear_cache", None))
+        ):
+            raise RuntimeError("Qwen MLX cache controls do not match the lock")
+        return mlx
+
+    @staticmethod
+    def _request_state_owner(model: Any) -> Any:
+        language_model = getattr(model, "language_model", None)
+        if (
+            language_model is None
+            or not hasattr(language_model, "_position_ids")
+            or not hasattr(language_model, "_rope_deltas")
+        ):
+            raise RuntimeError("Qwen request state controls do not match the lock")
+        return language_model
+
+    def _release_mlx_after_request(
+        self,
+        *,
+        language_model: Any,
+        mlx: Any,
+        primary_error: BaseException | None,
+    ) -> None:
+        try:
+            mlx.synchronize()
+            language_model._position_ids = None
+            language_model._rope_deltas = None
+            gc.collect()
+            mlx.clear_cache()
+        except BaseException as cleanup_error:
+            self._healthy = False
+            if primary_error is not None:
+                logger.error(
+                    "Qwen inference also failed before MLX cleanup",
+                    exc_info=(
+                        type(primary_error),
+                        primary_error,
+                        primary_error.__traceback__,
+                    ),
+                )
+            raise RuntimeError(
+                "Qwen worker could not release MLX request memory"
+            ) from cleanup_error
+
+    def _generate(
+        self,
+        *,
+        model: Any,
+        processor: Any,
+        prompt: object,
+        media: dict[str, object],
+        request: QwenJudgeRequest,
+    ) -> str:
+        from mlx_vlm import generate
+
+        mlx = self._mlx_runtime_module()
+        language_model = self._request_state_owner(model)
+        result: object | None = None
+        text: str | None = None
+        with self._inference_lock:
+            if not self._healthy:
+                raise RuntimeError("Qwen worker runtime is unavailable")
+            try:
+                result = generate(
+                    model,
+                    processor,
+                    prompt,
+                    **media,
+                    max_tokens=request.max_tokens,
+                    temperature=0.0,
+                    enable_thinking=False,
+                    verbose=False,
+                )
+                text = str(result.text)
+            except BaseException as primary_error:
+                result = None
+                traceback.clear_frames(primary_error.__traceback__)
+                self._release_mlx_after_request(
+                    language_model=language_model,
+                    mlx=mlx,
+                    primary_error=primary_error,
+                )
+                raise
+            else:
+                result = None
+                self._release_mlx_after_request(
+                    language_model=language_model,
+                    mlx=mlx,
+                    primary_error=None,
+                )
+        if text is None:
+            raise RuntimeError("Qwen worker returned no text")
+        return text
+
     def _generate_video(self, source: Path, request: QwenJudgeRequest) -> str:
-        from mlx_vlm import apply_chat_template, generate
+        from mlx_vlm import apply_chat_template
 
         if request.prompt_kind == "basketball_facts":
             prompt_text = QwenVideoReranker._fact_prompt()
@@ -1853,22 +1959,16 @@ class MLXQwenWorkerRuntime:
             fps=request.fps,
             enable_thinking=False,
         )
-        with self._inference_lock:
-            result = generate(
-                model,
-                processor,
-                prompt,
-                video=[str(source)],
-                fps=request.fps,
-                max_tokens=request.max_tokens,
-                temperature=0.0,
-                enable_thinking=False,
-                verbose=False,
-            )
-        return str(result.text)
+        return self._generate(
+            model=model,
+            processor=processor,
+            prompt=prompt,
+            media={"video": [str(source)], "fps": request.fps},
+            request=request,
+        )
 
     def _generate_storyboard(self, source: Path, request: QwenJudgeRequest) -> str:
-        from mlx_vlm import apply_chat_template, generate
+        from mlx_vlm import apply_chat_template
 
         if request.query is None:
             raise ValueError("storyboard query is required")
@@ -1880,18 +1980,13 @@ class MLXQwenWorkerRuntime:
             num_images=1,
             enable_thinking=False,
         )
-        with self._inference_lock:
-            result = generate(
-                model,
-                processor,
-                prompt,
-                image=[str(source)],
-                max_tokens=request.max_tokens,
-                temperature=0.0,
-                enable_thinking=False,
-                verbose=False,
-            )
-        return str(result.text)
+        return self._generate(
+            model=model,
+            processor=processor,
+            prompt=prompt,
+            media={"image": [str(source)]},
+            request=request,
+        )
 
     def judge(self, request: QwenJudgeRequest, source: Path) -> QwenVideoJudgement:
         text = (

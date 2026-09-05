@@ -84,6 +84,15 @@ Timeout ограничивает ожидание backend, но не пытае�
 вернётся. Если backend к этому моменту удалил одноразовый файл, post-check worker
 завершит запрос fail-closed без результата.
 
+После каждого inference worker оставляет веса и processor загруженными, но под
+тем же последовательным inference-lock синхронизирует MLX, удаляет сохранённые
+Qwen request-level position/rope tensors, освобождает result/traceback-ссылки и
+очищает только свободный allocator cache. Это не сбрасывает peak-memory telemetry
+и не затрагивает постоянные оптимизированные веса. Если хотя бы один шаг этой
+очистки не подтверждён, runtime становится unavailable до перезапуска worker:
+следующий запрос не может продолжить работу на потенциально повреждённом или
+неограниченно растущем Metal-состоянии.
+
 Медиа не передаётся в JSON. Backend создаёт одноразовый файл под `data/tmp`,
 читает его через descriptor-relative `O_NOFOLLOW` traversal и отправляет только
 POSIX-relative path вместе с exact SHA-256/byte size. Worker повторяет такое же
