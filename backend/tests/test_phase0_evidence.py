@@ -523,7 +523,7 @@ def _benchmark_run(profile_id: str) -> BenchmarkRunManifest:
         system_metrics=measurement_metrics_from_evidence(evidence),
         measurement_protocol=ComponentIdentity(
             MEASUREMENT_PROTOCOL_COMPONENT_ID,
-            "process-tree-rss-50ms-contained-storage@2:" + "7" * 64,
+            "process-tree-rss-50ms-contained-storage@3:" + "7" * 64,
         ),
         measurement_status="complete",
         measurement_started_at="2026-09-04T00:00:00Z",
@@ -1226,7 +1226,7 @@ def test_benchmark_gate_allows_profile_specific_runtime_and_measurement_digests(
         qwen,
         measurement_protocol=replace(
             qwen.measurement_protocol,
-            identity="process-tree-rss-50ms-contained-storage@2:" + "8" * 64,
+            identity="process-tree-rss-50ms-contained-storage@3:" + "8" * 64,
         ),
     )
 
@@ -1281,7 +1281,7 @@ def test_benchmark_gate_requires_a_digest_sealed_measurement_protocol() -> None:
         lexical,
         measurement_protocol=replace(
             lexical.measurement_protocol,
-            identity="process-tree-rss-50ms-contained-storage@2:/Users/private",
+            identity="process-tree-rss-50ms-contained-storage@3:/Users/private",
         ),
     )
 

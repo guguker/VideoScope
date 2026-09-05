@@ -364,7 +364,7 @@ def test_protocol_identity_is_path_private_and_freezes_the_complete_contract(
     assert first.protocol_identity() != changed_limits.protocol_identity()
     assert first.protocol_identity().component_id == "benchmark_measurement_protocol"
     assert first.protocol_identity().identity.startswith(
-        "process-tree-rss-50ms-contained-storage@2:"
+        "process-tree-rss-50ms-contained-storage@3:"
     )
     assert str(tmp_path) not in first.protocol_identity().identity
     assert PROCESS_RSS_SAMPLE_INTERVAL_SECONDS == 0.05
@@ -407,6 +407,46 @@ def test_process_sampler_includes_recursive_descendants_and_excludes_unrelated_p
     assert result.peak_bytes == 145
     assert result.increment_bytes == 20
     assert result.sample_count >= 3
+
+
+@pytest.mark.parametrize(
+    ("later_start", "later_executable"),
+    (
+        ("helper-start", "ffmpeg@1"),
+        ("reused-pid-start", "new-helper@1"),
+    ),
+)
+def test_process_sampler_allows_unmanaged_descendant_exec_or_pid_reuse(
+    later_start: str,
+    later_executable: str,
+) -> None:
+    provider = ScriptedProcessProvider(
+        (
+            (
+                ProcessRecord(101, 1, 100, "root-start", "benchmark-python@1"),
+                ProcessRecord(102, 101, 25, "worker-start", "vision-worker@1"),
+                ProcessRecord(103, 102, 5, "helper-start", "launcher@1"),
+            ),
+            (
+                ProcessRecord(101, 1, 110, "root-start", "benchmark-python@1"),
+                ProcessRecord(102, 101, 30, "worker-start", "vision-worker@1"),
+                ProcessRecord(103, 102, 7, later_start, later_executable),
+            ),
+        ),
+        ready_after=2,
+    )
+    sampler = ProcessTreeRssSampler(
+        root_pid=101,
+        provider=provider,
+        managed_workers=(_worker_binding(),),
+    )
+
+    sampler.start()
+    assert provider.ready.wait(timeout=1)
+    result = sampler.finish()
+
+    assert result.baseline_bytes == 130
+    assert result.peak_bytes == 147
 
 
 def test_process_sampler_fails_when_root_or_declared_managed_worker_is_unavailable(
