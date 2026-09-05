@@ -102,3 +102,37 @@ cleaned up. The previous repeat ran alongside an agent's receipt analysis. That
 does not establish attribution for its system-wide swapins, but leaves a
 controllable source of host activity. User applications remain untouched;
 background pressure is neither subtracted nor exempted from the gate.
+
+## Clean ea10ad0 control
+
+Clean `ea10ad0577484c74696e432bc09ef55a73721811` installed and attested all six
+environments offline on the same M4 Pro. Its 2,403 backend tests and forced
+generation rollback proof passed. With the exclusive helper-process lease, the
+[full smoke](negative-controls/ea10ad0-first-smoke.json) completed all eight steps,
+five required profiles and export. The unchanged gate still [rejected it](negative-controls/ea10ad0-rejection.json):
+315 swapin pages (5,160,960 bytes), zero swapout and Metal recovery, no observed
+OOM, peak process-tree RSS 10,265,329,664 bytes and peak system-wide Metal
+11,165,057,024 bytes. Neither attribution nor a host-cold state is established.
+
+The [full batch diagnostic](negative-controls/ea10ad0-product-batch-rejection.json)
+confirmed ten ready videos, ten completed jobs and all 70 stage attempts complete.
+Four profiles persisted audited manifests. Each recorded zero execution failures;
+their P@5 was 0.24 and hard-negative hit rate 1.0. A zero model-miss query count
+only means relevant intervals were present somewhere in the returned results.
+It does not hide false positives or demonstrate useful precision.
+
+The fifth profile, Qwen, failed the search service's pinned-candidate check. The
+reranker can refine a confirmed generic event within the inspected source context,
+while the service used the mutable output interval as candidate identity. A
+synthetic no-ML control reproduced this mismatch. Three logged occurrences do not
+constitute a complete case error count, and no Qwen profile or batch receipt was
+published. The correction must preserve legitimate refinement while independently
+binding every result to one original proposal and retaining its source evidence.
+
+The separate [ten-case direct verifier run](negative-controls/ea10ad0-direct-verifier-run.json)
+completed with zero infrastructure errors, three matches and seven model misses.
+Its exact typed receipt is retained without private paths or raw generation text.
+The worker and runner were cleaned up. This run was diagnostic while independent
+agent code review continued; its latency is not an exclusive-host measurement.
+These controls do not complete Phase 0: the corrected five-profile batch and the
+resource gate must still pass together at a committed clean revision.
