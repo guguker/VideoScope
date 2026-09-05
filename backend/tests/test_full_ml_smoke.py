@@ -1738,20 +1738,25 @@ def test_production_dependencies_are_real_client_only() -> None:
     assert dependencies.start_workers is script.start_managed_workers
 
 
-def test_real_vision_client_uses_full_cold_start_health_timeout(
+def test_real_clients_use_full_cold_start_health_timeout(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     script = _load_script()
-    captured: dict[str, object] = {}
+    vision_captured: dict[str, object] = {}
+    whisper_captured: dict[str, object] = {}
     dummy = SimpleNamespace(close=lambda: None)
 
     def build_vision(**kwargs: object) -> object:
-        captured.update(kwargs)
+        vision_captured.update(kwargs)
+        return dummy
+
+    def build_whisper(**kwargs: object) -> object:
+        whisper_captured.update(kwargs)
         return dummy
 
     monkeypatch.setattr(script, "VisionWorkerClient", build_vision)
-    monkeypatch.setattr(script, "WhisperWorkerClient", lambda **_kwargs: dummy)
+    monkeypatch.setattr(script, "WhisperWorkerClient", build_whisper)
     monkeypatch.setattr(script, "PaddleOCRReader", lambda **_kwargs: dummy)
     monkeypatch.setattr(script, "LighthouseWorkerClient", lambda **_kwargs: dummy)
     monkeypatch.setattr(script, "QwenWorkerClient", lambda **_kwargs: dummy)
@@ -1776,8 +1781,16 @@ def test_real_vision_client_uses_full_cold_start_health_timeout(
 
     script.build_real_clients(settings, tmp_path)
 
-    assert captured["timeout"] == settings.vision_worker_timeout
-    assert captured["health_timeout"] == script._WORKER_START_TIMEOUT_SECONDS
+    assert vision_captured["timeout"] == settings.vision_worker_timeout
+    assert (
+        vision_captured["health_timeout"]
+        == script._WORKER_START_TIMEOUT_SECONDS
+    )
+    assert whisper_captured["timeout"] == settings.whisper_worker_timeout
+    assert (
+        whisper_captured["health_timeout"]
+        == script._WORKER_START_TIMEOUT_SECONDS
+    )
 
 
 def test_managed_workers_use_explicit_isolated_pythons_and_native_pid_bindings(
