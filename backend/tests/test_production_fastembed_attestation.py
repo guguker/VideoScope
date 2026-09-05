@@ -4,7 +4,9 @@ import hashlib
 import sys
 import types
 from pathlib import Path
+from threading import Event, Thread
 from types import SimpleNamespace
+import weakref
 
 import numpy as np
 import pytest
@@ -187,6 +189,142 @@ def test_runtime_materializes_and_warms_only_the_reviewed_offline_snapshot(
     assert runtime.close() is True
     assert runtime.close() is False
     assert private_snapshot.exists() is False
+    assert list(scratch_parent.iterdir()) == []
+
+
+@pytest.mark.parametrize("operation", ["embed", "embed_query", "ensure_ready"])
+def test_runtime_close_retains_snapshot_until_inflight_embedding_finishes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    operation: str,
+) -> None:
+    manifest = _manifest()
+    contract = _contract(monkeypatch, manifest)
+    cache_dir = tmp_path / "cache"
+    _write_reviewed_cache(cache_dir, manifest)
+    scratch_parent = tmp_path / "scratch"
+    scratch_parent.mkdir()
+    entered, finish = Event(), Event()
+    block = False
+    model_refs: list[weakref.ReferenceType[object]] = []
+
+    class BlockingModel:
+        def __init__(self, **_kwargs: object) -> None:
+            model_refs.append(weakref.ref(self))
+
+        def embed(self, texts):  # type: ignore[no-untyped-def]
+            if block:
+                entered.set()
+                assert finish.wait(3)
+            return iter(np.ones(TEXT_EMBEDDING_DIMENSIONS) for _ in texts)
+
+        def query_embed(self, query: str):  # type: ignore[no-untyped-def]
+            return self.embed([query])
+
+    _install_fake_fastembed(monkeypatch, BlockingModel)
+    runtime = create_reviewed_semantic_embedding_runtime(
+        model_name=TEXT_EMBEDDING_MODEL,
+        dimensions=TEXT_EMBEDDING_DIMENSIONS,
+        cache_dir=cache_dir,
+        scratch_parent=scratch_parent,
+        contract=contract,
+    )
+    stale_embedding = runtime.embedding
+    private_path = stale_embedding.specific_model_path
+    assert private_path is not None
+    block = True
+    if operation == "ensure_ready":
+        stale_embedding._validated = False
+    errors: list[BaseException] = []
+
+    def encode() -> None:
+        try:
+            if operation == "embed":
+                stale_embedding.embed(["in-flight"])
+            elif operation == "embed_query":
+                stale_embedding.embed_query("in-flight")
+            else:
+                assert stale_embedding.ensure_ready() is True
+        except BaseException as error:
+            errors.append(error)
+
+    monkeypatch.setattr(
+        embeddings_module, "_EMBEDDING_CLOSE_TIMEOUT_SECONDS", 0.01, raising=False
+    )
+    thread = Thread(target=encode)
+    thread.start()
+    try:
+        assert entered.wait(2)
+        with pytest.raises(RuntimeError, match="embedding.*busy"):
+            runtime.close()
+        assert runtime.closed is False
+        assert private_path.is_dir()
+        assert model_refs[0]() is not None
+    finally:
+        finish.set()
+        thread.join(timeout=3)
+    assert not thread.is_alive()
+    assert errors == []
+    assert runtime.close() is True
+    assert runtime.close() is False
+    assert model_refs[0]() is None
+    assert not private_path.exists()
+    assert stale_embedding.ensure_ready() is False
+    with pytest.raises(RuntimeError, match="closed"):
+        stale_embedding.embed(["stale reference"])
+    with pytest.raises(RuntimeError, match="closed"):
+        stale_embedding.embed_query("stale reference")
+    assert len(model_refs) == 1
+
+
+@pytest.mark.parametrize("failure", ["attestation_rejected", "interrupted_warming"])
+def test_runtime_setup_failure_releases_loaded_model_before_snapshot_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    failure: str,
+) -> None:
+    manifest = _manifest()
+    contract = _contract(monkeypatch, manifest)
+    cache_dir = tmp_path / "cache"
+    _write_reviewed_cache(cache_dir, manifest)
+    scratch_parent = tmp_path / "scratch"
+    scratch_parent.mkdir()
+    model_refs: list[weakref.ReferenceType[object]] = []
+
+    class Model:
+        def __init__(self, **_kwargs: object) -> None:
+            model_refs.append(weakref.ref(self))
+
+        def embed(self, texts):  # type: ignore[no-untyped-def]
+            if failure == "interrupted_warming":
+                raise KeyboardInterrupt("warming interrupted")
+            return iter(np.ones(TEXT_EMBEDDING_DIMENSIONS) for _ in texts)
+
+    _install_fake_fastembed(monkeypatch, Model)
+    if failure == "attestation_rejected":
+        monkeypatch.setattr(SemanticEmbedding, "verify_benchmark_model_current", lambda _: False)
+    cleanup = embeddings_module.TemporaryDirectory.cleanup
+
+    def checked_cleanup(scratch):  # type: ignore[no-untyped-def]
+        assert model_refs and model_refs[0]() is None
+        return cleanup(scratch)
+
+    monkeypatch.setattr(embeddings_module.TemporaryDirectory, "cleanup", checked_cleanup)
+    expected_error = (
+        ReviewedSemanticEmbeddingError
+        if failure == "attestation_rejected"
+        else KeyboardInterrupt
+    )
+    with pytest.raises(expected_error) as captured:
+        create_reviewed_semantic_embedding_runtime(
+            model_name=TEXT_EMBEDDING_MODEL,
+            dimensions=TEXT_EMBEDDING_DIMENSIONS,
+            cache_dir=cache_dir,
+            scratch_parent=scratch_parent,
+            contract=contract,
+        )
+    assert captured.value is not None
+    assert model_refs[0]() is None
     assert list(scratch_parent.iterdir()) == []
 
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import gc
 from dataclasses import dataclass, field
 from importlib import metadata
 import os
@@ -8,6 +9,8 @@ from pathlib import Path
 import re
 import stat
 from tempfile import TemporaryDirectory
+from threading import Event, Lock
+import traceback
 import unicodedata
 from collections.abc import Callable, Iterable
 
@@ -20,6 +23,9 @@ from videoscope.model_manifest import (
     fastembed_snapshot,
     model_identity,
 )
+
+
+_EMBEDDING_CLOSE_TIMEOUT_SECONDS = 1.0
 
 
 def _directory_identity(metadata_value: os.stat_result) -> tuple[int, int, int, int]:
@@ -215,6 +221,9 @@ class SemanticEmbedding:
                 Path(specific_model_path)
             )
         self._model = None
+        self._operation_lock = Lock()
+        self._closing = Event()
+        self._closed = False
         self._attempted = False
         self._validated = False
         self._attestation_failed = False
@@ -223,6 +232,8 @@ class SemanticEmbedding:
 
     @property
     def backend(self) -> str:
+        if self._closing.is_set():
+            return "unavailable"
         if self._model is not None:
             return "fastembed"
         if self.strict_no_fallback and self._attempted:
@@ -268,8 +279,16 @@ class SemanticEmbedding:
         }
 
     def ensure_ready(self) -> bool:
+        if self._closing.is_set():
+            return False
+        with self._operation_lock:
+            if self._closing.is_set():
+                return False
+            return self._ensure_ready()
+
+    def _ensure_ready(self) -> bool:
         if self._validated:
-            if self.strict_no_fallback and not self.verify_benchmark_model_current():
+            if self.strict_no_fallback and not self._verify_benchmark_model_current():
                 return False
             return True
         model = self._load()
@@ -289,6 +308,14 @@ class SemanticEmbedding:
 
     def verify_benchmark_model_current(self) -> bool:
         """Revalidate reviewed model bytes outside the measured query boundary."""
+        if self._closing.is_set():
+            return False
+        with self._operation_lock:
+            if self._closing.is_set():
+                return False
+            return self._verify_benchmark_model_current()
+
+    def _verify_benchmark_model_current(self) -> bool:
         if (
             not self.strict_no_fallback
             or not self._validated
@@ -320,7 +347,7 @@ class SemanticEmbedding:
             raise
 
     def _load(self):  # type: ignore[no-untyped-def]
-        if self._attestation_failed:
+        if self._attestation_failed or self._closed:
             return None
         if self._model is not None:
             return self._model
@@ -370,6 +397,12 @@ class SemanticEmbedding:
             return None
 
     def embed(self, texts: list[str]) -> list[np.ndarray]:
+        self._require_open()
+        with self._operation_lock:
+            self._require_open()
+            return self._embed(texts)
+
+    def _embed(self, texts: list[str]) -> list[np.ndarray]:
         if not texts:
             if self.strict_no_fallback:
                 try:
@@ -395,6 +428,12 @@ class SemanticEmbedding:
             raise RuntimeError("semantic embedding failed") from error
 
     def embed_query(self, query: str) -> np.ndarray:
+        self._require_open()
+        with self._operation_lock:
+            self._require_open()
+            return self._embed_query(query)
+
+    def _embed_query(self, query: str) -> np.ndarray:
         model = self._load()
         if model is None:
             if self.strict_no_fallback:
@@ -408,6 +447,30 @@ class SemanticEmbedding:
         except Exception as error:
             self.last_error = str(error)
             raise RuntimeError("semantic query embedding failed") from error
+
+    def _require_open(self) -> None:
+        if self._closing.is_set():
+            raise RuntimeError("semantic embedding is closed")
+
+    def close(self) -> bool:
+        """Stop accepting calls and release the model once inference is quiescent.
+
+        Busy owners must retain their model snapshot and retry this operation;
+        closing never cancels an encode while it is reading that snapshot.
+        """
+        self._closing.set()
+        if not self._operation_lock.acquire(timeout=_EMBEDDING_CLOSE_TIMEOUT_SECONDS):
+            raise RuntimeError("semantic embedding is busy; close requires retry")
+        try:
+            if self._closed:
+                return False
+            self._model = None
+            self._validated = False
+            gc.collect()
+            self._closed = True
+            return True
+        finally:
+            self._operation_lock.release()
 
     def _normalize_vector(self, value: object) -> np.ndarray:
         vector = np.asarray(value, dtype=np.float32)
@@ -616,6 +679,7 @@ class ReviewedSemanticEmbeddingRuntime:
     contract: ReviewedSemanticEmbeddingContract
     _scratch: TemporaryDirectory[str] = field(repr=False)
     _closed: bool = field(default=False, init=False, repr=False)
+    _close_lock: Lock = field(default_factory=Lock, init=False, repr=False)
 
     def __post_init__(self) -> None:
         from videoscope.benchmark.snapshots import FastEmbedSnapshot
@@ -639,11 +703,13 @@ class ReviewedSemanticEmbeddingRuntime:
         return self.embedding.verify_benchmark_model_current()
 
     def close(self) -> bool:
-        if self._closed:
-            return False
-        self._scratch.cleanup()
-        self._closed = True
-        return True
+        with self._close_lock:
+            if self._closed:
+                return False
+            self.embedding.close()
+            self._scratch.cleanup()
+            self._closed = True
+            return True
 
 
 def create_reviewed_semantic_embedding_runtime(
@@ -678,6 +744,7 @@ def create_reviewed_semantic_embedding_runtime(
             "reviewed semantic embedding cache is unavailable"
         )
     scratch: TemporaryDirectory[str] | None = None
+    embedding: object | None = None
     try:
         scratch = TemporaryDirectory(
             prefix=".videoscope-fastembed-",
@@ -706,15 +773,16 @@ def create_reviewed_semantic_embedding_runtime(
             contract=resolved_contract,
             _scratch=scratch,
         )
-    except Exception as error:
+    except BaseException as error:
+        traceback.clear_frames(error.__traceback__)
+        if type(embedding) is SemanticEmbedding:
+            embedding.close()
         if scratch is not None:
             scratch.cleanup()
-        raise ReviewedSemanticEmbeddingError(
-            "reviewed semantic embedding runtime is unavailable"
-        ) from error
-    except BaseException:
-        if scratch is not None:
-            scratch.cleanup()
+        if isinstance(error, Exception):
+            raise ReviewedSemanticEmbeddingError(
+                "reviewed semantic embedding runtime is unavailable"
+            ) from error
         raise
 
 
