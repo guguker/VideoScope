@@ -360,6 +360,94 @@ def test_fastembed_snapshot_materializes_exact_pinned_huggingface_blob_links(
     assert (snapshot.path / "README.md").exists() is False
 
 
+def test_fastembed_huggingface_snapshot_materializes_from_retained_capability(
+    tmp_path: Path,
+) -> None:
+    source, _repository, _blobs = _write_huggingface_fastembed_snapshot(tmp_path)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir(mode=0o700)
+    source_fd = os.open(source, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        capability = snapshots_module.RetainedDirectory.retain(source, source_fd)
+    finally:
+        os.close(source_fd)
+
+    try:
+        snapshot = materialize_fastembed_snapshot(
+            capability,
+            scratch,
+            _fastembed_manifest(),
+        )
+
+        assert sorted(
+            str(item.relative_to(snapshot.path))
+            for item in snapshot.path.rglob("*")
+            if item.is_file()
+        ) == sorted(_MODEL_FILES)
+        assert all(not item.is_symlink() for item in snapshot.path.rglob("*"))
+    finally:
+        capability.close()
+
+
+def test_fastembed_huggingface_snapshot_materializes_from_retained_child(
+    tmp_path: Path,
+) -> None:
+    cache_root = tmp_path / "cache"
+    source, _repository, _blobs = _write_huggingface_fastembed_snapshot(cache_root)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir(mode=0o700)
+    cache_fd = os.open(cache_root, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        capability = snapshots_module.RetainedDirectory.retain(cache_root, cache_fd)
+    finally:
+        os.close(cache_fd)
+    source_view = capability.child(source.relative_to(cache_root).as_posix())
+
+    try:
+        snapshot = materialize_fastembed_snapshot(
+            source_view,
+            scratch,
+            _fastembed_manifest(),
+        )
+
+        assert (snapshot.path / "config.json").read_bytes() == _MODEL_FILES[
+            "config.json"
+        ]
+        assert all(not item.is_symlink() for item in snapshot.path.rglob("*"))
+    finally:
+        capability.close()
+
+
+def test_fastembed_retained_capability_rejects_replaced_repository_binding(
+    tmp_path: Path,
+) -> None:
+    source, repository, _blobs = _write_huggingface_fastembed_snapshot(tmp_path)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir(mode=0o700)
+    source_fd = os.open(source, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        capability = snapshots_module.RetainedDirectory.retain(source, source_fd)
+    finally:
+        os.close(source_fd)
+    repository.rename(tmp_path / "moved-repository")
+    _write_huggingface_fastembed_snapshot(tmp_path)
+
+    try:
+        with pytest.raises(
+            SnapshotError,
+            match="FastEmbed snapshot is not the pinned repository revision",
+        ):
+            materialize_fastembed_snapshot(
+                capability,
+                scratch,
+                _fastembed_manifest(),
+            )
+
+        assert list(scratch.iterdir()) == []
+    finally:
+        capability.close()
+
+
 def test_fastembed_huggingface_snapshot_accepts_a_canonical_sha1_blob_name(
     tmp_path: Path,
 ) -> None:
