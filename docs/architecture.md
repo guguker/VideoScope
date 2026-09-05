@@ -87,6 +87,14 @@ new workers.
    diagnostics.
 7. If Qwen is unavailable, a configured InternVideo 2.5 endpoint can rerank the best candidates; otherwise the fused result is returned without a heavy reranker.
 
+Reranking preserves the original proposal independently of its output interval.
+The service binds detached candidates before calling a reranker and verifies
+one-to-one membership, source video, source evidence and modality tags afterward.
+Qwen may refine a confirmed generic event only within its previously inspected
+source context, with matching verification evidence. Temporary proposal tokens
+never enter views or persisted receipts. Provider mutation or failure leaves the
+original fused candidates and the untouched tail available to local fallback.
+
 This makes the final score explainable: the API returns the evidence and modality list for every result.
 For sports events it also returns a strict allowlist of structured observations: the event type,
 chronological stage scores and independently checked Qwen facts. The client renders them as an

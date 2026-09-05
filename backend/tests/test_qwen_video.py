@@ -652,6 +652,20 @@ def test_generic_storyboard_ignores_event_interval_outside_clip(
     assert reranked[0].evidence[0].end > reranked[0].evidence[0].start
 
 
+def test_qwen_candidate_identity_keeps_exact_intervals_and_excludes_request_tokens() -> None:
+    from dataclasses import replace
+
+    first = candidate("first", 10.0001, 11.0001, 0.8)
+    second = candidate("second", 10.0002, 11.0002, 0.8)
+    first_id = QwenVideoReranker._candidate_id(first)
+
+    assert first_id != QwenVideoReranker._candidate_id(second)
+    assert first_id == QwenVideoReranker._candidate_id(
+        replace(first, _rerank_token=object())
+    )
+    assert "object at" not in first_id
+
+
 def test_persistent_cache_avoids_second_export_and_model_call(
     tmp_path: Path, monkeypatch
 ) -> None:

@@ -710,6 +710,62 @@ def test_evaluation_uses_strict_candidate_reranker(tmp_path) -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("relative_interval", "expected_interval"),
+    [((4.25, 4.75), (10.25, 10.75)), ((2.0, 6.0), (8.0, 12.0))],
+)
+def test_evaluation_preserves_qwen_refinement_of_the_original_candidate(
+    tmp_path, monkeypatch, relative_interval, expected_interval,
+) -> None:
+    from types import SimpleNamespace
+
+    from videoscope.providers.qwen_video import QwenVideoJudgement, QwenVideoReranker
+    from videoscope.search.query_router import QueryPlan
+
+    repository = _repository_with_video(tmp_path)
+    repository.update_video("video-1", duration=40.0)
+    objects = _stage_specification(StageKind.OBJECTS)
+    _publish_segments(repository, objects, [])
+    qwen = QwenVideoReranker(
+        model_name="test-qwen",
+        repository=repository,
+        extractor=SimpleNamespace(extract_frames=lambda *_args, **_kwargs: []),
+        temp_dir=tmp_path / "qwen-work",
+        allow_in_process=True,
+    )
+    monkeypatch.setattr(qwen, "_build_storyboard", lambda _frames, path, _start: path)
+    monkeypatch.setattr(
+        qwen, "_judge_storyboard",
+        lambda _path, _query: QwenVideoJudgement(
+            matches_query=True, confidence=0.8,
+            event_start=relative_interval[0], event_end=relative_interval[1],
+            evidence="Synthetic visible gesture.",
+        ),
+    )
+    visual = EvidenceHit("video-1", "visual:1", 10, 11, "visual", 0.9, "query")
+    service = SearchService(
+        repository, MemoryVectorIndex(),
+        visual_search=RecordingVisualIndex([visual]),
+        candidate_reranker=qwen,
+        query_router=SimpleNamespace(route=lambda query, **_kwargs: QueryPlan(
+            query=query, intent="action", modalities=frozenset({"visual"}),
+            modality_weights={"visual": 1.0}, use_lighthouse=False,
+            refine_temporally=False, explanation="deterministic test",
+        )),
+        segment_specifications=[objects],
+    )
+
+    results = service.search_for_evaluation(
+        "person raises a hand", mode="visual", use_lighthouse=False,
+    )
+
+    assert (results[0].start, results[0].end) == expected_interval
+    assert {hit.modality for hit in results[0].evidence} == {"visual", "qwen_video"}
+    from dataclasses import asdict
+
+    assert "_rerank_token" not in asdict(results[0])
+
+
 def test_generation_aware_search_uses_only_current_verified_vector_binding(tmp_path) -> None:
     repository = _repository_with_video(tmp_path)
     specifications = _indexing_specifications()
