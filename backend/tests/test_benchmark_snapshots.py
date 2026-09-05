@@ -402,6 +402,8 @@ def test_fastembed_huggingface_snapshot_materializes_from_retained_child(
     finally:
         os.close(cache_fd)
     source_view = capability.child(source.relative_to(cache_root).as_posix())
+    cache_root.rename(tmp_path / "moved-cache")
+    _write_huggingface_fastembed_snapshot(cache_root)
 
     try:
         snapshot = materialize_fastembed_snapshot(
@@ -414,6 +416,32 @@ def test_fastembed_huggingface_snapshot_materializes_from_retained_child(
             "config.json"
         ]
         assert all(not item.is_symlink() for item in snapshot.path.rglob("*"))
+    finally:
+        capability.close()
+
+
+def test_fastembed_retained_capability_rejects_missing_logical_repository(
+    tmp_path: Path,
+) -> None:
+    source, repository, _blobs = _write_huggingface_fastembed_snapshot(tmp_path)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir(mode=0o700)
+    source_fd = os.open(source, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        capability = snapshots_module.RetainedDirectory.retain(source, source_fd)
+    finally:
+        os.close(source_fd)
+    repository.rename(tmp_path / "moved-repository")
+
+    try:
+        with pytest.raises(SnapshotError):
+            materialize_fastembed_snapshot(
+                capability,
+                scratch,
+                _fastembed_manifest(),
+            )
+
+        assert list(scratch.iterdir()) == []
     finally:
         capability.close()
 
