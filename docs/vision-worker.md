@@ -25,6 +25,9 @@ VIDEOSCOPE_VISION_WORKER_ENDPOINT=http://127.0.0.1:8783
 VIDEOSCOPE_VISION_WORKER_API_KEY=<dedicated token>
 VIDEOSCOPE_VISION_WORKER_PORT=8783
 VIDEOSCOPE_VISION_WORKER_INPUT_ROOT=./data
+# Set only when INPUT_ROOT is the direct parent of the product data directory.
+# This keeps access limited to product/{visual-index,thumbnails,tmp}.
+# VIDEOSCOPE_VISION_WORKER_PRODUCT_DATA_SUBDIRECTORY=product
 VIDEOSCOPE_VISION_WORKER_RFDETR_CHECKPOINT=./data/models/rfdetr/rf-detr-small.pth
 VIDEOSCOPE_VISION_DETECTOR_MODEL_ID=rfdetr-small
 VIDEOSCOPE_VISION_DETECTOR_CHECKPOINT_SHA256=d81979a9213a2109345158ce9232668df4c1ae52e9b8db3f2ec0a8cbad959b33
@@ -63,7 +66,10 @@ exclusive data lock as the API and intentionally fails if `make dev` is running.
 - Proxy environment, redirects, untrusted `Host`, oversized bodies and extra
   fields are rejected.
 - Input paths are relative and limited to `visual-index`, `thumbnails` and
-  `tmp`; all path components reject symlinks and special files.
+  `tmp`. When a shared parent root is explicitly required, the worker accepts
+  only those same three derived directories below the configured product-data
+  subdirectory; sibling `media` and prefix collisions remain inaccessible. All
+  path components reject symlinks and special files.
 - The worker hashes and copies each image into a bounded private snapshot,
   performs inference only on that copy, then rechecks the original file.
 - Image bytes, pixels, batch sizes, response bytes and ML concurrency are capped.

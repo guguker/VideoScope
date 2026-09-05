@@ -1847,6 +1847,9 @@ def test_managed_workers_use_explicit_isolated_pythons_and_native_pid_bindings(
         assert child_environment["TMPDIR"] == str(root / "tmp" / f"worker-{role}")
         assert child_environment["HF_HOME"] == str(hf_home)
     assert launches[0][1]["env"]["VIDEOSCOPE_VISION_WORKER_INPUT_ROOT"] == str(root)
+    assert launches[0][1]["env"][
+        "VIDEOSCOPE_VISION_WORKER_PRODUCT_DATA_SUBDIRECTORY"
+    ] == "product"
     assert launches[1][1]["env"]["VIDEOSCOPE_WHISPER_WORKER_INPUT_ROOT"] == str(
         root / "product" / "media"
     )
