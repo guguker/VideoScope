@@ -160,7 +160,7 @@ Whisper, Lighthouse and Qwen workers as measured subprocess descendants and
 runs OCR as a child. Both OCR instances receive an explicit allowlisted
 environment; their HOME, cache, TMPDIR and copied control/frame bundle remain
 inside separate disposable roots and never inherit the caller's ambient paths.
-The successful schema-v1 receipt must contain:
+The successful schema-v2 receipt must contain:
 
 - the exact ML-environment manifest/attestation identities and the path-free
   `owner/base` plus worker-role environment mapping;
@@ -170,7 +170,8 @@ The successful schema-v1 receipt must contain:
   an FFprobe-verified positive-duration MP4;
 - complete, generation-bound open/search/close receipts with non-empty evidence
   for `lexical_qdrant`, `dense_siglip`, `temporal_refinement`, `lighthouse` and
-  `qwen_verification`;
+  `qwen_verification`, plus an identity-bound execution trace proving the exact
+  cumulative search components that actually ran for each profile;
 - `internvideo: not_configured/provider_not_configured`, never a fallback;
 - bounded raw recursive process-tree RSS samples that include all four loopback
   workers, and native host-resource raw samples for Metal and VM pressure; and

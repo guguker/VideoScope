@@ -296,9 +296,10 @@ FFprobe. Each executed profile must report successful open/search/close,
 `generation_bound=true`, and non-empty evidence. `internvideo` must instead
 report `not_configured/provider_not_configured`; it is not silently substituted.
 
-The sanitized schema-v1 receipt binds the same pinned ML-environment manifest
+The sanitized schema-v2 receipt binds the same pinned ML-environment manifest
 and path-free role mapping as the standalone attestation and benchmark batch. It
-also contains bounded raw process-tree RSS samples
+also binds each profile to an identity-owned trace of the exact search
+components that ran and contains bounded raw process-tree RSS samples
 including every managed loopback worker, plus native host-resource raw samples,
 Metal in-use/allocated peaks and recovery delta, and VM swap deltas. The Metal
 and VM measurements are `system_wide` and explicitly non-additive with
