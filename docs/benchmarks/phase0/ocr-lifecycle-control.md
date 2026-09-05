@@ -88,7 +88,62 @@ the three changed production modules was 87% (Indexer 86%, OCR 85%, Runtime
 for the separately required clean-checkout Python 3.12.13 attestation.
 Independent review found no blocking lifecycle/rollback defect.
 
-Decision: retain this bounded ownership fix and validate it in a new clean
-checkout. The next experiment is the complete unchanged-coverage smoke with
-stage-scoped OCR lifetime. Phase 0 remains open; forced generation rollback
-and the final evidence bundle are not yet demonstrated for this revision.
+## Clean-checkout result
+
+Clean commit `8d473c655dd1b4bac87d777f7704121eec81b6a5` installed all six
+environments offline from the existing cache. Environment attestation completed
+on the target M4 Pro, with Python 3.12.13 for base/vision/whisper/OCR/Qwen and
+3.11.14 for Lighthouse. The clean backend suite passed 2,267 tests with the two
+existing warnings. The forced pre-commit publication failure verified that the
+prior generation remained active and searchable after restart, without source
+changes or reindexing.
+
+The full smoke passed the product path and five profiles but failed its final
+standalone Qwen request. Its compact infrastructure error did not preserve the
+resource receipt. Private diagnostic repetitions of the same workload isolated
+HTTP 409, `input changed during inference`; OOM remained unknown. An additional
+instrumented run found only the `product` ancestor changing size/mtime/ctime;
+the source, root, immediate parent and private materialized input fingerprints
+were unchanged. This is consistent with deferred removal of SQLite sidecars,
+not modified source media.
+
+[Portable negative diagnostic](negative-controls/ocr-lifetime-8d473c6.json)
+records the measurements and stage observations, explicitly as diagnostic-only
+evidence. Standalone OCR used 5,626,511,360 bytes at 22.488 seconds and its PID
+was absent by 22.565 seconds. No OCR child remained at product completion.
+Peak process-tree RSS was 10,944,692,224 bytes; swapin was 11,730,944 bytes and
+swapout 342,097,920 bytes. Swapouts occurred during the product stage, before
+the final Qwen failure. Stage and host clocks have different origins and there
+are no subprofile timestamps; these measurements do not attribute the burst
+exactly to a model. They reject OCR retirement as a sufficient memory fix.
+
+Decision: retain the verified OCR ownership correction; keep Phase 0 open.
+Next bounded infrastructure controls are deterministic SQLite connection
+closure (the strict input lease must remain unchanged), terminal release of
+FastEmbed sessions owned by closed runtimes, and durable sanitized negative
+smoke receipts. The FastEmbed hypothesis is that live sessions retained through
+stale runtime references add avoidable memory at the first Qwen request. Its
+minimum useful effect is confirmed release after in-flight operations finish,
+unchanged profiles/predictions, and the same complete zero-swap smoke gate.
+Frozen data, metric policy, model revisions and the 16 GiB budget are unchanged.
+
+The SQLite control reproduced the exact 409 without ML: collecting an open
+connection after its context exited removed WAL/SHM during fake inference while
+the source hash and metadata remained unchanged. Closing the connection after
+commit/rollback made that test pass, without changing the Qwen lease.
+Commit `f1db3c5` passed 240 repository/generation/worker tests.
+
+Commit `45110d0` makes embedding close terminal, waits for in-flight loading or
+encoding, and retains snapshots on a bounded busy-close failure for retry.
+Closed writers and benchmark environments release their owned FastEmbed model
+even when a stale runtime reference remains. Failed initialization also clears
+completed traceback frames retaining the session before removing its snapshot.
+The 141 focused tests passed; actual RSS/swap benefit still requires measurement.
+
+Negative smoke receipts preserve independently validated measurements and
+cleanup results on typed errors; the 148 smoke/evidence tests passed. Ready
+schema 2 and acceptance checks are unchanged. The combined backend suite passed
+2,298 tests with two existing warnings. The frozen policy validation still
+resolves to `e387059314c5c7372520f971c815d03f3cfd181f92135e08e8fdea0bd5340eef`.
+The next check is a new clean six-environment install and complete target smoke;
+these unit/integration results do not close Phase 0.
