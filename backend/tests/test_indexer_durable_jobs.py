@@ -19,7 +19,7 @@ from videoscope.processing.indexer import (
     JobCancelled,
     VideoIndexExecutionContext,
 )
-from videoscope.providers.types import TimedText
+from videoscope.providers.types import ObjectTag, TimedText
 from videoscope.providers.whisper import WhisperPromptSnapshot
 from videoscope.repository import Repository
 from videoscope.search.vector_index import MemoryVectorIndex
@@ -620,3 +620,157 @@ def test_external_cancel_after_build_is_observed_before_receipt_publication(
         assert connection.execute(
             "SELECT COUNT(*) FROM external_index_generations"
         ).fetchone()[0] == 0
+
+
+def test_durable_indexer_releases_object_resources_before_heavy_stages(
+    tmp_path: Path,
+) -> None:
+    repository, plan, _source = _claimed_job(tmp_path)
+    events: list[str] = []
+
+    class ReleasableObjects:
+        def detect(self, _image: Path) -> list[ObjectTag]:
+            events.append("objects")
+            return [ObjectTag("basketball", 0.93)]
+
+        def release_ingestion_resources(self) -> None:
+            events.append("release")
+
+    class OrderedVectorIndex(MemoryVectorIndex):
+        def build_generation(self, build_plan):  # type: ignore[no-untyped-def]
+            events.append("text")
+            return super().build_generation(build_plan)
+
+    class OrderedVisualProvider(_BuildOnlyExternalProvider):
+        def build_video_source(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+            events.append("dense")
+            return super().build_video_source(*args, **kwargs)
+
+    visual = OrderedVisualProvider(
+        kind=StageKind.VISUAL_DENSE,
+        specification=plan.visual_dense_specification,
+    )
+    indexer = Indexer(
+        repository=repository,
+        media_root=tmp_path,
+        thumbnails_dir=tmp_path / "thumbs",
+        specification_resolver=lambda: pytest.fail("resolver must not be called"),
+        ffmpeg=_FFmpeg(),  # type: ignore[arg-type]
+        scenes=_Scenes(),  # type: ignore[arg-type]
+        objects=ReleasableObjects(),
+        vector_index=OrderedVectorIndex(),
+        visual_index=visual,  # type: ignore[arg-type]
+    )
+
+    warnings = indexer.process_durable(
+        "video-1",
+        context=VideoIndexExecutionContext("job-1", TOKEN, plan),
+    )
+
+    assert warnings == ()
+    assert events == ["objects", "release", "text", "dense"]
+
+
+def test_durable_indexer_releases_object_resources_during_cancellation(
+    tmp_path: Path,
+) -> None:
+    repository, plan, _source = _claimed_job(tmp_path)
+    events: list[str] = []
+
+    class CancellingObjects:
+        def detect(self, _image: Path) -> list[ObjectTag]:
+            events.append("objects")
+            repository.request_video_index_job_cancellation("job-1")
+            return []
+
+        def release_ingestion_resources(self) -> None:
+            events.append("release")
+
+    class ForbiddenVectorIndex(MemoryVectorIndex):
+        def build_generation(self, build_plan):  # type: ignore[no-untyped-def]
+            events.append("text")
+            return super().build_generation(build_plan)
+
+    indexer = Indexer(
+        repository=repository,
+        media_root=tmp_path,
+        thumbnails_dir=tmp_path / "thumbs",
+        specification_resolver=lambda: pytest.fail("resolver must not be called"),
+        ffmpeg=_FFmpeg(),  # type: ignore[arg-type]
+        scenes=_Scenes(),  # type: ignore[arg-type]
+        objects=CancellingObjects(),
+        vector_index=ForbiddenVectorIndex(),
+    )
+
+    with pytest.raises(JobCancelled):
+        indexer.process_durable(
+            "video-1",
+            context=VideoIndexExecutionContext("job-1", TOKEN, plan),
+        )
+
+    assert events == ["objects", "release"]
+    assert repository.get_latest_stage_run(
+        "video-1",
+        StageKind.TEXT_VECTORS,
+    ) is None
+
+
+def test_durable_object_resource_release_failure_keeps_candidate_inactive(
+    tmp_path: Path,
+) -> None:
+    repository, plan, _source = _claimed_job(tmp_path)
+    events: list[str] = []
+
+    class FailingReleaseObjects:
+        def detect(self, _image: Path) -> list[ObjectTag]:
+            events.append("objects")
+            return [ObjectTag("basketball", 0.93)]
+
+        def release_ingestion_resources(self) -> None:
+            events.append("release")
+            raise RuntimeError("object ingestion resource release failed")
+
+    class ForbiddenVectorIndex(MemoryVectorIndex):
+        def build_generation(self, build_plan):  # type: ignore[no-untyped-def]
+            events.append("text")
+            return super().build_generation(build_plan)
+
+    visual = _BuildOnlyExternalProvider(
+        kind=StageKind.VISUAL_DENSE,
+        specification=plan.visual_dense_specification,
+    )
+    indexer = Indexer(
+        repository=repository,
+        media_root=tmp_path,
+        thumbnails_dir=tmp_path / "thumbs",
+        specification_resolver=lambda: pytest.fail("resolver must not be called"),
+        ffmpeg=_FFmpeg(),  # type: ignore[arg-type]
+        scenes=_Scenes(),  # type: ignore[arg-type]
+        objects=FailingReleaseObjects(),
+        vector_index=ForbiddenVectorIndex(),
+        visual_index=visual,  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="object ingestion resource release failed",
+    ):
+        indexer.process_durable(
+            "video-1",
+            context=VideoIndexExecutionContext("job-1", TOKEN, plan),
+        )
+
+    object_run = repository.get_latest_stage_run("video-1", StageKind.OBJECTS)
+    assert object_run is not None and object_run.state is StageState.FAILED
+    assert object_run.error_code == "objects_resource_release_failed"
+    assert object_run.output_generation is None
+    assert repository.get_active_segment_generation(
+        "video-1",
+        StageKind.OBJECTS,
+    ) is None
+    assert repository.get_latest_stage_run(
+        "video-1",
+        StageKind.TEXT_VECTORS,
+    ) is None
+    assert visual.build_calls == []
+    assert events == ["objects", "release"]

@@ -116,10 +116,12 @@ class _Vision:
         *,
         fail_image: bool = False,
         oom_image: bool = False,
+        fail_ingestion_release: bool = False,
     ) -> None:
         self.events = events
         self.fail_image = fail_image
         self.oom_image = oom_image
+        self.fail_ingestion_release = fail_ingestion_release
         self.specification = SimpleNamespace(
             embedding_dimensions=3,
             identity="c" * 64,
@@ -147,6 +149,11 @@ class _Vision:
         self.events.append("vision.detect")
         assert image.is_file()
         return []
+
+    def release_ingestion_resources(self) -> None:
+        self.events.append("vision.release_ingestion_resources")
+        if self.fail_ingestion_release:
+            raise RuntimeError("private vision worker release diagnostics")
 
 
 class _Whisper:
@@ -443,6 +450,7 @@ def _dependencies(
     *,
     fail_image: bool = False,
     oom_image: bool = False,
+    fail_ingestion_release: bool = False,
 ) -> object:
     toolchain = _Toolchain(events)
 
@@ -487,6 +495,7 @@ def _dependencies(
                 events,
                 fail_image=fail_image,
                 oom_image=oom_image,
+                fail_ingestion_release=fail_ingestion_release,
             ),
             whisper=_Whisper(events),
             ocr=_OCR(events),
@@ -888,6 +897,7 @@ def test_component_smoke_is_sequential_pathless_and_completes_product_path(
         "vision.image",
         "vision.text",
         "vision.detect",
+        "vision.release_ingestion_resources",
         "whisper.status",
         "whisper.transcribe",
         "ocr.status",
@@ -895,9 +905,9 @@ def test_component_smoke_is_sequential_pathless_and_completes_product_path(
         "lighthouse.status",
         "lighthouse.build",
         "lighthouse.search",
+        "product.integration",
         "qwen.status",
         "qwen.judge",
-        "product.integration",
         "ocr.close",
         "toolchain.verify.post",
         "workers.close",
@@ -973,6 +983,47 @@ def test_component_smoke_is_sequential_pathless_and_completes_product_path(
     assert "vvvvvvvv" not in encoded
     assert list((root / "product" / "media").glob("full-ml-smoke-*")) == []
     assert list((root / "product" / "tmp").glob("full-ml-smoke-*")) == []
+
+
+def test_vision_ingestion_release_failure_is_infrastructure_and_stops_before_whisper(
+    tmp_path: Path,
+) -> None:
+    script = _load_script()
+    root = tmp_path / "smoke"
+    root.mkdir(mode=0o700)
+    models_root = _models_root(tmp_path)
+    events: list[str] = []
+
+    with pytest.raises(script.SmokeInfrastructureError) as captured:
+        script.execute(
+            root,
+            models_root=models_root,
+            environ=_offline_environment(root, models_root),
+            dependencies=_dependencies(
+                script,
+                events,
+                fail_ingestion_release=True,
+            ),
+        )
+
+    assert captured.value.code == "ingestion_resource_release_failed"
+    assert captured.value.component == "vision"
+    assert captured.value.kind == "infrastructure"
+    assert events == [
+        "ml-environment.attest",
+        "toolchain.verify.pre",
+        "workers.start",
+        "workers.ready",
+        "fixture",
+        "vision.status",
+        "vision.image",
+        "vision.text",
+        "vision.detect",
+        "vision.release_ingestion_resources",
+        "ocr.close",
+        "toolchain.verify.post",
+        "workers.close",
+    ]
 
 
 def test_production_fixture_contains_searchable_text_and_uses_attested_ffmpeg(

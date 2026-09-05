@@ -864,7 +864,8 @@ class Indexer:
         warnings: list[str],
         context: VideoIndexExecutionContext | None = None,
     ) -> None:
-        if self.objects is None:
+        provider = self.objects
+        if provider is None:
             self._record_not_configured(
                 video_id,
                 specifications,
@@ -872,12 +873,72 @@ class Indexer:
                 context=context,
             )
             return
-        run = self._create_running_stage(
-            video_id,
-            specifications,
-            StageKind.OBJECTS,
-            context=context,
-        )
+
+        run: StageRun | None = None
+        candidates: list[SegmentRecord] | None = None
+        stage_error: Exception | None = None
+        try:
+            run = self._create_running_stage(
+                video_id,
+                specifications,
+                StageKind.OBJECTS,
+                context=context,
+            )
+            if scenes_available:
+                candidates = []
+                for index, (start, end, frame_path) in enumerate(frame_paths):
+                    self._checkpoint(context, progress=0.66, stage="vision")
+                    tags = provider.detect(frame_path)
+                    self._checkpoint(context, progress=0.66, stage="vision")
+                    if not tags:
+                        continue
+                    candidates.append(
+                        SegmentRecord(
+                            id=uuid4().hex,
+                            video_id=video_id,
+                            start=start,
+                            end=end,
+                            modality="objects",
+                            text=", ".join(sorted({tag.label for tag in tags})),
+                            confidence=max(tag.confidence for tag in tags),
+                            metadata={
+                                "scene_index": index,
+                                "objects": [
+                                    {
+                                        "label": tag.label,
+                                        "confidence": tag.confidence,
+                                        **tag.metadata,
+                                    }
+                                    for tag in tags
+                                ],
+                            },
+                            thumbnail_path=str(frame_path),
+                        )
+                    )
+        except JobCancelled:
+            raise
+        except Exception as error:
+            self._translate_job_cancellation(context, cause=error)
+            if run is None:
+                raise
+            stage_error = error
+        finally:
+            release = getattr(provider, "release_ingestion_resources", None)
+            if callable(release):
+                try:
+                    release()
+                except Exception as error:
+                    self._translate_job_cancellation(context, cause=error)
+                    if run is not None:
+                        self._record_failed(
+                            run,
+                            "objects_resource_release_failed",
+                            error=error,
+                            context=context,
+                        )
+                    raise
+
+        assert run is not None
         if not scenes_available:
             self._record_failed(
                 run,
@@ -886,37 +947,18 @@ class Indexer:
             )
             warnings.append("objects stage failed")
             return
+        if stage_error is not None:
+            self._record_failed(
+                run,
+                "objects_provider_failed",
+                error=stage_error,
+                context=context,
+            )
+            warnings.append("objects stage failed")
+            return
+        assert candidates is not None
+
         try:
-            candidates: list[SegmentRecord] = []
-            for index, (start, end, frame_path) in enumerate(frame_paths):
-                self._checkpoint(context, progress=0.66, stage="vision")
-                tags = self.objects.detect(frame_path)
-                self._checkpoint(context, progress=0.66, stage="vision")
-                if not tags:
-                    continue
-                candidates.append(
-                    SegmentRecord(
-                        id=uuid4().hex,
-                        video_id=video_id,
-                        start=start,
-                        end=end,
-                        modality="objects",
-                        text=", ".join(sorted({tag.label for tag in tags})),
-                        confidence=max(tag.confidence for tag in tags),
-                        metadata={
-                            "scene_index": index,
-                            "objects": [
-                                {
-                                    "label": tag.label,
-                                    "confidence": tag.confidence,
-                                    **tag.metadata,
-                                }
-                                for tag in tags
-                            ],
-                        },
-                        thumbnail_path=str(frame_path),
-                    )
-                )
             self._verify_run_specification(run, context=context)
             self._checkpoint(context, progress=0.72, stage="vision")
             self.repository.commit_segment_generation(

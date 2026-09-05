@@ -50,6 +50,14 @@ and detector projections have separate hashes, so changing an object detector
 does not invalidate dense visual vectors. A model, lock, compute or
 preprocessing change does invalidate the corresponding derived generation.
 
+Only one vision backbone may remain resident on MPS. Loading SigLIP releases
+RF-DETR first and loading RF-DETR releases SigLIP first. In addition, the
+Indexer explicitly closes the RF-DETR ingestion stage before later text-vector
+and dense-visual work, while the full-ML probe closes it before starting
+Whisper. That authenticated lifecycle call is idempotent and fail-closed: if the
+worker cannot confirm detector release, the indexing attempt fails while the
+previously active generations remain untouched.
+
 `SiglipVisualIndex` remains the generation owner. It builds in a private
 directory, validates finite fixed-shape vectors and metadata, then atomically
 switches `active.json`. A worker error or malformed response never overwrites the

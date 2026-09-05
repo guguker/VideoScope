@@ -60,6 +60,11 @@ run from mixing two glossary versions.
   response size are bounded; non-finite or overlapping timelines fail closed.
 - Only one inference operation is admitted at a time; excess work receives a
   retryable capacity response rather than an unbounded queue.
+- The pinned `mlx-whisper` request cache is part of the reviewed runtime
+  contract. After every request the worker synchronizes MLX, clears
+  `ModelHolder`, runs collection and clears the allocator cache. A cleanup
+  failure makes the worker unavailable until restart and no transcript from
+  that request is accepted.
 - A configured but unavailable worker produces an explicit failed stage and does
   not erase the previous verified generation.
 

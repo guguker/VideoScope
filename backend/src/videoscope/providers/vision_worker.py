@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from functools import lru_cache
+import gc
 from hashlib import sha1, sha256
 import hmac
 from importlib import metadata as importlib_metadata
@@ -18,7 +19,7 @@ import secrets
 import stat
 import sys
 from tempfile import TemporaryDirectory
-from threading import BoundedSemaphore, Lock
+from threading import BoundedSemaphore, Event, Lock
 from typing import Any, Literal, Protocol
 from uuid import uuid4
 import warnings
@@ -69,6 +70,8 @@ from videoscope.providers.vision_worker_contract import (
     VisionEmbedTextsRequest,
     VisionHealthResponse,
     VisionImageItem,
+    VisionReleaseDetectorRequest,
+    VisionReleaseDetectorResponse,
     VisionSourceProbeRequest,
     VisionSourceProbeResponse,
     VisionVectorItem,
@@ -215,6 +218,8 @@ class VisionWorkerRuntime(Protocol):
         source: Path,
         minimum_confidence: float,
     ) -> list[dict[str, object]]: ...
+
+    def release_detector(self) -> None: ...
 
 
 def _fingerprint(metadata: os.stat_result) -> _SourceFingerprint:
@@ -825,7 +830,13 @@ def create_vision_worker_app(
             status="ok" if runtime.available else "unavailable",
             siglip_loaded=runtime.siglip_loaded,
             detector_loaded=runtime.detector_loaded,
-            operations=["probe", "embed_images", "embed_texts", "detect"],
+            operations=[
+                "probe",
+                "embed_images",
+                "embed_texts",
+                "detect",
+                "release_detector",
+            ],
             embedding_dimensions=specification.embedding_dimensions,
             max_images=MAX_IMAGES,
             max_texts=MAX_TEXTS,
@@ -1059,6 +1070,44 @@ def create_vision_worker_app(
                         "Vision worker input changed during inference",
                     ) from error
                 return response
+        finally:
+            capacity.release()
+
+    @app.post(
+        "/v1/lifecycle/release-detector",
+        response_model=VisionReleaseDetectorResponse,
+    )
+    async def release_detector(
+        request: VisionReleaseDetectorRequest,
+    ) -> VisionReleaseDetectorResponse:
+        if not _request_identity_matches(
+            runtime,
+            request,
+            input_root_identity=input_root_identity,
+        ):
+            raise HTTPException(409, "Vision worker identity does not match")
+        if not capacity.acquire(blocking=False):
+            raise HTTPException(429, "Vision worker is busy")
+        try:
+            try:
+                await run_in_threadpool(runtime.release_detector)
+                if runtime.detector_loaded:
+                    raise RuntimeError(
+                        "Vision worker detector release did not complete"
+                    )
+                return VisionReleaseDetectorResponse(
+                    **exact_identity,
+                    request_id=request.request_id,
+                    released=True,
+                    siglip_loaded=runtime.siglip_loaded,
+                    detector_loaded=runtime.detector_loaded,
+                )
+            except Exception as error:
+                logger.exception("Vision worker detector release failed")
+                raise HTTPException(
+                    503,
+                    "Vision worker detector release failed",
+                ) from error
         finally:
             capacity.release()
 
@@ -1352,6 +1401,7 @@ class LocalVisionWorkerRuntime:
         self._detector_load_lock = Lock()
         self._inference_lock = Lock()
         self._checkpoint_lock = Lock()
+        self._unhealthy = Event()
         self._checkpoint_cache: tuple[_SourceFingerprint, bool] | None = None
 
     @property
@@ -1391,7 +1441,8 @@ class LocalVisionWorkerRuntime:
     @property
     def available(self) -> bool:
         return (
-            vision_worker_environment_is_exact()
+            not self._unhealthy.is_set()
+            and vision_worker_environment_is_exact()
             and _siglip_compute_environment_is_exact()
             and _rfdetr_compute_environment_is_exact()
             and siglip_profile_is_reviewed(self.specification)
@@ -1433,7 +1484,62 @@ class LocalVisionWorkerRuntime:
         except (AttributeError, RuntimeError, TypeError, ValueError) as error:
             raise RuntimeError("SigLIP input compute identity does not match") from error
 
+    @staticmethod
+    def _synchronize_mps(torch_module: Any) -> Any:
+        mps = getattr(torch_module, "mps", None)
+        synchronize = getattr(mps, "synchronize", None)
+        empty_cache = getattr(mps, "empty_cache", None)
+        if not callable(synchronize) or not callable(empty_cache):
+            raise RuntimeError("Vision worker MPS cache controls are unavailable")
+        synchronize()
+        return empty_cache
+
+    def _release_siglip(self, torch_module: Any) -> None:
+        if not self.siglip_loaded:
+            return
+        try:
+            empty_cache = self._synchronize_mps(torch_module)
+            model = self._siglip_model
+            processor = self._siglip_processor
+            self._siglip_model = None
+            self._siglip_processor = None
+            del model, processor
+            gc.collect()
+            empty_cache()
+        except Exception:
+            self._unhealthy.set()
+            raise
+
+    def _release_detector(self, torch_module: Any) -> None:
+        if not self.detector_loaded:
+            return
+        try:
+            empty_cache = self._synchronize_mps(torch_module)
+            detector = self._detector
+            self._detector = None
+            del detector
+            gc.collect()
+            empty_cache()
+        except Exception:
+            self._unhealthy.set()
+            raise
+
+    def release_detector(self) -> None:
+        import torch
+
+        with self._inference_lock:
+            with self._detector_load_lock:
+                self._release_detector(torch)
+                if self.detector_loaded:
+                    self._unhealthy.set()
+                    raise RuntimeError("Vision worker detector release did not complete")
+
     def _load_siglip(self) -> tuple[Any, Any]:
+        import torch
+
+        if self._unhealthy.is_set():
+            raise RuntimeError("Vision worker runtime is unhealthy")
+        self._release_detector(torch)
         if self.siglip_loaded:
             return self._siglip_model, self._siglip_processor
         with self._siglip_load_lock:
@@ -1441,7 +1547,6 @@ class LocalVisionWorkerRuntime:
                 return self._siglip_model, self._siglip_processor
             if not self.available:
                 raise RuntimeError("Vision worker artifacts or runtime are unavailable")
-            import torch
             from transformers import AutoModel, AutoProcessor
 
             if not _siglip_compute_environment_is_exact(torch_module=torch):
@@ -1495,9 +1600,9 @@ class LocalVisionWorkerRuntime:
         import torch
         from PIL import Image
 
-        model, processor = self._load_siglip()
         rows: list[list[float]] = []
         with self._inference_lock:
+            model, processor = self._load_siglip()
             for start in range(0, len(sources), _SIGLIP_IMAGE_INFERENCE_BATCH_SIZE):
                 batch_sources = sources[start : start + _SIGLIP_IMAGE_INFERENCE_BATCH_SIZE]
                 images: list[Any] = []
@@ -1528,9 +1633,9 @@ class LocalVisionWorkerRuntime:
     def embed_texts(self, texts: tuple[str, ...]) -> list[list[float]]:
         import torch
 
-        model, processor = self._load_siglip()
         rows: list[list[float]] = []
         with self._inference_lock:
+            model, processor = self._load_siglip()
             for start in range(0, len(texts), _SIGLIP_TEXT_INFERENCE_BATCH_SIZE):
                 batch_texts = texts[start : start + _SIGLIP_TEXT_INFERENCE_BATCH_SIZE]
                 inputs = processor(
@@ -1594,6 +1699,9 @@ class LocalVisionWorkerRuntime:
     def _load_detector(self) -> Any:
         import torch
 
+        if self._unhealthy.is_set():
+            raise RuntimeError("Vision worker runtime is unhealthy")
+        self._release_siglip(torch)
         if self._detector is not None:
             if not _rfdetr_compute_environment_is_exact(torch_module=torch):
                 raise RuntimeError("RF-DETR requires exact MPS float32 compute")
@@ -1735,8 +1843,8 @@ class LocalVisionWorkerRuntime:
         from rfdetr.assets.coco_classes import COCO_CLASSES
         from PIL import Image
 
-        detector = self._load_detector()
         with self._inference_lock:
+            detector = self._load_detector()
             with Image.open(source) as image:
                 rgb_image = image.convert("RGB")
             try:

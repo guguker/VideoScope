@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 import errno
 import fcntl
+import gc
 import hashlib
 import importlib
 import importlib.metadata
@@ -23,6 +24,7 @@ import sys
 import tempfile
 from threading import BoundedSemaphore, Lock
 from time import monotonic
+import traceback
 from typing import Any, Callable, Literal, Protocol, Self
 from urllib.parse import urlsplit
 from uuid import uuid4
@@ -58,8 +60,9 @@ WHISPER_WORKER_PYTHON_VERSION = (3, 12, 13)
 WHISPER_WORKER_SYSTEM = "Darwin"
 WHISPER_WORKER_MACHINE = "arm64"
 WHISPER_INFERENCE_RUNTIME_IDENTITY = (
-    "mlx-whisper-worker-v2:mlx-whisper==0.4.3:python==3.12.13:"
-    "platform=darwin-arm64-macos14plus:model-artifacts=v1"
+    "mlx-whisper-worker-v3:mlx-whisper==0.4.3:python==3.12.13:"
+    "platform=darwin-arm64-macos14plus:model-artifacts=v1:"
+    "model-residency=request-scoped-v1"
 )
 # Updated together with workers/whisper/requirements.lock. The lock digest is
 # part of every health/request/response identity and is never inferred at run time.
@@ -2564,6 +2567,7 @@ class MLXWhisperWorkerRuntime:
         self._model_artifact_state: tuple[tuple[object, ...], ...] | None = None
         self._load_lock = Lock()
         self._inference_lock = Lock()
+        self._healthy = True
 
     @property
     def model_identity(self) -> str:
@@ -2571,9 +2575,61 @@ class MLXWhisperWorkerRuntime:
 
     @property
     def loaded(self) -> bool:
-        # mlx-whisper owns model allocation inside each call; health validation
-        # only resolves and inspects the pinned local snapshot.
-        return False
+        module = sys.modules.get("mlx_whisper.transcribe")
+        holder = getattr(module, "ModelHolder", None)
+        return holder is not None and getattr(holder, "model", None) is not None
+
+    @staticmethod
+    def _mlx_runtime_module() -> Any:
+        module = importlib.import_module("mlx_whisper.transcribe")
+        holder = getattr(module, "ModelHolder", None)
+        mlx = getattr(module, "mx", None)
+        if (
+            holder is None
+            or not hasattr(holder, "model")
+            or not hasattr(holder, "model_path")
+            or not callable(getattr(module, "transcribe", None))
+            or not callable(getattr(mlx, "synchronize", None))
+            or not callable(getattr(mlx, "clear_cache", None))
+        ):
+            raise RuntimeError("mlx-whisper cache controls do not match the lock")
+        return module
+
+    @staticmethod
+    def _release_mlx_model(module: Any) -> None:
+        holder = module.ModelHolder
+        retained_model = holder.model
+        module.mx.synchronize()
+        holder.model = None
+        holder.model_path = None
+        del retained_model
+        gc.collect()
+        module.mx.clear_cache()
+        if holder.model is not None or holder.model_path is not None:
+            raise RuntimeError("mlx-whisper retained its model after cleanup")
+
+    def _release_mlx_after_request(
+        self,
+        module: Any,
+        *,
+        primary_error: BaseException | None,
+    ) -> None:
+        try:
+            self._release_mlx_model(module)
+        except BaseException as cleanup_error:
+            self._healthy = False
+            if primary_error is not None:
+                logger.error(
+                    "Whisper inference also failed before MLX cleanup",
+                    exc_info=(
+                        type(primary_error),
+                        primary_error,
+                        primary_error.__traceback__,
+                    ),
+                )
+            raise RuntimeError(
+                "Whisper worker could not release MLX model memory"
+            ) from cleanup_error
 
     def _resolve_local_reference(self, *, force_hash: bool = False) -> str:
         with self._load_lock:
@@ -2601,12 +2657,14 @@ class MLXWhisperWorkerRuntime:
     @property
     def available(self) -> bool:
         if (
-            not _runtime_platform_is_exact()
+            not self._healthy
+            or not _runtime_platform_is_exact()
             or _installed_dependency_identity() != WHISPER_DEPENDENCY_IDENTITY
         ):
             return False
         try:
             self._resolve_local_reference()
+            self._mlx_runtime_module()
         except Exception:
             return False
         return True
@@ -2618,12 +2676,13 @@ class MLXWhisperWorkerRuntime:
         duration_seconds: float,
     ) -> WhisperTranscript:
         if (
-            not _runtime_platform_is_exact()
+            not self._healthy
+            or not _runtime_platform_is_exact()
             or _installed_dependency_identity() != WHISPER_DEPENDENCY_IDENTITY
         ):
             raise RuntimeError("Whisper worker runtime identity is unavailable")
         reference = self._resolve_local_reference(force_hash=True)
-        mlx_whisper = importlib.import_module("mlx_whisper")
+        mlx_whisper = self._mlx_runtime_module()
         options: dict[str, object] = {
             "path_or_hf_repo": reference,
             "word_timestamps": True,
@@ -2636,14 +2695,34 @@ class MLXWhisperWorkerRuntime:
             options["language"] = request.language
         if request.effective_prompt:
             options["initial_prompt"] = request.effective_prompt
+        transcript: WhisperTranscript | None = None
+        raw_result: object | None = None
         with self._inference_lock:
-            raw_result = mlx_whisper.transcribe(str(source), **options)
-            self._resolve_local_reference(force_hash=True)
-        return _normalize_mlx_transcript(
-            raw_result,
-            requested_language=request.language,
-            duration_seconds=duration_seconds,
-        )
+            try:
+                raw_result = mlx_whisper.transcribe(str(source), **options)
+                self._resolve_local_reference(force_hash=True)
+                transcript = _normalize_mlx_transcript(
+                    raw_result,
+                    requested_language=request.language,
+                    duration_seconds=duration_seconds,
+                )
+            except BaseException as primary_error:
+                raw_result = None
+                traceback.clear_frames(primary_error.__traceback__)
+                self._release_mlx_after_request(
+                    mlx_whisper,
+                    primary_error=primary_error,
+                )
+                raise
+            else:
+                raw_result = None
+                self._release_mlx_after_request(
+                    mlx_whisper,
+                    primary_error=None,
+                )
+        if transcript is None:
+            raise RuntimeError("Whisper worker produced no transcript")
+        return transcript
 
 
 class WhisperWorkerSettings(BaseSettings):

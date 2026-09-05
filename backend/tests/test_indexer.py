@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from videoscope.artifacts import StageKind, StageState
 from videoscope.config import AppSettings
 from videoscope.media.ffmpeg import MediaProbe
@@ -199,6 +201,16 @@ def test_indexer_keeps_working_when_optional_provider_fails(tmp_path) -> None:
         def read(self, _image: Path):  # type: ignore[no-untyped-def]
             raise RuntimeError("model unavailable")
 
+    class BrokenObjects:
+        def __init__(self) -> None:
+            self.release_calls = 0
+
+        def detect(self, _image: Path) -> list[ObjectTag]:
+            raise RuntimeError("detector unavailable")
+
+        def release_ingestion_resources(self) -> None:
+            self.release_calls += 1
+
     repository = Repository(tmp_path / "db.sqlite3")
     repository.initialize()
     media = tmp_path / "video.mp4"
@@ -210,6 +222,7 @@ def test_indexer_keeps_working_when_optional_provider_fails(tmp_path) -> None:
         media_path=str(media),
         size_bytes=5,
     )
+    objects = BrokenObjects()
     indexer = Indexer(
         repository=repository,
         media_root=tmp_path,
@@ -219,7 +232,7 @@ def test_indexer_keeps_working_when_optional_provider_fails(tmp_path) -> None:
         scenes=FakeScenes(),  # type: ignore[arg-type]
         speech=None,
         ocr=BrokenOCR(),  # type: ignore[arg-type]
-        objects=None,
+        objects=objects,
         vector_index=RecordingIndex(),  # type: ignore[arg-type]
     )
 
@@ -229,6 +242,8 @@ def test_indexer_keeps_working_when_optional_provider_fails(tmp_path) -> None:
     assert video is not None
     assert video.status == "ready"
     assert "ocr" in (video.error or "")
+    assert "objects" in (video.error or "")
+    assert objects.release_calls == 1
 
 
 def test_indexer_does_not_publish_partial_ocr_after_transient_error(tmp_path) -> None:
@@ -273,3 +288,141 @@ def test_indexer_does_not_publish_partial_ocr_after_transient_error(tmp_path) ->
     assert run is not None
     assert run.state is StageState.FAILED
     assert run.error_code == "ocr_provider_failed"
+
+
+def test_legacy_indexer_releases_object_resources_before_heavy_stages(
+    tmp_path: Path,
+) -> None:
+    events: list[str] = []
+
+    class ReleasableObjects:
+        def detect(self, _image: Path) -> list[ObjectTag]:
+            events.append("objects")
+            return [ObjectTag("basketball", 0.93)]
+
+        def release_ingestion_resources(self) -> None:
+            events.append("release")
+
+    class OrderedVectorIndex(RecordingIndex):
+        def replace_video(self, video_id: str, segments) -> None:  # type: ignore[no-untyped-def]
+            events.append("text")
+            super().replace_video(video_id, segments)
+
+    class OrderedVisualIndex:
+        def replace_video_source(self, *_args, **_kwargs) -> None:  # type: ignore[no-untyped-def]
+            events.append("dense")
+
+    repository = Repository(tmp_path / "db.sqlite3")
+    repository.initialize()
+    media = tmp_path / "video.mp4"
+    media.write_bytes(b"video")
+    repository.create_video(
+        video_id="video-1",
+        original_name="match.mp4",
+        stored_name="video.mp4",
+        media_path=str(media),
+        size_bytes=5,
+    )
+    indexer = Indexer(
+        repository=repository,
+        media_root=tmp_path,
+        thumbnails_dir=tmp_path / "thumbs",
+        specification_resolver=_specification_resolver(tmp_path),
+        ffmpeg=FakeFFmpeg(),  # type: ignore[arg-type]
+        scenes=FakeScenes(),  # type: ignore[arg-type]
+        objects=ReleasableObjects(),
+        vector_index=OrderedVectorIndex(),  # type: ignore[arg-type]
+        visual_index=OrderedVisualIndex(),  # type: ignore[arg-type]
+    )
+
+    indexer.process("video-1")
+
+    assert events == ["objects", "objects", "release", "text", "dense"]
+
+
+def test_legacy_object_resource_release_failure_stops_heavy_stages(
+    tmp_path: Path,
+) -> None:
+    events: list[str] = []
+
+    class FailingReleaseObjects:
+        def detect(self, _image: Path) -> list[ObjectTag]:
+            events.append("objects")
+            return [ObjectTag("basketball", 0.93)]
+
+        def release_ingestion_resources(self) -> None:
+            events.append("release")
+            raise RuntimeError("object ingestion resource release failed")
+
+    class ForbiddenVisualIndex:
+        def replace_video_source(self, *_args, **_kwargs) -> None:  # type: ignore[no-untyped-def]
+            events.append("dense")
+
+    repository = Repository(tmp_path / "db.sqlite3")
+    repository.initialize()
+    media = tmp_path / "video.mp4"
+    media.write_bytes(b"video")
+    repository.create_video(
+        video_id="video-1",
+        original_name="match.mp4",
+        stored_name="video.mp4",
+        media_path=str(media),
+        size_bytes=5,
+    )
+    baseline_indexer = Indexer(
+        repository=repository,
+        media_root=tmp_path,
+        thumbnails_dir=tmp_path / "thumbs",
+        specification_resolver=_specification_resolver(tmp_path),
+        ffmpeg=FakeFFmpeg(),  # type: ignore[arg-type]
+        scenes=FakeScenes(),  # type: ignore[arg-type]
+        objects=FakeObjects(),  # type: ignore[arg-type]
+        vector_index=RecordingIndex(),  # type: ignore[arg-type]
+    )
+    baseline_indexer.process("video-1")
+    prior_objects = repository.get_active_segment_generation(
+        "video-1",
+        StageKind.OBJECTS,
+    )
+    assert prior_objects is not None
+    prior_text_run = repository.get_latest_stage_run(
+        "video-1",
+        StageKind.TEXT_VECTORS,
+    )
+    assert prior_text_run is not None
+
+    indexer = Indexer(
+        repository=repository,
+        media_root=tmp_path,
+        thumbnails_dir=tmp_path / "thumbs",
+        specification_resolver=_specification_resolver(tmp_path),
+        ffmpeg=FakeFFmpeg(),  # type: ignore[arg-type]
+        scenes=FakeScenes(),  # type: ignore[arg-type]
+        objects=FailingReleaseObjects(),
+        vector_index=RecordingIndex(),  # type: ignore[arg-type]
+        visual_index=ForbiddenVisualIndex(),  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="object ingestion resource release failed",
+    ):
+        indexer.process("video-1")
+
+    video = repository.get_video("video-1")
+    assert video is not None and video.status == "failed"
+    assert events == ["objects", "objects", "release"]
+    failed_objects = repository.get_latest_stage_run(
+        "video-1",
+        StageKind.OBJECTS,
+    )
+    assert failed_objects is not None and failed_objects.state is StageState.FAILED
+    assert failed_objects.error_code == "objects_resource_release_failed"
+    assert repository.get_latest_stage_run(
+        "video-1",
+        StageKind.TEXT_VECTORS,
+    ) == prior_text_run
+    assert repository.get_active_segment_generation(
+        "video-1",
+        StageKind.OBJECTS,
+    ) == prior_objects

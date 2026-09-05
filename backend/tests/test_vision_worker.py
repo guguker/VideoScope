@@ -65,8 +65,10 @@ class FakeVisionRuntime:
         self.image_calls: list[tuple[Path, ...]] = []
         self.text_calls: list[tuple[str, ...]] = []
         self.detect_calls: list[tuple[Path, float]] = []
+        self.release_calls = 0
         self.block: Event | None = None
         self.error: Exception | None = None
+        self.release_error: Exception | None = None
 
     @property
     def available(self) -> bool:
@@ -106,6 +108,13 @@ class FakeVisionRuntime:
                 "height": 6.0,
             }
         ]
+
+    def release_detector(self) -> None:
+        self.release_calls += 1
+        if self.release_error is not None:
+            self.is_available = False
+            raise self.release_error
+        self.detector_loaded = False
 
 
 def _write_png(path: Path, *, width: int = 10, height: int = 10) -> bytes:
@@ -156,6 +165,18 @@ def _images_request(
         **_identity(runtime, input_root or path.parent),
         "request_id": "a" * 32,
         "items": [_image_item(path)],
+    }
+
+
+def _release_request(
+    runtime: FakeVisionRuntime,
+    input_root: Path,
+    *,
+    request_id: str = "f" * 32,
+) -> dict[str, object]:
+    return {
+        **_identity(runtime, input_root),
+        "request_id": request_id,
     }
 
 
@@ -222,7 +243,13 @@ def test_health_exposes_exact_bounded_capabilities_without_loading(tmp_path: Pat
         "status": "ok",
         "siglip_loaded": False,
         "detector_loaded": False,
-        "operations": ["probe", "embed_images", "embed_texts", "detect"],
+        "operations": [
+            "probe",
+            "embed_images",
+            "embed_texts",
+            "detect",
+            "release_detector",
+        ],
         "embedding_dimensions": 4,
         "max_images": 32,
         "max_texts": 64,
@@ -240,6 +267,108 @@ def test_health_exposes_exact_bounded_capabilities_without_loading(tmp_path: Pat
         "/v1/health", headers={"Authorization": f"Bearer {TOKEN}"}
     )
     assert unavailable.json()["status"] == "unavailable"
+
+
+def test_worker_releases_detector_only_for_an_exact_authenticated_request(
+    tmp_path: Path,
+) -> None:
+    runtime = FakeVisionRuntime()
+    runtime.siglip_loaded = True
+    runtime.detector_loaded = True
+    client = _client(tmp_path, runtime)
+    request = _release_request(runtime, tmp_path)
+
+    unauthenticated = client.post(
+        "/v1/lifecycle/release-detector",
+        json=request,
+    )
+    stale_request = {**request, "specification_hash": "0" * 64}
+    stale = client.post(
+        "/v1/lifecycle/release-detector",
+        json=stale_request,
+        headers={"Authorization": f"Bearer {TOKEN}"},
+    )
+    released = client.post(
+        "/v1/lifecycle/release-detector",
+        json=request,
+        headers={"Authorization": f"Bearer {TOKEN}"},
+    )
+    released_again = client.post(
+        "/v1/lifecycle/release-detector",
+        json={**request, "request_id": "e" * 32},
+        headers={"Authorization": f"Bearer {TOKEN}"},
+    )
+
+    assert unauthenticated.status_code == 401
+    assert stale.status_code == 409
+    assert released.status_code == 200
+    assert released.json() == {
+        **_identity(runtime, tmp_path),
+        "request_id": "f" * 32,
+        "released": True,
+        "siglip_loaded": True,
+        "detector_loaded": False,
+    }
+    assert released_again.status_code == 200
+    assert runtime.release_calls == 2
+    assert runtime.siglip_loaded is True
+    assert runtime.detector_loaded is False
+
+
+def test_worker_release_failure_is_sanitized_and_latches_runtime_unavailable(
+    tmp_path: Path,
+) -> None:
+    runtime = FakeVisionRuntime()
+    runtime.detector_loaded = True
+    runtime.release_error = RuntimeError("private cache failure")
+    client = _client(tmp_path, runtime)
+
+    response = client.post(
+        "/v1/lifecycle/release-detector",
+        json=_release_request(runtime, tmp_path),
+        headers={"Authorization": f"Bearer {TOKEN}"},
+    )
+    health = client.get(
+        "/v1/health",
+        headers={"Authorization": f"Bearer {TOKEN}"},
+    )
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "Vision worker detector release failed"}
+    assert health.json()["status"] == "unavailable"
+
+
+def test_worker_rejects_detector_release_while_inference_owns_capacity(
+    tmp_path: Path,
+) -> None:
+    runtime = FakeVisionRuntime()
+    gate = Event()
+    runtime.block = gate
+    path = tmp_path / "frame.png"
+    _write_png(path)
+    headers = {"Authorization": f"Bearer {TOKEN}"}
+
+    with _client(tmp_path, runtime) as client, ThreadPoolExecutor(max_workers=2) as pool:
+        inference = pool.submit(
+            client.post,
+            "/v1/embed/images",
+            json=_images_request(runtime, path),
+            headers=headers,
+        )
+        deadline = time.monotonic() + 2
+        while not runtime.image_calls and time.monotonic() < deadline:
+            time.sleep(0.01)
+        release = client.post(
+            "/v1/lifecycle/release-detector",
+            json=_release_request(runtime, tmp_path),
+            headers=headers,
+        )
+        gate.set()
+        assert inference.result(timeout=2).status_code == 200
+
+    assert release.status_code == 429
+    assert release.json() == {"detail": "Vision worker is busy"}
+    assert runtime.release_calls == 0
 
 
 def test_input_root_identity_is_path_free_and_changes_after_root_replacement(
@@ -838,10 +967,13 @@ def test_global_capacity_rejects_cross_operation_contention(tmp_path: Path) -> N
 
 
 class FakeHTTPResponse:
-    def __init__(self, payload: object) -> None:
+    def __init__(self, payload: object, *, status_code: int = 200) -> None:
         self.payload = payload
+        self.status_code = status_code
 
     def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
         return None
 
     def json(self) -> object:
@@ -866,7 +998,13 @@ class FakeHTTPClient:
                 "status": "ok",
                 "siglip_loaded": False,
                 "detector_loaded": False,
-                "operations": ["probe", "embed_images", "embed_texts", "detect"],
+                "operations": [
+                    "probe",
+                    "embed_images",
+                    "embed_texts",
+                    "detect",
+                    "release_detector",
+                ],
                 "embedding_dimensions": specification.embedding_dimensions,
                 "max_images": 32,
                 "max_texts": 64,
@@ -910,6 +1048,15 @@ class FakeHTTPClient:
                         }
                         for item in request["items"]
                     ],
+                }
+            )
+        if url.endswith("/v1/lifecycle/release-detector"):
+            return FakeHTTPResponse(
+                {
+                    **base,
+                    "released": True,
+                    "siglip_loaded": False,
+                    "detector_loaded": False,
                 }
             )
         return FakeHTTPResponse(
@@ -971,6 +1118,266 @@ def test_client_preserves_visual_encoder_and_object_provider_shapes(tmp_path: Pa
         first.read_bytes()
     ).hexdigest()
     assert image_payload["items"][0]["expected_size_bytes"] == first.stat().st_size
+
+
+def test_client_releases_ingestion_resources_with_exact_worker_identity(
+    tmp_path: Path,
+) -> None:
+    runtime = FakeVisionRuntime()
+    adapter, transport = _worker_adapter(tmp_path, runtime)
+
+    result = adapter.release_ingestion_resources()
+
+    assert result is None
+    url, payload = transport.posts[-1]
+    assert url.endswith("/v1/lifecycle/release-detector")
+    assert isinstance(payload, dict)
+    assert payload.keys() == {
+        "schema_version",
+        "runtime_identity",
+        "specification_hash",
+        "siglip_specification_hash",
+        "detector_specification_hash",
+        "siglip_model_identity",
+        "detector_model_identity",
+        "input_root_identity",
+        "request_id",
+    }
+    assert payload["input_root_identity"] == worker_input_root_identity(tmp_path)
+
+
+def test_client_retries_busy_detector_release_past_six_attempts_until_deadline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = FakeVisionRuntime()
+    clock = [100.0]
+    release_attempts = 0
+    timeouts: list[float] = []
+    request_ids: list[object] = []
+    backoffs: list[float] = []
+
+    class BusyThenReadyTransport(FakeHTTPClient):
+        def post(
+            self,
+            url: str,
+            *,
+            json: object,
+            **kwargs: object,
+        ) -> FakeHTTPResponse:
+            nonlocal release_attempts
+            if not url.endswith("/v1/lifecycle/release-detector"):
+                return super().post(url, json=json, **kwargs)
+            self.posts.append((url, json))
+            assert isinstance(json, dict)
+            release_attempts += 1
+            request_ids.append(json["request_id"])
+            timeout = kwargs.get("timeout")
+            assert isinstance(timeout, float)
+            timeouts.append(timeout)
+            if release_attempts <= 7:
+                return FakeHTTPResponse(
+                    {"detail": "Vision worker is busy"},
+                    status_code=429,
+                )
+            return FakeHTTPResponse(
+                {
+                    **_identity(runtime, tmp_path),
+                    "request_id": json["request_id"],
+                    "released": True,
+                    "siglip_loaded": False,
+                    "detector_loaded": False,
+                }
+            )
+
+    def advance(delay: float) -> None:
+        backoffs.append(delay)
+        clock[0] += delay
+
+    monkeypatch.setattr(
+        "videoscope.providers.vision_worker_client.monotonic",
+        lambda: clock[0],
+    )
+    monkeypatch.setattr(
+        "videoscope.providers.vision_worker_client.sleep",
+        advance,
+    )
+    adapter = VisionWorkerClient(
+        endpoint="http://127.0.0.1:8093",
+        api_key=TOKEN,
+        input_root=tmp_path,
+        specification=runtime.specification,
+        timeout=3.0,
+        client=BusyThenReadyTransport(runtime, tmp_path),
+    )
+
+    adapter.release_ingestion_resources()
+
+    assert release_attempts == 8
+    assert len(set(request_ids)) == 1
+    assert backoffs == [0.05, 0.1, 0.2, 0.25, 0.25, 0.25, 0.25]
+    assert len(timeouts) == 8
+    assert all(0 < timeout <= 3.0 for timeout in timeouts)
+    assert timeouts == sorted(timeouts, reverse=True)
+
+
+@pytest.mark.parametrize(
+    ("status_code", "payload"),
+    [
+        (429, {"detail": "another busy response"}),
+        (409, {"detail": "Vision worker is busy"}),
+        (503, {"detail": "Vision worker is busy"}),
+    ],
+)
+def test_client_does_not_retry_non_exact_busy_release_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    status_code: int,
+    payload: object,
+) -> None:
+    runtime = FakeVisionRuntime()
+    attempts = 0
+    backoffs: list[float] = []
+
+    class FailingTransport(FakeHTTPClient):
+        def post(
+            self,
+            url: str,
+            *,
+            json: object,
+            **kwargs: object,
+        ) -> FakeHTTPResponse:
+            nonlocal attempts
+            if not url.endswith("/v1/lifecycle/release-detector"):
+                return super().post(url, json=json, **kwargs)
+            attempts += 1
+            return FakeHTTPResponse(payload, status_code=status_code)
+
+    monkeypatch.setattr(
+        "videoscope.providers.vision_worker_client.sleep",
+        lambda delay: backoffs.append(delay),
+        raising=False,
+    )
+    adapter = VisionWorkerClient(
+        endpoint="http://127.0.0.1:8093",
+        api_key=TOKEN,
+        input_root=tmp_path,
+        specification=runtime.specification,
+        client=FailingTransport(runtime, tmp_path),
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="Vision worker ingestion resource release failed",
+    ):
+        adapter.release_ingestion_resources()
+
+    assert attempts == 1
+    assert backoffs == []
+
+
+def test_client_stops_busy_release_retries_before_total_deadline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = FakeVisionRuntime()
+    clock = [100.0]
+    attempts = 0
+    timeouts: list[float] = []
+    backoffs: list[float] = []
+
+    class AlwaysBusyTransport(FakeHTTPClient):
+        def post(
+            self,
+            url: str,
+            *,
+            json: object,
+            **kwargs: object,
+        ) -> FakeHTTPResponse:
+            nonlocal attempts
+            assert url.endswith("/v1/lifecycle/release-detector")
+            attempts += 1
+            timeout = kwargs.get("timeout")
+            assert isinstance(timeout, float)
+            timeouts.append(timeout)
+            return FakeHTTPResponse(
+                {"detail": "Vision worker is busy"},
+                status_code=429,
+            )
+
+    def advance(delay: float) -> None:
+        backoffs.append(delay)
+        clock[0] += delay
+
+    monkeypatch.setattr(
+        "videoscope.providers.vision_worker_client.monotonic",
+        lambda: clock[0],
+    )
+    monkeypatch.setattr(
+        "videoscope.providers.vision_worker_client.sleep",
+        advance,
+        raising=False,
+    )
+    adapter = VisionWorkerClient(
+        endpoint="http://127.0.0.1:8093",
+        api_key=TOKEN,
+        input_root=tmp_path,
+        specification=runtime.specification,
+        timeout=0.06,
+        client=AlwaysBusyTransport(runtime, tmp_path),
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="Vision worker ingestion resource release failed",
+    ):
+        adapter.release_ingestion_resources()
+
+    assert attempts == 2
+    assert backoffs == [0.05]
+    assert timeouts == pytest.approx([0.06, 0.01])
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["identity", "request_id", "released", "detector_loaded", "extra"],
+)
+def test_client_fails_closed_on_untrusted_detector_release_response(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+) -> None:
+    runtime = FakeVisionRuntime()
+    adapter, transport = _worker_adapter(tmp_path, runtime)
+    monkeypatch.setattr(
+        "videoscope.providers.vision_worker_client.uuid4",
+        lambda: SimpleNamespace(hex="0" * 32),
+    )
+    payload: dict[str, object] = {
+        **_identity(runtime, tmp_path),
+        "request_id": "0" * 32,
+        "released": True,
+        "siglip_loaded": False,
+        "detector_loaded": False,
+    }
+    if mutation == "identity":
+        payload["detector_specification_hash"] = "0" * 64
+    elif mutation == "request_id":
+        payload["request_id"] = "not-a-request-id"
+    elif mutation == "released":
+        payload["released"] = False
+    elif mutation == "detector_loaded":
+        payload["detector_loaded"] = True
+    else:
+        payload["unexpected"] = True
+    transport.payload_override = payload
+
+    with pytest.raises(
+        RuntimeError,
+        match="Vision worker ingestion resource release failed",
+    ):
+        adapter.release_ingestion_resources()
+    assert len(transport.posts) == 1
 
 
 def test_client_source_probe_is_bound_to_the_same_input_root(tmp_path: Path) -> None:
@@ -1178,6 +1585,92 @@ def test_default_http_transport_is_bounded_proxy_free_and_redirect_free(
     assert calls == [{"trust_env": False, "follow_redirects": False}]
 
 
+def test_default_http_transport_preserves_exact_busy_response_for_release_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = FakeVisionRuntime()
+    attempts = 0
+
+    class StreamResponse:
+        def __init__(self, payload: object, *, status_code: int) -> None:
+            self.status_code = status_code
+            self.body = json.dumps(payload).encode("utf-8")
+            self.headers = {
+                "Content-Length": str(len(self.body)),
+                "Content-Type": "application/json",
+            }
+
+        def __enter__(self) -> "StreamResponse":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def raise_for_status(self) -> None:
+            if self.status_code >= 400:
+                raise AssertionError("429 must remain available to lifecycle retry")
+
+        def iter_bytes(self, *, chunk_size: int):  # type: ignore[no-untyped-def]
+            assert chunk_size == 8192
+            yield self.body
+
+    class HTTPXClient:
+        def __init__(self, **_kwargs: object) -> None:
+            return None
+
+        def __enter__(self) -> "HTTPXClient":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def stream(
+            self,
+            method: str,
+            url: str,
+            **kwargs: object,
+        ) -> StreamResponse:
+            nonlocal attempts
+            assert method == "POST"
+            assert url.endswith("/v1/lifecycle/release-detector")
+            request = kwargs["json"]
+            assert isinstance(request, dict)
+            attempts += 1
+            if attempts == 1:
+                return StreamResponse(
+                    {"detail": "Vision worker is busy"},
+                    status_code=429,
+                )
+            return StreamResponse(
+                {
+                    **_identity(runtime, tmp_path),
+                    "request_id": request["request_id"],
+                    "released": True,
+                    "siglip_loaded": False,
+                    "detector_loaded": False,
+                },
+                status_code=200,
+            )
+
+    monkeypatch.setitem(sys.modules, "httpx", SimpleNamespace(Client=HTTPXClient))
+    monkeypatch.setattr(
+        "videoscope.providers.vision_worker_client.sleep",
+        lambda _delay: None,
+    )
+    adapter = VisionWorkerClient(
+        endpoint="http://127.0.0.1:8093",
+        api_key=TOKEN,
+        input_root=tmp_path,
+        specification=runtime.specification,
+        timeout=1.0,
+    )
+
+    adapter.release_ingestion_resources()
+
+    assert attempts == 2
+
+
 def test_production_runtime_never_imports_heavy_modules_until_inference(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1236,6 +1729,11 @@ def test_siglip_identity_freezes_mps_float32_compute() -> None:
     assert "siglip-dtype==float32" in VISION_WORKER_RUNTIME_IDENTITY
     assert "rfdetr-backend==mps" in VISION_WORKER_RUNTIME_IDENTITY
     assert "rfdetr-dtype==float32" in VISION_WORKER_RUNTIME_IDENTITY
+    assert (
+        "mps-residency==exclusive-vision-backbone-v1"
+        in VISION_WORKER_RUNTIME_IDENTITY
+    )
+    assert "detector-release==stage-bound-v1" in VISION_WORKER_RUNTIME_IDENTITY
     assert specification.siglip_projection()["compute_backend"] == "mps"
     assert specification.siglip_projection()["compute_dtype"] == "float32"
     assert specification.detector_projection()["compute_backend"] == "mps"
@@ -1636,6 +2134,213 @@ def test_runtime_loads_siglip_offline_and_validates_frozen_calibration(
     with pytest.raises(RuntimeError, match="artifacts changed"):
         changed_runtime._load_siglip()
     assert changed_runtime.siglip_loaded is False
+
+
+def test_runtime_keeps_only_one_vision_backbone_resident_on_mps(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checkpoint = tmp_path / "rf.pth"
+    checkpoint.write_bytes(b"trusted")
+    float32 = object()
+    cache_events: list[str] = []
+
+    class Tensor:
+        device = SimpleNamespace(type="mps")
+        dtype = float32
+
+        @staticmethod
+        def is_floating_point() -> bool:
+            return True
+
+    class DetectorModel:
+        @staticmethod
+        def parameters():  # type: ignore[no-untyped-def]
+            return iter((Tensor(),))
+
+        @staticmethod
+        def buffers():  # type: ignore[no-untyped-def]
+            return iter(())
+
+    detector = SimpleNamespace(
+        model=SimpleNamespace(
+            device=SimpleNamespace(type="mps"),
+            model=DetectorModel(),
+        )
+    )
+    fake_torch = SimpleNamespace(
+        float32=float32,
+        mps=SimpleNamespace(
+            synchronize=lambda: cache_events.append("synchronize"),
+            empty_cache=lambda: cache_events.append("empty_cache"),
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setattr(
+        vision_worker_module,
+        "siglip_profile_is_reviewed",
+        lambda _specification: True,
+    )
+    monkeypatch.setattr(
+        vision_worker_module,
+        "_rfdetr_compute_environment_is_exact",
+        lambda **_kwargs: True,
+    )
+
+    siglip_runtime = LocalVisionWorkerRuntime(
+        specification=_specification(),
+        detector_checkpoint=checkpoint,
+    )
+    siglip_model = object()
+    siglip_processor = object()
+    siglip_runtime._siglip_model = siglip_model
+    siglip_runtime._siglip_processor = siglip_processor
+    siglip_runtime._detector = detector
+
+    assert siglip_runtime._load_siglip() == (siglip_model, siglip_processor)
+    assert siglip_runtime.siglip_loaded
+    assert not siglip_runtime.detector_loaded
+    assert cache_events == ["synchronize", "empty_cache"]
+
+    cache_events.clear()
+    detector_runtime = LocalVisionWorkerRuntime(
+        specification=_specification(),
+        detector_checkpoint=checkpoint,
+    )
+    detector_runtime._siglip_model = object()
+    detector_runtime._siglip_processor = object()
+    detector_runtime._detector = detector
+
+    assert detector_runtime._load_detector() is detector
+    assert detector_runtime.detector_loaded
+    assert not detector_runtime.siglip_loaded
+    assert cache_events == ["synchronize", "empty_cache"]
+
+
+def test_runtime_releases_detector_idempotently_under_lifecycle_locks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checkpoint = tmp_path / "rf.pth"
+    checkpoint.write_bytes(b"trusted")
+    lifecycle_events: list[str] = []
+    cache_events: list[str] = []
+
+    class RecordingLock:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def __enter__(self) -> None:
+            lifecycle_events.append(f"{self.name}:enter")
+
+        def __exit__(self, *_args: object) -> None:
+            lifecycle_events.append(f"{self.name}:exit")
+
+    fake_torch = SimpleNamespace(
+        mps=SimpleNamespace(
+            synchronize=lambda: cache_events.append("synchronize"),
+            empty_cache=lambda: cache_events.append("empty_cache"),
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setattr(
+        vision_worker_module,
+        "siglip_profile_is_reviewed",
+        lambda _specification: True,
+    )
+    monkeypatch.setattr(
+        vision_worker_module.gc,
+        "collect",
+        lambda: cache_events.append("gc"),
+    )
+    runtime = LocalVisionWorkerRuntime(
+        specification=_specification(),
+        detector_checkpoint=checkpoint,
+    )
+    runtime._inference_lock = RecordingLock("inference")  # type: ignore[assignment]
+    runtime._detector_load_lock = RecordingLock("detector")  # type: ignore[assignment]
+    runtime._siglip_model = object()
+    runtime._siglip_processor = object()
+    runtime._detector = object()
+
+    runtime.release_detector()
+    runtime.release_detector()
+
+    assert lifecycle_events == [
+        "inference:enter",
+        "detector:enter",
+        "detector:exit",
+        "inference:exit",
+        "inference:enter",
+        "detector:enter",
+        "detector:exit",
+        "inference:exit",
+    ]
+    assert cache_events == ["synchronize", "gc", "empty_cache"]
+    assert runtime.detector_loaded is False
+    assert runtime.siglip_loaded is True
+
+
+def test_runtime_latches_unhealthy_when_detector_cache_release_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checkpoint = tmp_path / "rf.pth"
+    checkpoint.write_bytes(b"trusted")
+
+    def fail_empty_cache() -> None:
+        raise RuntimeError("empty cache failed")
+
+    fake_torch = SimpleNamespace(
+        mps=SimpleNamespace(
+            synchronize=lambda: None,
+            empty_cache=fail_empty_cache,
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setattr(
+        vision_worker_module,
+        "siglip_profile_is_reviewed",
+        lambda _specification: True,
+    )
+    monkeypatch.setattr(
+        vision_worker_module,
+        "vision_worker_environment_is_exact",
+        lambda **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        vision_worker_module,
+        "_siglip_compute_environment_is_exact",
+        lambda **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        vision_worker_module,
+        "_rfdetr_compute_environment_is_exact",
+        lambda **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        vision_worker_module,
+        "_siglip_snapshot_is_available",
+        lambda *_args, **_kwargs: True,
+    )
+    runtime = LocalVisionWorkerRuntime(
+        specification=_specification(),
+        detector_checkpoint=checkpoint,
+    )
+    monkeypatch.setattr(runtime, "_checkpoint_is_exact", lambda: True)
+    runtime._siglip_model = object()
+    runtime._siglip_processor = object()
+    runtime._detector = object()
+
+    assert runtime.available is True
+    with pytest.raises(RuntimeError, match="empty cache failed"):
+        runtime.release_detector()
+
+    assert runtime.available is False
+    assert runtime.detector_loaded is False
+    assert runtime.siglip_loaded is True
+    with pytest.raises(RuntimeError, match="runtime is unhealthy"):
+        runtime._load_siglip()
 
 
 def test_runtime_blocks_rfdetr_redownload_and_checkpoint_mutation(

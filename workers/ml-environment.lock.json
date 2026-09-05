@@ -26,7 +26,7 @@
         "google/siglip2-base-patch16-224@75de2d55ec2d0b4efc50b3e9ad70dba96a7b2fa2",
         "google/siglip2-base-patch16-384@f775b65a79762255128c981547af89addcfe0f88"
       ],
-      "runtime_identity": "videoscope-vision-worker-v1|python==3.12.13|platform==aarch64-apple-darwin|macos-major>=14|siglip-backend==mps|siglip-dtype==float32|rfdetr-backend==mps|rfdetr-dtype==float32|lock-sha256:261be2a4694b09e0b0e4a9b1919feb05a6d5fa334f46bfb2b7d261cb5e3487c6"
+      "runtime_identity": "videoscope-vision-worker-v1|python==3.12.13|platform==aarch64-apple-darwin|macos-major>=14|siglip-backend==mps|siglip-dtype==float32|rfdetr-backend==mps|rfdetr-dtype==float32|mps-residency==exclusive-vision-backbone-v1|detector-release==stage-bound-v1|lock-sha256:261be2a4694b09e0b0e4a9b1919feb05a6d5fa334f46bfb2b7d261cb5e3487c6"
     },
     {
       "contract_ids": [
@@ -39,7 +39,7 @@
       "model_identities": [
         "rfdetr-small@sha256:d81979a9213a2109345158ce9232668df4c1ae52e9b8db3f2ec0a8cbad959b33"
       ],
-      "runtime_identity": "videoscope-vision-worker-v1|python==3.12.13|platform==aarch64-apple-darwin|macos-major>=14|siglip-backend==mps|siglip-dtype==float32|rfdetr-backend==mps|rfdetr-dtype==float32|lock-sha256:261be2a4694b09e0b0e4a9b1919feb05a6d5fa334f46bfb2b7d261cb5e3487c6"
+      "runtime_identity": "videoscope-vision-worker-v1|python==3.12.13|platform==aarch64-apple-darwin|macos-major>=14|siglip-backend==mps|siglip-dtype==float32|rfdetr-backend==mps|rfdetr-dtype==float32|mps-residency==exclusive-vision-backbone-v1|detector-release==stage-bound-v1|lock-sha256:261be2a4694b09e0b0e4a9b1919feb05a6d5fa334f46bfb2b7d261cb5e3487c6"
     },
     {
       "contract_ids": [
@@ -52,7 +52,7 @@
       "model_identities": [
         "mlx-community/whisper-large-v3-turbo@a4aaeec0636e6fef84abdcbe3544cb2bf7e9f6fb"
       ],
-      "runtime_identity": "mlx-whisper-worker-v2:mlx-whisper==0.4.3:python==3.12.13:platform=darwin-arm64-macos14plus:model-artifacts=v1"
+      "runtime_identity": "mlx-whisper-worker-v3:mlx-whisper==0.4.3:python==3.12.13:platform=darwin-arm64-macos14plus:model-artifacts=v1:model-residency=request-scoped-v1"
     },
     {
       "contract_ids": [
