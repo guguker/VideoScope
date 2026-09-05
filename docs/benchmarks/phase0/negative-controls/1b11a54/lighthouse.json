@@ -1,0 +1,2705 @@
+{
+  "case_outcomes": [
+    {
+      "case_id": "panel-light-top-gesture",
+      "diagnostic_code": null,
+      "latency_ms": 2613.4177499916404,
+      "metrics": [
+        {
+          "name": "candidate_recall_at_50",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "false_positive_rate",
+          "unit": "ratio",
+          "value": 0.5
+        },
+        {
+          "name": "hard_negative_hit",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "hit_at_1",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "hit_at_3",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "hit_at_5",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "mean_boundary_error_seconds",
+          "unit": "seconds",
+          "value": 0.0
+        },
+        {
+          "name": "mean_end_boundary_error_seconds",
+          "unit": "seconds",
+          "value": 0.0
+        },
+        {
+          "name": "mean_start_boundary_error_seconds",
+          "unit": "seconds",
+          "value": 0.0
+        },
+        {
+          "name": "ndcg_at_10",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "precision_at_5",
+          "unit": "ratio",
+          "value": 0.2
+        },
+        {
+          "name": "recall_at_10",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "recall_at_20",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "reciprocal_rank",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "temporal_iou",
+          "unit": "ratio",
+          "value": 1.0
+        }
+      ],
+      "result_count": 2,
+      "result_evidence": [
+        {
+          "asset_id": "panel-light-top-gesture-positive",
+          "end_seconds": 5.0,
+          "rank": 1,
+          "score": 0.814996380004148,
+          "start_seconds": 0.0
+        },
+        {
+          "asset_id": "panel-light-top-gesture-negative",
+          "end_seconds": 5.0,
+          "rank": 2,
+          "score": 0.7482451393696711,
+          "start_seconds": 0.0
+        }
+      ],
+      "status": "complete"
+    },
+    {
+      "case_id": "panel-roundtable-discussion",
+      "diagnostic_code": null,
+      "latency_ms": 3220.5899578984827,
+      "metrics": [
+        {
+          "name": "candidate_recall_at_50",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "false_positive_rate",
+          "unit": "ratio",
+          "value": 0.6666666666666666
+        },
+        {
+          "name": "hard_negative_hit",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "hit_at_1",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "hit_at_3",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "hit_at_5",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "mean_boundary_error_seconds",
+          "unit": "seconds",
+          "value": 9.37
+        },
+        {
+          "name": "mean_end_boundary_error_seconds",
+          "unit": "seconds",
+          "value": 0.0
+        },
+        {
+          "name": "mean_start_boundary_error_seconds",
+          "unit": "seconds",
+          "value": 18.74
+        },
+        {
+          "name": "ndcg_at_10",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "precision_at_5",
+          "unit": "ratio",
+          "value": 0.2
+        },
+        {
+          "name": "recall_at_10",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "recall_at_20",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "reciprocal_rank",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "temporal_iou",
+          "unit": "ratio",
+          "value": 0.7579706071048348
+        }
+      ],
+      "result_count": 3,
+      "result_evidence": [
+        {
+          "asset_id": "panel-roundtable-positive",
+          "end_seconds": 38.566667,
+          "rank": 1,
+          "score": 0.8596582089515569,
+          "start_seconds": 18.74
+        },
+        {
+          "asset_id": "panel-roundtable-positive",
+          "end_seconds": 29.2324,
+          "rank": 2,
+          "score": 0.8359897499446397,
+          "start_seconds": 0.0
+        },
+        {
+          "asset_id": "panel-roundtable-negative",
+          "end_seconds": 6.733008,
+          "rank": 3,
+          "score": 0.7701315790206898,
+          "start_seconds": 0.0
+        }
+      ],
+      "status": "complete"
+    },
+    {
+      "case_id": "sports-full-screen-commercial",
+      "diagnostic_code": null,
+      "latency_ms": 3150.27366601862,
+      "metrics": [
+        {
+          "name": "candidate_recall_at_50",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "false_positive_rate",
+          "unit": "ratio",
+          "value": 0.5
+        },
+        {
+          "name": "hard_negative_hit",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "hit_at_1",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "hit_at_3",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "hit_at_5",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "mean_boundary_error_seconds",
+          "unit": "seconds",
+          "value": 0.0
+        },
+        {
+          "name": "mean_end_boundary_error_seconds",
+          "unit": "seconds",
+          "value": 0.0
+        },
+        {
+          "name": "mean_start_boundary_error_seconds",
+          "unit": "seconds",
+          "value": 0.0
+        },
+        {
+          "name": "ndcg_at_10",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "precision_at_5",
+          "unit": "ratio",
+          "value": 0.2
+        },
+        {
+          "name": "recall_at_10",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "recall_at_20",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "reciprocal_rank",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "temporal_iou",
+          "unit": "ratio",
+          "value": 1.0
+        }
+      ],
+      "result_count": 2,
+      "result_evidence": [
+        {
+          "asset_id": "sports-commercial-positive",
+          "end_seconds": 11.0,
+          "rank": 1,
+          "score": 0.7998318813225384,
+          "start_seconds": 0.0
+        },
+        {
+          "asset_id": "sports-commercial-slate-negative",
+          "end_seconds": 3.5,
+          "rank": 2,
+          "score": 0.7305447096681602,
+          "start_seconds": 0.0
+        }
+      ],
+      "status": "complete"
+    },
+    {
+      "case_id": "sports-made-free-throw-query",
+      "diagnostic_code": null,
+      "latency_ms": 2396.9021670054644,
+      "metrics": [
+        {
+          "name": "candidate_recall_at_50",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "false_positive_rate",
+          "unit": "ratio",
+          "value": 0.6666666666666666
+        },
+        {
+          "name": "hard_negative_hit",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "hit_at_1",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "hit_at_3",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "hit_at_5",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "mean_boundary_error_seconds",
+          "unit": "seconds",
+          "value": 0.0
+        },
+        {
+          "name": "mean_end_boundary_error_seconds",
+          "unit": "seconds",
+          "value": 0.0
+        },
+        {
+          "name": "mean_start_boundary_error_seconds",
+          "unit": "seconds",
+          "value": 0.0
+        },
+        {
+          "name": "ndcg_at_10",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "precision_at_5",
+          "unit": "ratio",
+          "value": 0.2
+        },
+        {
+          "name": "recall_at_10",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "recall_at_20",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "reciprocal_rank",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "temporal_iou",
+          "unit": "ratio",
+          "value": 1.0
+        }
+      ],
+      "result_count": 3,
+      "result_evidence": [
+        {
+          "asset_id": "sports-made-free-throw",
+          "end_seconds": 14.0,
+          "rank": 1,
+          "score": 0.7615268944431242,
+          "start_seconds": 0.0
+        },
+        {
+          "asset_id": "sports-made-three-white-9",
+          "end_seconds": 10.633333,
+          "rank": 2,
+          "score": 0.7427210333499924,
+          "start_seconds": 0.0
+        },
+        {
+          "asset_id": "sports-made-three-blue-15",
+          "end_seconds": 12.0,
+          "rank": 3,
+          "score": 0.6405215472534003,
+          "start_seconds": 0.0
+        }
+      ],
+      "status": "complete"
+    },
+    {
+      "case_id": "sports-made-three-point",
+      "diagnostic_code": null,
+      "latency_ms": 2095.7307079806924,
+      "metrics": [
+        {
+          "name": "candidate_recall_at_50",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "false_positive_rate",
+          "unit": "ratio",
+          "value": 0.5
+        },
+        {
+          "name": "hard_negative_hit",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "hit_at_1",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "hit_at_3",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "hit_at_5",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "mean_boundary_error_seconds",
+          "unit": "seconds",
+          "value": 0.0
+        },
+        {
+          "name": "mean_end_boundary_error_seconds",
+          "unit": "seconds",
+          "value": 0.0
+        },
+        {
+          "name": "mean_start_boundary_error_seconds",
+          "unit": "seconds",
+          "value": 0.0
+        },
+        {
+          "name": "ndcg_at_10",
+          "unit": "ratio",
+          "value": 0.8772153153380493
+        },
+        {
+          "name": "precision_at_5",
+          "unit": "ratio",
+          "value": 0.4
+        },
+        {
+          "name": "recall_at_10",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "recall_at_20",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "reciprocal_rank",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "temporal_iou",
+          "unit": "ratio",
+          "value": 1.0
+        }
+      ],
+      "result_count": 4,
+      "result_evidence": [
+        {
+          "asset_id": "sports-made-three-white-9",
+          "end_seconds": 10.633333,
+          "rank": 1,
+          "score": 0.7667339548658656,
+          "start_seconds": 0.0
+        },
+        {
+          "asset_id": "sports-made-free-throw",
+          "end_seconds": 14.0,
+          "rank": 2,
+          "score": 0.6500875600111763,
+          "start_seconds": 0.0
+        },
+        {
+          "asset_id": "sports-abstain",
+          "end_seconds": 5.0,
+          "rank": 3,
+          "score": 0.6067240945796757,
+          "start_seconds": 0.0
+        },
+        {
+          "asset_id": "sports-made-three-blue-15",
+          "end_seconds": 12.0,
+          "rank": 4,
+          "score": 0.4417577456842749,
+          "start_seconds": 0.0
+        }
+      ],
+      "status": "complete"
+    }
+  ],
+  "code_sha": "1b11a5420e2fc66417f314c03192c1a853f8c843",
+  "config_identities": [
+    {
+      "component_id": "benchmark_execution_lifecycle",
+      "identity": "warm:process-cache-preserved@1"
+    },
+    {
+      "component_id": "benchmark_methodology",
+      "identity": "portable-retrieval@5;temporal-iou-threshold=0.3;quality-denominator=completed-positive-cases;matching=rank-prefix-maximum-cardinality-one-to-one;candidate-recall=one-to-one-gold-interval-coverage-at-50;precision=one-to-one-prefix-gains-over-five;ndcg=one-to-one-prefix-gains-at-10;latency-p95=nearest-rank"
+    },
+    {
+      "component_id": "benchmark_product_environment",
+      "identity": "benchmark-product-environment@2:942089a9212b8d22b6e65159d4d042cdb292b3f0f3fc49261fd73e15be2b5bcc"
+    },
+    {
+      "component_id": "benchmark_profile",
+      "identity": "lighthouse@2:cd682ea319b7c588e34374664f9a202c7f2dd370e009a8163d1a34615244055c"
+    },
+    {
+      "component_id": "benchmark_profile_identity_contract",
+      "identity": "benchmark-profile-identity-contract@1:e849843bf5fcfeff21f72c22319c10980c4a85afd2572fd516b4460d62035660"
+    },
+    {
+      "component_id": "benchmark_search_plan",
+      "identity": "evaluation-search-plan@1:8c17f88070d32850b7de41c227a2108786071d8ee3bdc65bce24235bc745c085"
+    },
+    {
+      "component_id": "evaluation_search_configuration",
+      "identity": "evaluation-search-configuration@1:8c17f88070d32850b7de41c227a2108786071d8ee3bdc65bce24235bc745c085"
+    },
+    {
+      "component_id": "product_search_lifecycle",
+      "identity": "warm:process-cache-preserved@1"
+    },
+    {
+      "component_id": "product_search_runtime",
+      "identity": "sha256:9f72a1a0ff24440c15d55e5511847381e14d7b1f4d06bc12b5ab0563f491d3ed"
+    }
+  ],
+  "created_at": "2026-09-05T13:48:02.693615Z",
+  "dataset_revision": "8cda261148ce3f459e08c3762017cec86970ab7c85d36eaa77ef9f832a2ae6a1",
+  "execution_mode": "warm",
+  "finished_at": "2026-09-05T13:48:02.693615Z",
+  "hardware": {
+    "accelerator": "Metal",
+    "architecture": "arm64",
+    "memory_bytes": 25769803776,
+    "operating_system": "Darwin 25.6.0",
+    "processor": "arm"
+  },
+  "index_identities": [
+    {
+      "component_id": "lighthouse_generations",
+      "identity": "sha256:17b11a76f4f5ea963c7de23b8e11642a56fd9cfcae11e0afcd038009130acc3d"
+    },
+    {
+      "component_id": "text_vector_generations",
+      "identity": "sha256:1321ee0e24fb0bbc4faf6af2608e489cbd44a01156d9dab42047f7f9d465b0bc"
+    },
+    {
+      "component_id": "text_vector_index",
+      "identity": "f88c0b088d7d4a1d068d5a818e3d2ba24d6ccd8780e54196e577ac458e6ece67"
+    },
+    {
+      "component_id": "visual_generations",
+      "identity": "sha256:07ee202ffe948304048349e04310dc550841f94108766cbc0ae173312ad2b62b"
+    }
+  ],
+  "measurement_evidence": {
+    "metal_telemetry_status": "unavailable",
+    "rss_samples_bytes": [
+      5081415680,
+      5081481216,
+      5081481216,
+      5081481216,
+      5081481216,
+      5081497600,
+      5081497600,
+      5081513984,
+      5081513984,
+      5081530368,
+      5081530368,
+      5081546752,
+      5081546752,
+      5081546752,
+      5081546752,
+      5081546752,
+      5081546752,
+      5081546752,
+      5081546752,
+      5081546752,
+      5081546752,
+      5081546752,
+      5081546752,
+      5081546752,
+      5081546752,
+      5081546752,
+      5081546752,
+      5081546752,
+      5081546752,
+      5081546752,
+      5081546752,
+      5081546752,
+      5081546752,
+      5081546752,
+      5081546752,
+      5081546752,
+      5081546752,
+      5081546752,
+      5081546752,
+      5083136000,
+      5081546752,
+      5083185152,
+      5081546752,
+      5152030720,
+      5081546752,
+      5081546752,
+      5158289408,
+      5082693632,
+      5081546752,
+      5109940224,
+      5081546752,
+      5081546752,
+      5082595328,
+      5081546752,
+      5153619968,
+      5059674112,
+      5178572800,
+      5178736640,
+      5178736640,
+      5178736640,
+      5178736640,
+      5178736640,
+      5178736640,
+      5178736640,
+      5178736640,
+      5178736640,
+      5178736640,
+      5178736640,
+      5178736640,
+      5178736640,
+      5178736640,
+      5178736640,
+      5178736640,
+      5178736640,
+      5178736640,
+      5178736640,
+      5178736640,
+      5178736640,
+      5178736640,
+      5178736640,
+      5178736640,
+      5178736640,
+      5178736640,
+      5178736640,
+      5178736640,
+      5180309504,
+      5178736640,
+      5198692352,
+      5178736640,
+      5178736640,
+      5187026944,
+      5178736640,
+      5249007616,
+      5179424768,
+      5178736640,
+      5180243968,
+      5178736640,
+      5257674752,
+      5180243968,
+      5178736640,
+      5221318656,
+      5178802176,
+      5248237568,
+      5178834944,
+      5178834944,
+      5180473344,
+      5178834944,
+      5178834944,
+      5180407808,
+      5178834944,
+      5247729664,
+      5179998208,
+      5180080128,
+      5180080128,
+      5180080128,
+      5180080128,
+      5180080128,
+      5180080128,
+      5180080128,
+      5180080128,
+      5180080128,
+      5180080128,
+      5180080128,
+      5180080128,
+      5180080128,
+      5180080128,
+      5180080128,
+      5180080128,
+      5180080128,
+      5180080128,
+      5180080128,
+      5180080128,
+      5180080128,
+      5180080128,
+      5180080128,
+      5180080128,
+      5180080128,
+      5180080128,
+      5180080128,
+      5180080128,
+      5203345408,
+      5180080128,
+      5242765312,
+      5180080128,
+      5180080128,
+      5190516736,
+      5180080128,
+      5199740928,
+      5180080128,
+      5249269760,
+      5180473344,
+      5253283840,
+      5181063168,
+      5180080128,
+      5256658944,
+      5181341696,
+      5180080128,
+      5256216576,
+      5180948480,
+      5180080128,
+      5181685760,
+      5180080128,
+      5203755008,
+      5180080128,
+      5256593408,
+      5180358656,
+      5180456960,
+      5180456960,
+      5180456960,
+      5180456960,
+      5180456960,
+      5180456960,
+      5180456960,
+      5180456960,
+      5180456960,
+      5180456960,
+      5180456960,
+      5180456960,
+      5180456960,
+      5180456960,
+      5180456960,
+      5180456960,
+      5180456960,
+      5180456960,
+      5180456960,
+      5180456960,
+      5180456960,
+      5180456960,
+      5180456960,
+      5180456960,
+      5180456960,
+      5180456960,
+      5180456960,
+      5180456960,
+      5180456960,
+      5180456960,
+      5180456960,
+      5180456960,
+      5249761280,
+      5180456960,
+      5180456960,
+      5253693440,
+      5180456960,
+      5180899328,
+      5262360576,
+      5180473344,
+      5180669952,
+      5180735488,
+      5180751872,
+      5180751872,
+      5180751872,
+      5180751872,
+      5180751872,
+      5180751872,
+      5180751872,
+      5180751872,
+      5180751872,
+      5180751872,
+      5180751872,
+      5180751872,
+      5180751872,
+      5180751872,
+      5180751872,
+      5180751872,
+      5180751872,
+      5180751872,
+      5180751872,
+      5180751872,
+      5180751872,
+      5180751872,
+      5180751872,
+      5180751872,
+      5180751872,
+      5180751872,
+      5180751872,
+      5180751872,
+      5180751872,
+      5180751872,
+      5180751872,
+      5181046784,
+      5264375808,
+      5182570496,
+      5182734336,
+      5182750720
+    ],
+    "schema_version": 1,
+    "storage_after": [
+      {
+        "allocated_bytes": 610304,
+        "directory_count": 3,
+        "file_count": 3,
+        "logical_bytes": 594517,
+        "purpose": "active_immutable_artifacts",
+        "root_id": "active-text-vector-storage",
+        "tree_digest": "383ce975c2356255866de84220a3a9f590867922d513c76437c9a584b9a68e59"
+      },
+      {
+        "allocated_bytes": 1127759872,
+        "directory_count": 7,
+        "file_count": 8,
+        "logical_bytes": 1127737963,
+        "purpose": "benchmark_scratch",
+        "root_id": "benchmark-private-scratch",
+        "tree_digest": "594526498a0f6b1ad9e88dd41caebf2e34e4434251ac7a50dd80246b94af04cd"
+      }
+    ],
+    "storage_before": [
+      {
+        "allocated_bytes": 610304,
+        "directory_count": 3,
+        "file_count": 3,
+        "logical_bytes": 594517,
+        "purpose": "active_immutable_artifacts",
+        "root_id": "active-text-vector-storage",
+        "tree_digest": "383ce975c2356255866de84220a3a9f590867922d513c76437c9a584b9a68e59"
+      },
+      {
+        "allocated_bytes": 1127759872,
+        "directory_count": 6,
+        "file_count": 8,
+        "logical_bytes": 1127737963,
+        "purpose": "benchmark_scratch",
+        "root_id": "benchmark-private-scratch",
+        "tree_digest": "a975d979fd22a9c110c561bdfbca1493181e8ca9a71523c4e007da8fc0d22106"
+      }
+    ]
+  },
+  "measurement_evidence_status": "complete",
+  "measurement_finished_at": "2026-09-05T13:48:01.761604Z",
+  "measurement_protocol": {
+    "component_id": "benchmark_measurement_protocol",
+    "identity": "process-tree-rss-50ms-contained-storage@3:ee78658e02b83b1009d98e2b057de11b2a58cc0810dc4864bfb94041cc9e7ef6"
+  },
+  "measurement_started_at": "2026-09-05T13:47:47.629445Z",
+  "measurement_status": "complete",
+  "model_identities": [
+    {
+      "component_id": "lighthouse_model",
+      "identity": "sha256:5798675f0bb9744ad34d6938695cc568aba702b8c78d10065a612226bd1a00e1"
+    },
+    {
+      "component_id": "text_embedding",
+      "identity": "fastembed@0.8.0:mean-pooling-v1:sentence-transformers/paraphrase-multilingual-mpnet-base-v2:xenova/paraphrase-multilingual-mpnet-base-v2@e5d116277351513fd260955ece953ecddde7046e:768"
+    },
+    {
+      "component_id": "visual_embedding",
+      "identity": "google/siglip2-base-patch16-224@75de2d55ec2d0b4efc50b3e9ad70dba96a7b2fa2"
+    }
+  ],
+  "quality_metrics": [
+    {
+      "name": "candidate_recall_at_50",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "completed_case_count",
+      "unit": "count",
+      "value": 5.0
+    },
+    {
+      "name": "error_count",
+      "unit": "count",
+      "value": 0.0
+    },
+    {
+      "name": "error_rate",
+      "unit": "ratio",
+      "value": 0.0
+    },
+    {
+      "name": "false_positive_rate",
+      "unit": "ratio",
+      "value": 0.5714285714285714
+    },
+    {
+      "name": "hard_negative_hit_rate",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "infrastructure_failure_count",
+      "unit": "count",
+      "value": 0.0
+    },
+    {
+      "name": "infrastructure_failure_rate",
+      "unit": "ratio",
+      "value": 0.0
+    },
+    {
+      "name": "mean_boundary_error_seconds",
+      "unit": "seconds",
+      "value": 1.5616666666666665
+    },
+    {
+      "name": "mean_end_boundary_error_seconds",
+      "unit": "seconds",
+      "value": 0.0
+    },
+    {
+      "name": "mean_latency_ms",
+      "unit": "milliseconds",
+      "value": 2695.38284977898
+    },
+    {
+      "name": "mean_start_boundary_error_seconds",
+      "unit": "seconds",
+      "value": 3.123333333333333
+    },
+    {
+      "name": "mean_temporal_iou",
+      "unit": "ratio",
+      "value": 0.951594121420967
+    },
+    {
+      "name": "model_miss_count",
+      "unit": "count",
+      "value": 0.0
+    },
+    {
+      "name": "model_miss_rate",
+      "unit": "ratio",
+      "value": 0.0
+    },
+    {
+      "name": "mrr",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "ndcg_at_10",
+      "unit": "ratio",
+      "value": 0.9754430630676099
+    },
+    {
+      "name": "p50_latency_ms",
+      "unit": "milliseconds",
+      "value": 2613.4177499916404
+    },
+    {
+      "name": "p95_latency_ms",
+      "unit": "milliseconds",
+      "value": 3220.5899578984827
+    },
+    {
+      "name": "precision_at_5",
+      "unit": "ratio",
+      "value": 0.24000000000000002
+    },
+    {
+      "name": "recall_at_1",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "recall_at_10",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "recall_at_20",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "recall_at_3",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "recall_at_5",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.capture_condition.broadcast_basketball.candidate_recall_at_50",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.capture_condition.broadcast_basketball.case_count",
+      "unit": "count",
+      "value": 2.0
+    },
+    {
+      "name": "slice.capture_condition.broadcast_basketball.completed_case_count",
+      "unit": "count",
+      "value": 2.0
+    },
+    {
+      "name": "slice.capture_condition.broadcast_basketball.error_count",
+      "unit": "count",
+      "value": 0.0
+    },
+    {
+      "name": "slice.capture_condition.broadcast_basketball.false_positive_rate",
+      "unit": "ratio",
+      "value": 0.5714285714285714
+    },
+    {
+      "name": "slice.capture_condition.broadcast_basketball.hard_negative_hit_rate",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.capture_condition.broadcast_basketball.mean_boundary_error_seconds",
+      "unit": "seconds",
+      "value": 0.0
+    },
+    {
+      "name": "slice.capture_condition.broadcast_basketball.mean_end_boundary_error_seconds",
+      "unit": "seconds",
+      "value": 0.0
+    },
+    {
+      "name": "slice.capture_condition.broadcast_basketball.mean_latency_ms",
+      "unit": "milliseconds",
+      "value": 2246.3164374930784
+    },
+    {
+      "name": "slice.capture_condition.broadcast_basketball.mean_start_boundary_error_seconds",
+      "unit": "seconds",
+      "value": 0.0
+    },
+    {
+      "name": "slice.capture_condition.broadcast_basketball.mean_temporal_iou",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.capture_condition.broadcast_basketball.mrr",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.capture_condition.broadcast_basketball.ndcg_at_10",
+      "unit": "ratio",
+      "value": 0.9386076576690247
+    },
+    {
+      "name": "slice.capture_condition.broadcast_basketball.p50_latency_ms",
+      "unit": "milliseconds",
+      "value": 2095.7307079806924
+    },
+    {
+      "name": "slice.capture_condition.broadcast_basketball.p95_latency_ms",
+      "unit": "milliseconds",
+      "value": 2396.9021670054644
+    },
+    {
+      "name": "slice.capture_condition.broadcast_basketball.precision_at_5",
+      "unit": "ratio",
+      "value": 0.30000000000000004
+    },
+    {
+      "name": "slice.capture_condition.broadcast_basketball.recall_at_1",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.capture_condition.broadcast_basketball.recall_at_10",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.capture_condition.broadcast_basketball.recall_at_20",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.capture_condition.broadcast_basketball.recall_at_3",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.capture_condition.broadcast_basketball.recall_at_5",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.capture_condition.full_screen_graphic.candidate_recall_at_50",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.capture_condition.full_screen_graphic.case_count",
+      "unit": "count",
+      "value": 1.0
+    },
+    {
+      "name": "slice.capture_condition.full_screen_graphic.completed_case_count",
+      "unit": "count",
+      "value": 1.0
+    },
+    {
+      "name": "slice.capture_condition.full_screen_graphic.error_count",
+      "unit": "count",
+      "value": 0.0
+    },
+    {
+      "name": "slice.capture_condition.full_screen_graphic.false_positive_rate",
+      "unit": "ratio",
+      "value": 0.5
+    },
+    {
+      "name": "slice.capture_condition.full_screen_graphic.hard_negative_hit_rate",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.capture_condition.full_screen_graphic.mean_boundary_error_seconds",
+      "unit": "seconds",
+      "value": 0.0
+    },
+    {
+      "name": "slice.capture_condition.full_screen_graphic.mean_end_boundary_error_seconds",
+      "unit": "seconds",
+      "value": 0.0
+    },
+    {
+      "name": "slice.capture_condition.full_screen_graphic.mean_latency_ms",
+      "unit": "milliseconds",
+      "value": 3150.27366601862
+    },
+    {
+      "name": "slice.capture_condition.full_screen_graphic.mean_start_boundary_error_seconds",
+      "unit": "seconds",
+      "value": 0.0
+    },
+    {
+      "name": "slice.capture_condition.full_screen_graphic.mean_temporal_iou",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.capture_condition.full_screen_graphic.mrr",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.capture_condition.full_screen_graphic.ndcg_at_10",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.capture_condition.full_screen_graphic.p50_latency_ms",
+      "unit": "milliseconds",
+      "value": 3150.27366601862
+    },
+    {
+      "name": "slice.capture_condition.full_screen_graphic.p95_latency_ms",
+      "unit": "milliseconds",
+      "value": 3150.27366601862
+    },
+    {
+      "name": "slice.capture_condition.full_screen_graphic.precision_at_5",
+      "unit": "ratio",
+      "value": 0.2
+    },
+    {
+      "name": "slice.capture_condition.full_screen_graphic.recall_at_1",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.capture_condition.full_screen_graphic.recall_at_10",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.capture_condition.full_screen_graphic.recall_at_20",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.capture_condition.full_screen_graphic.recall_at_3",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.capture_condition.full_screen_graphic.recall_at_5",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.capture_condition.panel_discussion.candidate_recall_at_50",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.capture_condition.panel_discussion.case_count",
+      "unit": "count",
+      "value": 2.0
+    },
+    {
+      "name": "slice.capture_condition.panel_discussion.completed_case_count",
+      "unit": "count",
+      "value": 2.0
+    },
+    {
+      "name": "slice.capture_condition.panel_discussion.error_count",
+      "unit": "count",
+      "value": 0.0
+    },
+    {
+      "name": "slice.capture_condition.panel_discussion.false_positive_rate",
+      "unit": "ratio",
+      "value": 0.6
+    },
+    {
+      "name": "slice.capture_condition.panel_discussion.hard_negative_hit_rate",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.capture_condition.panel_discussion.mean_boundary_error_seconds",
+      "unit": "seconds",
+      "value": 4.685
+    },
+    {
+      "name": "slice.capture_condition.panel_discussion.mean_end_boundary_error_seconds",
+      "unit": "seconds",
+      "value": 0.0
+    },
+    {
+      "name": "slice.capture_condition.panel_discussion.mean_latency_ms",
+      "unit": "milliseconds",
+      "value": 2917.0038539450616
+    },
+    {
+      "name": "slice.capture_condition.panel_discussion.mean_start_boundary_error_seconds",
+      "unit": "seconds",
+      "value": 9.37
+    },
+    {
+      "name": "slice.capture_condition.panel_discussion.mean_temporal_iou",
+      "unit": "ratio",
+      "value": 0.8789853035524173
+    },
+    {
+      "name": "slice.capture_condition.panel_discussion.mrr",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.capture_condition.panel_discussion.ndcg_at_10",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.capture_condition.panel_discussion.p50_latency_ms",
+      "unit": "milliseconds",
+      "value": 2613.4177499916404
+    },
+    {
+      "name": "slice.capture_condition.panel_discussion.p95_latency_ms",
+      "unit": "milliseconds",
+      "value": 3220.5899578984827
+    },
+    {
+      "name": "slice.capture_condition.panel_discussion.precision_at_5",
+      "unit": "ratio",
+      "value": 0.2
+    },
+    {
+      "name": "slice.capture_condition.panel_discussion.recall_at_1",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.capture_condition.panel_discussion.recall_at_10",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.capture_condition.panel_discussion.recall_at_20",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.capture_condition.panel_discussion.recall_at_3",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.capture_condition.panel_discussion.recall_at_5",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.distribution_shift.regression_seen.candidate_recall_at_50",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.distribution_shift.regression_seen.case_count",
+      "unit": "count",
+      "value": 5.0
+    },
+    {
+      "name": "slice.distribution_shift.regression_seen.completed_case_count",
+      "unit": "count",
+      "value": 5.0
+    },
+    {
+      "name": "slice.distribution_shift.regression_seen.error_count",
+      "unit": "count",
+      "value": 0.0
+    },
+    {
+      "name": "slice.distribution_shift.regression_seen.false_positive_rate",
+      "unit": "ratio",
+      "value": 0.5714285714285714
+    },
+    {
+      "name": "slice.distribution_shift.regression_seen.hard_negative_hit_rate",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.distribution_shift.regression_seen.mean_boundary_error_seconds",
+      "unit": "seconds",
+      "value": 1.5616666666666665
+    },
+    {
+      "name": "slice.distribution_shift.regression_seen.mean_end_boundary_error_seconds",
+      "unit": "seconds",
+      "value": 0.0
+    },
+    {
+      "name": "slice.distribution_shift.regression_seen.mean_latency_ms",
+      "unit": "milliseconds",
+      "value": 2695.38284977898
+    },
+    {
+      "name": "slice.distribution_shift.regression_seen.mean_start_boundary_error_seconds",
+      "unit": "seconds",
+      "value": 3.123333333333333
+    },
+    {
+      "name": "slice.distribution_shift.regression_seen.mean_temporal_iou",
+      "unit": "ratio",
+      "value": 0.951594121420967
+    },
+    {
+      "name": "slice.distribution_shift.regression_seen.mrr",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.distribution_shift.regression_seen.ndcg_at_10",
+      "unit": "ratio",
+      "value": 0.9754430630676099
+    },
+    {
+      "name": "slice.distribution_shift.regression_seen.p50_latency_ms",
+      "unit": "milliseconds",
+      "value": 2613.4177499916404
+    },
+    {
+      "name": "slice.distribution_shift.regression_seen.p95_latency_ms",
+      "unit": "milliseconds",
+      "value": 3220.5899578984827
+    },
+    {
+      "name": "slice.distribution_shift.regression_seen.precision_at_5",
+      "unit": "ratio",
+      "value": 0.24000000000000002
+    },
+    {
+      "name": "slice.distribution_shift.regression_seen.recall_at_1",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.distribution_shift.regression_seen.recall_at_10",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.distribution_shift.regression_seen.recall_at_20",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.distribution_shift.regression_seen.recall_at_3",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.distribution_shift.regression_seen.recall_at_5",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.domain.basketball.candidate_recall_at_50",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.domain.basketball.case_count",
+      "unit": "count",
+      "value": 3.0
+    },
+    {
+      "name": "slice.domain.basketball.completed_case_count",
+      "unit": "count",
+      "value": 3.0
+    },
+    {
+      "name": "slice.domain.basketball.error_count",
+      "unit": "count",
+      "value": 0.0
+    },
+    {
+      "name": "slice.domain.basketball.false_positive_rate",
+      "unit": "ratio",
+      "value": 0.5555555555555556
+    },
+    {
+      "name": "slice.domain.basketball.hard_negative_hit_rate",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.domain.basketball.mean_boundary_error_seconds",
+      "unit": "seconds",
+      "value": 0.0
+    },
+    {
+      "name": "slice.domain.basketball.mean_end_boundary_error_seconds",
+      "unit": "seconds",
+      "value": 0.0
+    },
+    {
+      "name": "slice.domain.basketball.mean_latency_ms",
+      "unit": "milliseconds",
+      "value": 2547.635513668259
+    },
+    {
+      "name": "slice.domain.basketball.mean_start_boundary_error_seconds",
+      "unit": "seconds",
+      "value": 0.0
+    },
+    {
+      "name": "slice.domain.basketball.mean_temporal_iou",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.domain.basketball.mrr",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.domain.basketball.ndcg_at_10",
+      "unit": "ratio",
+      "value": 0.9590717717793498
+    },
+    {
+      "name": "slice.domain.basketball.p50_latency_ms",
+      "unit": "milliseconds",
+      "value": 2396.9021670054644
+    },
+    {
+      "name": "slice.domain.basketball.p95_latency_ms",
+      "unit": "milliseconds",
+      "value": 3150.27366601862
+    },
+    {
+      "name": "slice.domain.basketball.precision_at_5",
+      "unit": "ratio",
+      "value": 0.26666666666666666
+    },
+    {
+      "name": "slice.domain.basketball.recall_at_1",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.domain.basketball.recall_at_10",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.domain.basketball.recall_at_20",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.domain.basketball.recall_at_3",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.domain.basketball.recall_at_5",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.domain.universal_non_sports.candidate_recall_at_50",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.domain.universal_non_sports.case_count",
+      "unit": "count",
+      "value": 2.0
+    },
+    {
+      "name": "slice.domain.universal_non_sports.completed_case_count",
+      "unit": "count",
+      "value": 2.0
+    },
+    {
+      "name": "slice.domain.universal_non_sports.error_count",
+      "unit": "count",
+      "value": 0.0
+    },
+    {
+      "name": "slice.domain.universal_non_sports.false_positive_rate",
+      "unit": "ratio",
+      "value": 0.6
+    },
+    {
+      "name": "slice.domain.universal_non_sports.hard_negative_hit_rate",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.domain.universal_non_sports.mean_boundary_error_seconds",
+      "unit": "seconds",
+      "value": 4.685
+    },
+    {
+      "name": "slice.domain.universal_non_sports.mean_end_boundary_error_seconds",
+      "unit": "seconds",
+      "value": 0.0
+    },
+    {
+      "name": "slice.domain.universal_non_sports.mean_latency_ms",
+      "unit": "milliseconds",
+      "value": 2917.0038539450616
+    },
+    {
+      "name": "slice.domain.universal_non_sports.mean_start_boundary_error_seconds",
+      "unit": "seconds",
+      "value": 9.37
+    },
+    {
+      "name": "slice.domain.universal_non_sports.mean_temporal_iou",
+      "unit": "ratio",
+      "value": 0.8789853035524173
+    },
+    {
+      "name": "slice.domain.universal_non_sports.mrr",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.domain.universal_non_sports.ndcg_at_10",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.domain.universal_non_sports.p50_latency_ms",
+      "unit": "milliseconds",
+      "value": 2613.4177499916404
+    },
+    {
+      "name": "slice.domain.universal_non_sports.p95_latency_ms",
+      "unit": "milliseconds",
+      "value": 3220.5899578984827
+    },
+    {
+      "name": "slice.domain.universal_non_sports.precision_at_5",
+      "unit": "ratio",
+      "value": 0.2
+    },
+    {
+      "name": "slice.domain.universal_non_sports.recall_at_1",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.domain.universal_non_sports.recall_at_10",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.domain.universal_non_sports.recall_at_20",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.domain.universal_non_sports.recall_at_3",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.domain.universal_non_sports.recall_at_5",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.event_class.advertisement_non_game.candidate_recall_at_50",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.event_class.advertisement_non_game.case_count",
+      "unit": "count",
+      "value": 1.0
+    },
+    {
+      "name": "slice.event_class.advertisement_non_game.completed_case_count",
+      "unit": "count",
+      "value": 1.0
+    },
+    {
+      "name": "slice.event_class.advertisement_non_game.error_count",
+      "unit": "count",
+      "value": 0.0
+    },
+    {
+      "name": "slice.event_class.advertisement_non_game.false_positive_rate",
+      "unit": "ratio",
+      "value": 0.5
+    },
+    {
+      "name": "slice.event_class.advertisement_non_game.hard_negative_hit_rate",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.event_class.advertisement_non_game.mean_boundary_error_seconds",
+      "unit": "seconds",
+      "value": 0.0
+    },
+    {
+      "name": "slice.event_class.advertisement_non_game.mean_end_boundary_error_seconds",
+      "unit": "seconds",
+      "value": 0.0
+    },
+    {
+      "name": "slice.event_class.advertisement_non_game.mean_latency_ms",
+      "unit": "milliseconds",
+      "value": 3150.27366601862
+    },
+    {
+      "name": "slice.event_class.advertisement_non_game.mean_start_boundary_error_seconds",
+      "unit": "seconds",
+      "value": 0.0
+    },
+    {
+      "name": "slice.event_class.advertisement_non_game.mean_temporal_iou",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.event_class.advertisement_non_game.mrr",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.event_class.advertisement_non_game.ndcg_at_10",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.event_class.advertisement_non_game.p50_latency_ms",
+      "unit": "milliseconds",
+      "value": 3150.27366601862
+    },
+    {
+      "name": "slice.event_class.advertisement_non_game.p95_latency_ms",
+      "unit": "milliseconds",
+      "value": 3150.27366601862
+    },
+    {
+      "name": "slice.event_class.advertisement_non_game.precision_at_5",
+      "unit": "ratio",
+      "value": 0.2
+    },
+    {
+      "name": "slice.event_class.advertisement_non_game.recall_at_1",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.event_class.advertisement_non_game.recall_at_10",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.event_class.advertisement_non_game.recall_at_20",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.event_class.advertisement_non_game.recall_at_3",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.event_class.advertisement_non_game.recall_at_5",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.event_class.free_throw.candidate_recall_at_50",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.event_class.free_throw.case_count",
+      "unit": "count",
+      "value": 1.0
+    },
+    {
+      "name": "slice.event_class.free_throw.completed_case_count",
+      "unit": "count",
+      "value": 1.0
+    },
+    {
+      "name": "slice.event_class.free_throw.error_count",
+      "unit": "count",
+      "value": 0.0
+    },
+    {
+      "name": "slice.event_class.free_throw.false_positive_rate",
+      "unit": "ratio",
+      "value": 0.6666666666666666
+    },
+    {
+      "name": "slice.event_class.free_throw.hard_negative_hit_rate",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.event_class.free_throw.mean_boundary_error_seconds",
+      "unit": "seconds",
+      "value": 0.0
+    },
+    {
+      "name": "slice.event_class.free_throw.mean_end_boundary_error_seconds",
+      "unit": "seconds",
+      "value": 0.0
+    },
+    {
+      "name": "slice.event_class.free_throw.mean_latency_ms",
+      "unit": "milliseconds",
+      "value": 2396.9021670054644
+    },
+    {
+      "name": "slice.event_class.free_throw.mean_start_boundary_error_seconds",
+      "unit": "seconds",
+      "value": 0.0
+    },
+    {
+      "name": "slice.event_class.free_throw.mean_temporal_iou",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.event_class.free_throw.mrr",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.event_class.free_throw.ndcg_at_10",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.event_class.free_throw.p50_latency_ms",
+      "unit": "milliseconds",
+      "value": 2396.9021670054644
+    },
+    {
+      "name": "slice.event_class.free_throw.p95_latency_ms",
+      "unit": "milliseconds",
+      "value": 2396.9021670054644
+    },
+    {
+      "name": "slice.event_class.free_throw.precision_at_5",
+      "unit": "ratio",
+      "value": 0.2
+    },
+    {
+      "name": "slice.event_class.free_throw.recall_at_1",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.event_class.free_throw.recall_at_10",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.event_class.free_throw.recall_at_20",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.event_class.free_throw.recall_at_3",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.event_class.free_throw.recall_at_5",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.event_class.gesture.candidate_recall_at_50",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.event_class.gesture.case_count",
+      "unit": "count",
+      "value": 1.0
+    },
+    {
+      "name": "slice.event_class.gesture.completed_case_count",
+      "unit": "count",
+      "value": 1.0
+    },
+    {
+      "name": "slice.event_class.gesture.error_count",
+      "unit": "count",
+      "value": 0.0
+    },
+    {
+      "name": "slice.event_class.gesture.false_positive_rate",
+      "unit": "ratio",
+      "value": 0.5
+    },
+    {
+      "name": "slice.event_class.gesture.hard_negative_hit_rate",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.event_class.gesture.mean_boundary_error_seconds",
+      "unit": "seconds",
+      "value": 0.0
+    },
+    {
+      "name": "slice.event_class.gesture.mean_end_boundary_error_seconds",
+      "unit": "seconds",
+      "value": 0.0
+    },
+    {
+      "name": "slice.event_class.gesture.mean_latency_ms",
+      "unit": "milliseconds",
+      "value": 2613.4177499916404
+    },
+    {
+      "name": "slice.event_class.gesture.mean_start_boundary_error_seconds",
+      "unit": "seconds",
+      "value": 0.0
+    },
+    {
+      "name": "slice.event_class.gesture.mean_temporal_iou",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.event_class.gesture.mrr",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.event_class.gesture.ndcg_at_10",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.event_class.gesture.p50_latency_ms",
+      "unit": "milliseconds",
+      "value": 2613.4177499916404
+    },
+    {
+      "name": "slice.event_class.gesture.p95_latency_ms",
+      "unit": "milliseconds",
+      "value": 2613.4177499916404
+    },
+    {
+      "name": "slice.event_class.gesture.precision_at_5",
+      "unit": "ratio",
+      "value": 0.2
+    },
+    {
+      "name": "slice.event_class.gesture.recall_at_1",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.event_class.gesture.recall_at_10",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.event_class.gesture.recall_at_20",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.event_class.gesture.recall_at_3",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.event_class.gesture.recall_at_5",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.event_class.made_3.candidate_recall_at_50",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.event_class.made_3.case_count",
+      "unit": "count",
+      "value": 1.0
+    },
+    {
+      "name": "slice.event_class.made_3.completed_case_count",
+      "unit": "count",
+      "value": 1.0
+    },
+    {
+      "name": "slice.event_class.made_3.error_count",
+      "unit": "count",
+      "value": 0.0
+    },
+    {
+      "name": "slice.event_class.made_3.false_positive_rate",
+      "unit": "ratio",
+      "value": 0.5
+    },
+    {
+      "name": "slice.event_class.made_3.hard_negative_hit_rate",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.event_class.made_3.mean_boundary_error_seconds",
+      "unit": "seconds",
+      "value": 0.0
+    },
+    {
+      "name": "slice.event_class.made_3.mean_end_boundary_error_seconds",
+      "unit": "seconds",
+      "value": 0.0
+    },
+    {
+      "name": "slice.event_class.made_3.mean_latency_ms",
+      "unit": "milliseconds",
+      "value": 2095.7307079806924
+    },
+    {
+      "name": "slice.event_class.made_3.mean_start_boundary_error_seconds",
+      "unit": "seconds",
+      "value": 0.0
+    },
+    {
+      "name": "slice.event_class.made_3.mean_temporal_iou",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.event_class.made_3.mrr",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.event_class.made_3.ndcg_at_10",
+      "unit": "ratio",
+      "value": 0.8772153153380493
+    },
+    {
+      "name": "slice.event_class.made_3.p50_latency_ms",
+      "unit": "milliseconds",
+      "value": 2095.7307079806924
+    },
+    {
+      "name": "slice.event_class.made_3.p95_latency_ms",
+      "unit": "milliseconds",
+      "value": 2095.7307079806924
+    },
+    {
+      "name": "slice.event_class.made_3.precision_at_5",
+      "unit": "ratio",
+      "value": 0.4
+    },
+    {
+      "name": "slice.event_class.made_3.recall_at_1",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.event_class.made_3.recall_at_10",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.event_class.made_3.recall_at_20",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.event_class.made_3.recall_at_3",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.event_class.made_3.recall_at_5",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.event_class.roundtable_discussion.candidate_recall_at_50",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.event_class.roundtable_discussion.case_count",
+      "unit": "count",
+      "value": 1.0
+    },
+    {
+      "name": "slice.event_class.roundtable_discussion.completed_case_count",
+      "unit": "count",
+      "value": 1.0
+    },
+    {
+      "name": "slice.event_class.roundtable_discussion.error_count",
+      "unit": "count",
+      "value": 0.0
+    },
+    {
+      "name": "slice.event_class.roundtable_discussion.false_positive_rate",
+      "unit": "ratio",
+      "value": 0.6666666666666666
+    },
+    {
+      "name": "slice.event_class.roundtable_discussion.hard_negative_hit_rate",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.event_class.roundtable_discussion.mean_boundary_error_seconds",
+      "unit": "seconds",
+      "value": 9.37
+    },
+    {
+      "name": "slice.event_class.roundtable_discussion.mean_end_boundary_error_seconds",
+      "unit": "seconds",
+      "value": 0.0
+    },
+    {
+      "name": "slice.event_class.roundtable_discussion.mean_latency_ms",
+      "unit": "milliseconds",
+      "value": 3220.5899578984827
+    },
+    {
+      "name": "slice.event_class.roundtable_discussion.mean_start_boundary_error_seconds",
+      "unit": "seconds",
+      "value": 18.74
+    },
+    {
+      "name": "slice.event_class.roundtable_discussion.mean_temporal_iou",
+      "unit": "ratio",
+      "value": 0.7579706071048348
+    },
+    {
+      "name": "slice.event_class.roundtable_discussion.mrr",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.event_class.roundtable_discussion.ndcg_at_10",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.event_class.roundtable_discussion.p50_latency_ms",
+      "unit": "milliseconds",
+      "value": 3220.5899578984827
+    },
+    {
+      "name": "slice.event_class.roundtable_discussion.p95_latency_ms",
+      "unit": "milliseconds",
+      "value": 3220.5899578984827
+    },
+    {
+      "name": "slice.event_class.roundtable_discussion.precision_at_5",
+      "unit": "ratio",
+      "value": 0.2
+    },
+    {
+      "name": "slice.event_class.roundtable_discussion.recall_at_1",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.event_class.roundtable_discussion.recall_at_10",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.event_class.roundtable_discussion.recall_at_20",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.event_class.roundtable_discussion.recall_at_3",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.event_class.roundtable_discussion.recall_at_5",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.label_quality.gold.candidate_recall_at_50",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.label_quality.gold.case_count",
+      "unit": "count",
+      "value": 5.0
+    },
+    {
+      "name": "slice.label_quality.gold.completed_case_count",
+      "unit": "count",
+      "value": 5.0
+    },
+    {
+      "name": "slice.label_quality.gold.error_count",
+      "unit": "count",
+      "value": 0.0
+    },
+    {
+      "name": "slice.label_quality.gold.false_positive_rate",
+      "unit": "ratio",
+      "value": 0.5714285714285714
+    },
+    {
+      "name": "slice.label_quality.gold.hard_negative_hit_rate",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.label_quality.gold.mean_boundary_error_seconds",
+      "unit": "seconds",
+      "value": 1.5616666666666665
+    },
+    {
+      "name": "slice.label_quality.gold.mean_end_boundary_error_seconds",
+      "unit": "seconds",
+      "value": 0.0
+    },
+    {
+      "name": "slice.label_quality.gold.mean_latency_ms",
+      "unit": "milliseconds",
+      "value": 2695.38284977898
+    },
+    {
+      "name": "slice.label_quality.gold.mean_start_boundary_error_seconds",
+      "unit": "seconds",
+      "value": 3.123333333333333
+    },
+    {
+      "name": "slice.label_quality.gold.mean_temporal_iou",
+      "unit": "ratio",
+      "value": 0.951594121420967
+    },
+    {
+      "name": "slice.label_quality.gold.mrr",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.label_quality.gold.ndcg_at_10",
+      "unit": "ratio",
+      "value": 0.9754430630676099
+    },
+    {
+      "name": "slice.label_quality.gold.p50_latency_ms",
+      "unit": "milliseconds",
+      "value": 2613.4177499916404
+    },
+    {
+      "name": "slice.label_quality.gold.p95_latency_ms",
+      "unit": "milliseconds",
+      "value": 3220.5899578984827
+    },
+    {
+      "name": "slice.label_quality.gold.precision_at_5",
+      "unit": "ratio",
+      "value": 0.24000000000000002
+    },
+    {
+      "name": "slice.label_quality.gold.recall_at_1",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.label_quality.gold.recall_at_10",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.label_quality.gold.recall_at_20",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.label_quality.gold.recall_at_3",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.label_quality.gold.recall_at_5",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.modality.visual.candidate_recall_at_50",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.modality.visual.case_count",
+      "unit": "count",
+      "value": 5.0
+    },
+    {
+      "name": "slice.modality.visual.completed_case_count",
+      "unit": "count",
+      "value": 5.0
+    },
+    {
+      "name": "slice.modality.visual.error_count",
+      "unit": "count",
+      "value": 0.0
+    },
+    {
+      "name": "slice.modality.visual.false_positive_rate",
+      "unit": "ratio",
+      "value": 0.5714285714285714
+    },
+    {
+      "name": "slice.modality.visual.hard_negative_hit_rate",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.modality.visual.mean_boundary_error_seconds",
+      "unit": "seconds",
+      "value": 1.5616666666666665
+    },
+    {
+      "name": "slice.modality.visual.mean_end_boundary_error_seconds",
+      "unit": "seconds",
+      "value": 0.0
+    },
+    {
+      "name": "slice.modality.visual.mean_latency_ms",
+      "unit": "milliseconds",
+      "value": 2695.38284977898
+    },
+    {
+      "name": "slice.modality.visual.mean_start_boundary_error_seconds",
+      "unit": "seconds",
+      "value": 3.123333333333333
+    },
+    {
+      "name": "slice.modality.visual.mean_temporal_iou",
+      "unit": "ratio",
+      "value": 0.951594121420967
+    },
+    {
+      "name": "slice.modality.visual.mrr",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.modality.visual.ndcg_at_10",
+      "unit": "ratio",
+      "value": 0.9754430630676099
+    },
+    {
+      "name": "slice.modality.visual.p50_latency_ms",
+      "unit": "milliseconds",
+      "value": 2613.4177499916404
+    },
+    {
+      "name": "slice.modality.visual.p95_latency_ms",
+      "unit": "milliseconds",
+      "value": 3220.5899578984827
+    },
+    {
+      "name": "slice.modality.visual.precision_at_5",
+      "unit": "ratio",
+      "value": 0.24000000000000002
+    },
+    {
+      "name": "slice.modality.visual.recall_at_1",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.modality.visual.recall_at_10",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.modality.visual.recall_at_20",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.modality.visual.recall_at_3",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.modality.visual.recall_at_5",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.split_group.panel-a.candidate_recall_at_50",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.split_group.panel-a.case_count",
+      "unit": "count",
+      "value": 2.0
+    },
+    {
+      "name": "slice.split_group.panel-a.completed_case_count",
+      "unit": "count",
+      "value": 2.0
+    },
+    {
+      "name": "slice.split_group.panel-a.error_count",
+      "unit": "count",
+      "value": 0.0
+    },
+    {
+      "name": "slice.split_group.panel-a.false_positive_rate",
+      "unit": "ratio",
+      "value": 0.6
+    },
+    {
+      "name": "slice.split_group.panel-a.hard_negative_hit_rate",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.split_group.panel-a.mean_boundary_error_seconds",
+      "unit": "seconds",
+      "value": 4.685
+    },
+    {
+      "name": "slice.split_group.panel-a.mean_end_boundary_error_seconds",
+      "unit": "seconds",
+      "value": 0.0
+    },
+    {
+      "name": "slice.split_group.panel-a.mean_latency_ms",
+      "unit": "milliseconds",
+      "value": 2917.0038539450616
+    },
+    {
+      "name": "slice.split_group.panel-a.mean_start_boundary_error_seconds",
+      "unit": "seconds",
+      "value": 9.37
+    },
+    {
+      "name": "slice.split_group.panel-a.mean_temporal_iou",
+      "unit": "ratio",
+      "value": 0.8789853035524173
+    },
+    {
+      "name": "slice.split_group.panel-a.mrr",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.split_group.panel-a.ndcg_at_10",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.split_group.panel-a.p50_latency_ms",
+      "unit": "milliseconds",
+      "value": 2613.4177499916404
+    },
+    {
+      "name": "slice.split_group.panel-a.p95_latency_ms",
+      "unit": "milliseconds",
+      "value": 3220.5899578984827
+    },
+    {
+      "name": "slice.split_group.panel-a.precision_at_5",
+      "unit": "ratio",
+      "value": 0.2
+    },
+    {
+      "name": "slice.split_group.panel-a.recall_at_1",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.split_group.panel-a.recall_at_10",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.split_group.panel-a.recall_at_20",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.split_group.panel-a.recall_at_3",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.split_group.panel-a.recall_at_5",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.split_group.sports-game-a.candidate_recall_at_50",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.split_group.sports-game-a.case_count",
+      "unit": "count",
+      "value": 3.0
+    },
+    {
+      "name": "slice.split_group.sports-game-a.completed_case_count",
+      "unit": "count",
+      "value": 3.0
+    },
+    {
+      "name": "slice.split_group.sports-game-a.error_count",
+      "unit": "count",
+      "value": 0.0
+    },
+    {
+      "name": "slice.split_group.sports-game-a.false_positive_rate",
+      "unit": "ratio",
+      "value": 0.5555555555555556
+    },
+    {
+      "name": "slice.split_group.sports-game-a.hard_negative_hit_rate",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.split_group.sports-game-a.mean_boundary_error_seconds",
+      "unit": "seconds",
+      "value": 0.0
+    },
+    {
+      "name": "slice.split_group.sports-game-a.mean_end_boundary_error_seconds",
+      "unit": "seconds",
+      "value": 0.0
+    },
+    {
+      "name": "slice.split_group.sports-game-a.mean_latency_ms",
+      "unit": "milliseconds",
+      "value": 2547.635513668259
+    },
+    {
+      "name": "slice.split_group.sports-game-a.mean_start_boundary_error_seconds",
+      "unit": "seconds",
+      "value": 0.0
+    },
+    {
+      "name": "slice.split_group.sports-game-a.mean_temporal_iou",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.split_group.sports-game-a.mrr",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.split_group.sports-game-a.ndcg_at_10",
+      "unit": "ratio",
+      "value": 0.9590717717793498
+    },
+    {
+      "name": "slice.split_group.sports-game-a.p50_latency_ms",
+      "unit": "milliseconds",
+      "value": 2396.9021670054644
+    },
+    {
+      "name": "slice.split_group.sports-game-a.p95_latency_ms",
+      "unit": "milliseconds",
+      "value": 3150.27366601862
+    },
+    {
+      "name": "slice.split_group.sports-game-a.precision_at_5",
+      "unit": "ratio",
+      "value": 0.26666666666666666
+    },
+    {
+      "name": "slice.split_group.sports-game-a.recall_at_1",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.split_group.sports-game-a.recall_at_10",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.split_group.sports-game-a.recall_at_20",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.split_group.sports-game-a.recall_at_3",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "slice.split_group.sports-game-a.recall_at_5",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    {
+      "name": "total_case_count",
+      "unit": "count",
+      "value": 5.0
+    }
+  ],
+  "run_id": "phase0-proof18-1b11a54-lighthouse",
+  "run_status": "complete",
+  "schema_version": 3,
+  "started_at": "2026-09-05T13:47:47.629402Z",
+  "system_metrics": [
+    {
+      "name": "active_immutable_artifact_allocated_bytes",
+      "unit": "bytes",
+      "value": 610304.0
+    },
+    {
+      "name": "active_immutable_artifact_file_count",
+      "unit": "count",
+      "value": 3.0
+    },
+    {
+      "name": "active_immutable_artifact_logical_bytes",
+      "unit": "bytes",
+      "value": 594517.0
+    },
+    {
+      "name": "benchmark_scratch_allocated_bytes_baseline",
+      "unit": "bytes",
+      "value": 1127759872.0
+    },
+    {
+      "name": "benchmark_scratch_allocated_bytes_final",
+      "unit": "bytes",
+      "value": 1127759872.0
+    },
+    {
+      "name": "benchmark_scratch_allocated_bytes_growth",
+      "unit": "bytes",
+      "value": 0.0
+    },
+    {
+      "name": "benchmark_scratch_file_count_baseline",
+      "unit": "count",
+      "value": 8.0
+    },
+    {
+      "name": "benchmark_scratch_file_count_final",
+      "unit": "count",
+      "value": 8.0
+    },
+    {
+      "name": "benchmark_scratch_file_count_growth",
+      "unit": "count",
+      "value": 0.0
+    },
+    {
+      "name": "benchmark_scratch_logical_bytes_baseline",
+      "unit": "bytes",
+      "value": 1127737963.0
+    },
+    {
+      "name": "benchmark_scratch_logical_bytes_final",
+      "unit": "bytes",
+      "value": 1127737963.0
+    },
+    {
+      "name": "benchmark_scratch_logical_bytes_growth",
+      "unit": "bytes",
+      "value": 0.0
+    },
+    {
+      "name": "process_tree_rss_sample_count",
+      "unit": "count",
+      "value": 244.0
+    },
+    {
+      "name": "sampled_peak_process_tree_rss_bytes",
+      "unit": "bytes",
+      "value": 5264375808.0
+    },
+    {
+      "name": "sampled_process_tree_rss_baseline_bytes",
+      "unit": "bytes",
+      "value": 5081415680.0
+    },
+    {
+      "name": "sampled_process_tree_rss_increment_bytes",
+      "unit": "bytes",
+      "value": 182960128.0
+    }
+  ]
+}

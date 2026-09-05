@@ -1,6 +1,7 @@
 # Phase 0: serving contract controls
 
-Status: infrastructure correction in progress; Phase 0 remains open.
+Status: complete functional control at `1b11a54`; resource gate rejected;
+Phase 0 remains open.
 
 The path under test is `index → query → interval → evidence → clip`. These
 controls use only the existing ten prepared `regression_seen` inputs or generated
@@ -148,3 +149,52 @@ tests, including 35 independent adversarial controls, then all 2,441 backend tes
 with the same two deprecation warnings. A read-only audit also found all 56
 retained result intervals from the four prior profiles inside their source
 durations; it did not infer missing Qwen outputs.
+
+## Clean 1b11a54 control
+
+Clean `1b11a5420e2fc66417f314c03192c1a853f8c843` installed and attested all six
+environments offline on the M4 Pro/24 GiB. The clean backend suite passed 2,441
+tests with two deprecation warnings in 73.03 seconds. Forced generation rollback
+passed: the injected pre-commit publication failure retained the previous
+searchable release after restart, with unchanged source media and no reindexing.
+
+The five-profile batch now completed at this revision, with zero infrastructure
+errors and completed worker retirement and cleanup. The separate strict verifier
+attempted all ten cases: three matches, seven model misses, zero infrastructure
+errors. Exact receipts, all five raw manifests, environment attestation, rollback,
+run order and a separate diagnostic error ledger are retained in the
+[control record](negative-controls/1b11a54/README.md).
+
+| Profile | Candidate R@50 | P@5 | R@10 / R@20 | nDCG@10 | Boundary error, s | Query p95, s |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| lexical_qdrant | 1.000 | 0.240 | 1.000 / 1.000 | 0.840 | 1.633 | 1.671 |
+| dense_siglip | 1.000 | 0.240 | 1.000 / 1.000 | 0.975 | 1.564 | 6.346 |
+| temporal_refinement | 1.000 | 0.240 | 1.000 / 1.000 | 0.975 | 1.564 | 3.148 |
+| lighthouse | 1.000 | 0.240 | 1.000 / 1.000 | 0.975 | 1.562 | 3.221 |
+| qwen_verification | 0.833 | 0.200 | 0.833 / 0.833 | 0.714 | 0.130 | 154.079 |
+
+These are rounded summaries of the unchanged frozen metrics; every critical
+slice and raw measurement remains in the manifests. Qwen misses the roundtable
+product query and reduces observed recall. All profiles fail the absolute
+precision and hard-negative quality guardrails; hard-negative hit rate is 1.0
+for the first four and 0.8 for Qwen. The first four also exceed the one-second
+boundary guardrail. These are model limitations of the regression baseline,
+not execution failures. No independent holdout or promotion claim is made.
+
+The full smoke completed eight component steps, five product profiles, both
+Qwen calls and MP4 export; InternVideo was `not_configured`. Source SHA before
+and after matched; cleanup completed and the disposable smoke root was empty.
+The unchanged collector nevertheless returned exit code 3 and published no
+bundle: the smoke observed **446 swapin pages (7,307,264 bytes)**. Swapout and
+Metal recovery were zero; OOM was not observed. Peak process-tree RSS was
+10,797,924,352 bytes, peak system-wide Metal in-use 11,203,723,264 bytes and
+elapsed time 104.143578125 seconds. RSS and Metal are separate, non-additive
+measurements.
+
+All measured runs held an exclusive agent-helper lease. The earliest swapin
+event occurred at 0.253 seconds; 268 of 446 pages preceded the late Metal ramp.
+System-wide counters do not establish which process caused these events. Neither
+a leak nor a host-cold state is proven. The next bounded control requires an
+owner-provided quiet host window and one unchanged smoke, retaining this first
+rejection. Do not close owner applications, subtract background pressure, change
+the zero-swap criterion, or retry without a recorded change in conditions.

@@ -1,0 +1,49 @@
+{
+  "code_sha": "1b11a5420e2fc66417f314c03192c1a853f8c843",
+  "dataset_revision": "8cda261148ce3f459e08c3762017cec86970ab7c85d36eaa77ef9f832a2ae6a1",
+  "environment_bindings": {
+    "lighthouse": "lighthouse",
+    "ocr": "ocr",
+    "owner": "base",
+    "qwen": "qwen",
+    "vision": "vision",
+    "vision_index": "vision",
+    "whisper": "whisper"
+  },
+  "ml_environment_attestation_id": "videoscope-phase0-ml-environment-v1",
+  "ml_environment_manifest_identity": "sha256:f4d551a169e981af2279647e900cf7f87b8c174548cd0356c8df5e6cee82c9ac",
+  "policy_revision": "e387059314c5c7372520f971c815d03f3cfd181f92135e08e8fdea0bd5340eef",
+  "profile_runs": [
+    {
+      "manifest_sha256": "f794e73bb5fe6c044cbff53a2ab0cb573983bc7248e07bc02443203a6bef1180",
+      "profile_id": "lexical_qdrant",
+      "run_id": "phase0-proof18-1b11a54-lexical_qdrant"
+    },
+    {
+      "manifest_sha256": "8755e7387aae5ac6e8a90bdab708a72c651b144813343e27635cad3d27935752",
+      "profile_id": "dense_siglip",
+      "run_id": "phase0-proof18-1b11a54-dense_siglip"
+    },
+    {
+      "manifest_sha256": "3e997ed109d1cee265d2063d308dd7adb958597e561184c15a40e627e7f1681b",
+      "profile_id": "temporal_refinement",
+      "run_id": "phase0-proof18-1b11a54-temporal_refinement"
+    },
+    {
+      "manifest_sha256": "de0ca20cffdcf227031c280671a4a678b86edcafb01048c5e31ca5982250b23e",
+      "profile_id": "lighthouse",
+      "run_id": "phase0-proof18-1b11a54-lighthouse"
+    },
+    {
+      "manifest_sha256": "a71b51dff0acb7cfe4503b035552140595a75c97f98baa275d44f39ee3e33a6d",
+      "profile_id": "qwen_verification",
+      "run_id": "phase0-proof18-1b11a54-qwen_verification"
+    }
+  ],
+  "schema_version": 1,
+  "status": "complete",
+  "worker_lifecycle": {
+    "cleanup_status": "complete",
+    "retirement_status": "complete"
+  }
+}

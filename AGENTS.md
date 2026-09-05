@@ -105,8 +105,13 @@ future work does not inherit a stale decision.
 ## Current next phase
 
 The default next objective is Phase 0 of `docs/ml-autonomy-plan.md`: establish a
-reproducible and trustworthy baseline before training. The Phase 1 read-only
-dataset audit may run in parallel, but no external or user data may be imported,
+reproducible and trustworthy baseline before training. Phase 0 remains open:
+the clean `1b11a54` control completed all five profiles and direct verifier, but
+its full smoke failed the unchanged zero-swap gate. Exact evidence is retained in
+`docs/benchmarks/phase0/negative-controls/1b11a54/README.md`; no accepted baseline
+bundle, training or later phase is active. The active scope is Phase 0 only;
+a Phase 1 read-only dataset audit requires a separately authorized goal.
+No external or user data may be imported,
 uploaded or trained on merely because it is listed as a candidate.
 
 When Phase 0 is demonstrably complete, update both the plan's status and this

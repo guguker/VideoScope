@@ -1,0 +1,461 @@
+{
+  "code_sha": "1b11a5420e2fc66417f314c03192c1a853f8c843",
+  "direct_verifier_case_outcomes": [
+    {
+      "case_id": "panel-light-top-gesture-negative",
+      "error_code": null,
+      "status": "model_miss"
+    },
+    {
+      "case_id": "panel-light-top-gesture-positive",
+      "error_code": null,
+      "status": "match"
+    },
+    {
+      "case_id": "panel-roundtable-negative",
+      "error_code": null,
+      "status": "model_miss"
+    },
+    {
+      "case_id": "panel-roundtable-positive",
+      "error_code": null,
+      "status": "match"
+    },
+    {
+      "case_id": "sports-abstain",
+      "error_code": null,
+      "status": "model_miss"
+    },
+    {
+      "case_id": "sports-commercial-positive",
+      "error_code": null,
+      "status": "model_miss"
+    },
+    {
+      "case_id": "sports-commercial-slate-negative",
+      "error_code": null,
+      "status": "match"
+    },
+    {
+      "case_id": "sports-made-free-throw",
+      "error_code": null,
+      "status": "model_miss"
+    },
+    {
+      "case_id": "sports-made-three-blue-15",
+      "error_code": null,
+      "status": "model_miss"
+    },
+    {
+      "case_id": "sports-made-three-white-9",
+      "error_code": null,
+      "status": "model_miss"
+    }
+  ],
+  "direct_verifier_infrastructure_failure_count": 0,
+  "direct_verifier_summary": {
+    "case_count": 10,
+    "infrastructure_error_count": 0,
+    "match_count": 3,
+    "model_miss_count": 7
+  },
+  "evidence_kind": "rejected_phase0_control_error_ledger",
+  "frozen_absolute_guardrail_observations": [
+    {
+      "actual": 1.0,
+      "direction": "higher_is_better",
+      "guardrail_id": "candidate_recall_floor",
+      "profile_id": "lexical_qdrant",
+      "status": "pass",
+      "threshold": 0.95
+    },
+    {
+      "actual": 1.0,
+      "direction": "higher_is_better",
+      "guardrail_id": "candidate_recall_floor",
+      "profile_id": "dense_siglip",
+      "status": "pass",
+      "threshold": 0.95
+    },
+    {
+      "actual": 1.0,
+      "direction": "higher_is_better",
+      "guardrail_id": "candidate_recall_floor",
+      "profile_id": "temporal_refinement",
+      "status": "pass",
+      "threshold": 0.95
+    },
+    {
+      "actual": 1.0,
+      "direction": "higher_is_better",
+      "guardrail_id": "candidate_recall_floor",
+      "profile_id": "lighthouse",
+      "status": "pass",
+      "threshold": 0.95
+    },
+    {
+      "actual": 0.8333333333333334,
+      "direction": "higher_is_better",
+      "guardrail_id": "candidate_recall_floor",
+      "profile_id": "qwen_verification",
+      "status": "fail",
+      "threshold": 0.95
+    },
+    {
+      "guardrail_id": "critical_ndcg_regression",
+      "reason_code": "comparison_baseline_not_applicable_to_snapshot",
+      "status": "not_evaluable"
+    },
+    {
+      "guardrail_id": "critical_recall_regression",
+      "reason_code": "comparison_baseline_not_applicable_to_snapshot",
+      "status": "not_evaluable"
+    },
+    {
+      "actual": 1.0,
+      "direction": "lower_is_better",
+      "guardrail_id": "hard_negative_false_positive_ceiling",
+      "profile_id": "lexical_qdrant",
+      "status": "fail",
+      "threshold": 0.0
+    },
+    {
+      "actual": 1.0,
+      "direction": "lower_is_better",
+      "guardrail_id": "hard_negative_false_positive_ceiling",
+      "profile_id": "dense_siglip",
+      "status": "fail",
+      "threshold": 0.0
+    },
+    {
+      "actual": 1.0,
+      "direction": "lower_is_better",
+      "guardrail_id": "hard_negative_false_positive_ceiling",
+      "profile_id": "temporal_refinement",
+      "status": "fail",
+      "threshold": 0.0
+    },
+    {
+      "actual": 1.0,
+      "direction": "lower_is_better",
+      "guardrail_id": "hard_negative_false_positive_ceiling",
+      "profile_id": "lighthouse",
+      "status": "fail",
+      "threshold": 0.0
+    },
+    {
+      "actual": 0.8,
+      "direction": "lower_is_better",
+      "guardrail_id": "hard_negative_false_positive_ceiling",
+      "profile_id": "qwen_verification",
+      "status": "fail",
+      "threshold": 0.0
+    },
+    {
+      "actual": 0.0,
+      "direction": "lower_is_better",
+      "guardrail_id": "infrastructure_error_ceiling",
+      "profile_id": "lexical_qdrant",
+      "status": "pass",
+      "threshold": 0.0
+    },
+    {
+      "actual": 0.0,
+      "direction": "lower_is_better",
+      "guardrail_id": "infrastructure_error_ceiling",
+      "profile_id": "dense_siglip",
+      "status": "pass",
+      "threshold": 0.0
+    },
+    {
+      "actual": 0.0,
+      "direction": "lower_is_better",
+      "guardrail_id": "infrastructure_error_ceiling",
+      "profile_id": "temporal_refinement",
+      "status": "pass",
+      "threshold": 0.0
+    },
+    {
+      "actual": 0.0,
+      "direction": "lower_is_better",
+      "guardrail_id": "infrastructure_error_ceiling",
+      "profile_id": "lighthouse",
+      "status": "pass",
+      "threshold": 0.0
+    },
+    {
+      "actual": 0.0,
+      "direction": "lower_is_better",
+      "guardrail_id": "infrastructure_error_ceiling",
+      "profile_id": "qwen_verification",
+      "status": "pass",
+      "threshold": 0.0
+    },
+    {
+      "guardrail_id": "interactive_latency_regression",
+      "reason_code": "comparison_baseline_not_applicable_to_snapshot",
+      "status": "not_evaluable"
+    },
+    {
+      "actual": 1.6333575658137394,
+      "direction": "lower_is_better",
+      "guardrail_id": "mean_boundary_error_ceiling",
+      "profile_id": "lexical_qdrant",
+      "status": "fail",
+      "threshold": 1.0
+    },
+    {
+      "actual": 1.5644444444444443,
+      "direction": "lower_is_better",
+      "guardrail_id": "mean_boundary_error_ceiling",
+      "profile_id": "dense_siglip",
+      "status": "fail",
+      "threshold": 1.0
+    },
+    {
+      "actual": 1.5644444444444443,
+      "direction": "lower_is_better",
+      "guardrail_id": "mean_boundary_error_ceiling",
+      "profile_id": "temporal_refinement",
+      "status": "fail",
+      "threshold": 1.0
+    },
+    {
+      "actual": 1.5616666666666665,
+      "direction": "lower_is_better",
+      "guardrail_id": "mean_boundary_error_ceiling",
+      "profile_id": "lighthouse",
+      "status": "fail",
+      "threshold": 1.0
+    },
+    {
+      "actual": 0.13000000000000006,
+      "direction": "lower_is_better",
+      "guardrail_id": "mean_boundary_error_ceiling",
+      "profile_id": "qwen_verification",
+      "status": "pass",
+      "threshold": 1.0
+    },
+    {
+      "actual": 4155555840.0,
+      "direction": "lower_is_better",
+      "guardrail_id": "peak_process_tree_rss_ceiling",
+      "profile_id": "lexical_qdrant",
+      "status": "pass",
+      "threshold": 17179869184.0
+    },
+    {
+      "actual": 5149474816.0,
+      "direction": "lower_is_better",
+      "guardrail_id": "peak_process_tree_rss_ceiling",
+      "profile_id": "dense_siglip",
+      "status": "pass",
+      "threshold": 17179869184.0
+    },
+    {
+      "actual": 5134893056.0,
+      "direction": "lower_is_better",
+      "guardrail_id": "peak_process_tree_rss_ceiling",
+      "profile_id": "temporal_refinement",
+      "status": "pass",
+      "threshold": 17179869184.0
+    },
+    {
+      "actual": 5264375808.0,
+      "direction": "lower_is_better",
+      "guardrail_id": "peak_process_tree_rss_ceiling",
+      "profile_id": "lighthouse",
+      "status": "pass",
+      "threshold": 17179869184.0
+    },
+    {
+      "actual": 9003401216.0,
+      "direction": "lower_is_better",
+      "guardrail_id": "peak_process_tree_rss_ceiling",
+      "profile_id": "qwen_verification",
+      "status": "pass",
+      "threshold": 17179869184.0
+    },
+    {
+      "actual": 0.24000000000000002,
+      "direction": "higher_is_better",
+      "guardrail_id": "precision_at_5_floor",
+      "profile_id": "lexical_qdrant",
+      "status": "fail",
+      "threshold": 0.6
+    },
+    {
+      "actual": 0.24000000000000002,
+      "direction": "higher_is_better",
+      "guardrail_id": "precision_at_5_floor",
+      "profile_id": "dense_siglip",
+      "status": "fail",
+      "threshold": 0.6
+    },
+    {
+      "actual": 0.24000000000000002,
+      "direction": "higher_is_better",
+      "guardrail_id": "precision_at_5_floor",
+      "profile_id": "temporal_refinement",
+      "status": "fail",
+      "threshold": 0.6
+    },
+    {
+      "actual": 0.24000000000000002,
+      "direction": "higher_is_better",
+      "guardrail_id": "precision_at_5_floor",
+      "profile_id": "lighthouse",
+      "status": "fail",
+      "threshold": 0.6
+    },
+    {
+      "actual": 0.2,
+      "direction": "higher_is_better",
+      "guardrail_id": "precision_at_5_floor",
+      "profile_id": "qwen_verification",
+      "status": "fail",
+      "threshold": 0.6
+    },
+    {
+      "actual": 1.0,
+      "direction": "higher_is_better",
+      "guardrail_id": "recall_at_20_floor",
+      "profile_id": "lexical_qdrant",
+      "status": "pass",
+      "threshold": 0.8
+    },
+    {
+      "actual": 1.0,
+      "direction": "higher_is_better",
+      "guardrail_id": "recall_at_20_floor",
+      "profile_id": "dense_siglip",
+      "status": "pass",
+      "threshold": 0.8
+    },
+    {
+      "actual": 1.0,
+      "direction": "higher_is_better",
+      "guardrail_id": "recall_at_20_floor",
+      "profile_id": "temporal_refinement",
+      "status": "pass",
+      "threshold": 0.8
+    },
+    {
+      "actual": 1.0,
+      "direction": "higher_is_better",
+      "guardrail_id": "recall_at_20_floor",
+      "profile_id": "lighthouse",
+      "status": "pass",
+      "threshold": 0.8
+    },
+    {
+      "actual": 0.8333333333333334,
+      "direction": "higher_is_better",
+      "guardrail_id": "recall_at_20_floor",
+      "profile_id": "qwen_verification",
+      "status": "pass",
+      "threshold": 0.8
+    },
+    {
+      "guardrail_id": "universal_ndcg_regression",
+      "reason_code": "comparison_baseline_not_applicable_to_snapshot",
+      "status": "not_evaluable"
+    },
+    {
+      "guardrail_id": "universal_recall_regression",
+      "reason_code": "comparison_baseline_not_applicable_to_snapshot",
+      "status": "not_evaluable"
+    },
+    {
+      "actual": 0,
+      "direction": "lower_is_better",
+      "guardrail_id": "verifier_infrastructure_error_ceiling",
+      "profile_id": "lexical_qdrant",
+      "status": "pass",
+      "threshold": 0.0
+    },
+    {
+      "actual": 0,
+      "direction": "lower_is_better",
+      "guardrail_id": "verifier_infrastructure_error_ceiling",
+      "profile_id": "dense_siglip",
+      "status": "pass",
+      "threshold": 0.0
+    },
+    {
+      "actual": 0,
+      "direction": "lower_is_better",
+      "guardrail_id": "verifier_infrastructure_error_ceiling",
+      "profile_id": "temporal_refinement",
+      "status": "pass",
+      "threshold": 0.0
+    },
+    {
+      "actual": 0,
+      "direction": "lower_is_better",
+      "guardrail_id": "verifier_infrastructure_error_ceiling",
+      "profile_id": "lighthouse",
+      "status": "pass",
+      "threshold": 0.0
+    },
+    {
+      "actual": 0,
+      "direction": "lower_is_better",
+      "guardrail_id": "verifier_infrastructure_error_ceiling",
+      "profile_id": "qwen_verification",
+      "status": "pass",
+      "threshold": 0.0
+    }
+  ],
+  "infrastructure_failures": [
+    {
+      "count": 1,
+      "diagnostic_code": "nonzero_system_swapins",
+      "ownership": "not_established",
+      "source": "full_ml_smoke",
+      "swapins_delta_pages": 446
+    }
+  ],
+  "interpretation": "Model misses, false positives and poor frozen quality remain visible. They are regression baseline findings, not infrastructure failures or promotion evidence. The separate resource failure prevents Phase-0 evidence publication.",
+  "phase0_complete": false,
+  "product_model_misses": [
+    {
+      "category": "model_miss",
+      "count": 0,
+      "diagnostic_code": "relevant_interval_not_retrieved",
+      "profile_id": "lexical_qdrant",
+      "source": "product_benchmark"
+    },
+    {
+      "category": "model_miss",
+      "count": 0,
+      "diagnostic_code": "relevant_interval_not_retrieved",
+      "profile_id": "dense_siglip",
+      "source": "product_benchmark"
+    },
+    {
+      "category": "model_miss",
+      "count": 0,
+      "diagnostic_code": "relevant_interval_not_retrieved",
+      "profile_id": "temporal_refinement",
+      "source": "product_benchmark"
+    },
+    {
+      "category": "model_miss",
+      "count": 0,
+      "diagnostic_code": "relevant_interval_not_retrieved",
+      "profile_id": "lighthouse",
+      "source": "product_benchmark"
+    },
+    {
+      "category": "model_miss",
+      "count": 1,
+      "diagnostic_code": "relevant_interval_not_retrieved",
+      "profile_id": "qwen_verification",
+      "source": "product_benchmark"
+    }
+  ],
+  "product_query_infrastructure_failure_count": 0,
+  "promotion_eligible": false,
+  "schema_version": 1
+}

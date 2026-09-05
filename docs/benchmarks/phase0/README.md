@@ -5,6 +5,11 @@ does not contain a completed baseline. Phase 0 remains open until the five
 product profiles, direct verifier, full-ML smoke, target-host attestation and
 generated rollback proof have all been captured at one clean Git revision.
 
+The latest [clean `1b11a54` control](negative-controls/1b11a54/README.md) retains
+all five completed profiles, the ten-case verifier, six-environment attestation
+and rollback proof. Its functionally ready smoke was rejected for 446 swapin
+pages. No accepted four-file evidence bundle has been published.
+
 The collector never starts a model. It validates already produced JSON and
 publishes one create-once directory containing:
 

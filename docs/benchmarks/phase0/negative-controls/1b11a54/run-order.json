@@ -1,0 +1,23 @@
+{
+  "agent_helper_processes_during_each_measured_run": "forbidden; root may poll its existing launcher session",
+  "code_sha": "1b11a5420e2fc66417f314c03192c1a853f8c843",
+  "declared_before_ml": true,
+  "external_data_import": false,
+  "host_cold_state": "not_established",
+  "later_phases": false,
+  "metric_policy_revision": "e387059314c5c7372520f971c815d03f3cfd181f92135e08e8fdea0bd5340eef",
+  "model_process_overlap": "forbidden",
+  "order": [
+    "offline_clean_install_six_environments",
+    "environment_attestation",
+    "full_backend_suite",
+    "forced_generation_rollback",
+    "five_profile_product_batch",
+    "ten_case_direct_verifier",
+    "full_ml_smoke",
+    "phase0_evidence_collection"
+  ],
+  "schema_version": 1,
+  "source_inputs": "existing_frozen_regression_seen_prepared_clips_only",
+  "training": false
+}
