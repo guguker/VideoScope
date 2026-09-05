@@ -68,7 +68,7 @@ MAX_PROBE_BYTES = 4096
 
 SIGLIP_PREPROCESSING_REVISION = "siglip2-auto-processor-rgb-normalized-v1"
 SIGLIP_TOKENIZER_REVISION = "siglip2-auto-tokenizer-max-length-64-truncation-v1"
-RFDETR_ADAPTER_REVISION = "rfdetr-coco-rgb-center-box-v2"
+RFDETR_ADAPTER_REVISION = "rfdetr-coco-rgb-clipped-center-box-v3"
 RFDETR_SMALL_CHECKPOINT_SHA256 = (
     "d81979a9213a2109345158ce9232668df4c1ae52e9b8db3f2ec0a8cbad959b33"
 )
