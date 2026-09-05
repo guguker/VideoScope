@@ -774,3 +774,71 @@ def test_durable_object_resource_release_failure_keeps_candidate_inactive(
     ) is None
     assert visual.build_calls == []
     assert events == ["objects", "release"]
+
+
+@pytest.mark.parametrize("outcome", ["complete", "cancelled", "release_failure"])
+def test_durable_ocr_releases_resources_before_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    outcome: str,
+) -> None:
+    repository, plan, _source = _claimed_job(tmp_path)
+    events: list[str] = []
+    commit_generation = repository.commit_segment_generation
+
+    class ReleasableOCR:
+        def read(self, _image: Path) -> list[tuple[str, float]]:
+            events.append("read")
+            if outcome == "cancelled":
+                repository.request_video_index_job_cancellation("job-1")
+            return [("HOME 87", 0.9)]
+
+        def release_ingestion_resources(self) -> None:
+            events.append("release")
+            if outcome == "release_failure":
+                raise RuntimeError("OCR ingestion resource release failed")
+
+    def ordered_commit(run_id: str, **kwargs):  # type: ignore[no-untyped-def]
+        run = repository.get_latest_stage_run("video-1", StageKind.OCR)
+        if run is not None and run.run_id == run_id:
+            assert events[-1] == "release"
+            events.append("commit")
+        return commit_generation(run_id, **kwargs)
+
+    monkeypatch.setattr(repository, "commit_segment_generation", ordered_commit)
+    indexer = Indexer(
+        repository=repository,
+        media_root=tmp_path,
+        thumbnails_dir=tmp_path / "thumbs",
+        specification_resolver=lambda: pytest.fail("resolver must not be called"),
+        ffmpeg=_FFmpeg(),  # type: ignore[arg-type]
+        scenes=_Scenes(),  # type: ignore[arg-type]
+        ocr=ReleasableOCR(),
+        vector_index=MemoryVectorIndex(),
+    )
+    context = VideoIndexExecutionContext("job-1", TOKEN, plan)
+    if outcome == "cancelled":
+        with pytest.raises(JobCancelled):
+            indexer.process_durable("video-1", context=context)
+    elif outcome == "release_failure":
+        with pytest.raises(RuntimeError, match="OCR ingestion resource release failed"):
+            indexer.process_durable("video-1", context=context)
+    else:
+        assert indexer.process_durable("video-1", context=context) == ()
+
+    run = repository.get_latest_stage_run("video-1", StageKind.OCR)
+    assert run is not None
+    assert events == (
+        ["read", "release", "commit"]
+        if outcome == "complete"
+        else ["read", "release"]
+    )
+    assert repository.get_active_segment_generation("video-1", StageKind.OCR) is None
+    if outcome == "complete":
+        assert run.state is StageState.COMPLETE and run.output_generation is not None
+    else:
+        assert run.output_generation is None
+        assert repository.get_latest_stage_run("video-1", StageKind.TEXT_VECTORS) is None
+        if outcome == "release_failure":
+            assert run.state is StageState.FAILED
+            assert run.error_code == "ocr_resource_release_failed"

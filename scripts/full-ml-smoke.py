@@ -2806,22 +2806,29 @@ def _run_components(
     )
     steps.append(_step("whisper.transcribe", segment_count=len(transcript)))
 
-    ocr_status = _infrastructure_call(
-        "ocr",
-        "health_failed",
-        clients.ocr.status,  # type: ignore[attr-defined]
-    )
-    _require_ready("ocr", ocr_status)
-    ocr_items = _infrastructure_call(
-        "ocr",
-        "read_failed",
-        lambda: clients.ocr.read(fixture.image),  # type: ignore[attr-defined]
-    )
-    ocr_items = _validated_sequence(
-        ocr_items,
-        component="ocr",
-        code="read_contract_invalid",
-    )
+    try:
+        ocr_status = _infrastructure_call(
+            "ocr",
+            "health_failed",
+            clients.ocr.status,  # type: ignore[attr-defined]
+        )
+        _require_ready("ocr", ocr_status)
+        ocr_items = _infrastructure_call(
+            "ocr",
+            "read_failed",
+            lambda: clients.ocr.read(fixture.image),  # type: ignore[attr-defined]
+        )
+        ocr_items = _validated_sequence(
+            ocr_items,
+            component="ocr",
+            code="read_contract_invalid",
+        )
+    finally:
+        _infrastructure_call(
+            "ocr",
+            "ingestion_resource_release_failed",
+            lambda: clients.ocr.release_ingestion_resources(),  # type: ignore[attr-defined]
+        )
     steps.append(_step("ocr.read", item_count=len(ocr_items)))
 
     lighthouse_status = _infrastructure_call(

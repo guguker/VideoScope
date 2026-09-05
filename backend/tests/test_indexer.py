@@ -6,7 +6,7 @@ from videoscope.artifacts import StageKind, StageState
 from videoscope.config import AppSettings
 from videoscope.media.ffmpeg import MediaProbe
 from videoscope.media.ffmpeg import SampledFrame
-from videoscope.processing.indexer import Indexer, merge_timed_text
+from videoscope.processing.indexer import Indexer, JobCancelled, merge_timed_text
 from videoscope.providers.types import ObjectTag, TimedText
 from videoscope.repository import Repository
 from videoscope.runtime import create_indexing_specifications
@@ -426,3 +426,146 @@ def test_legacy_object_resource_release_failure_stops_heavy_stages(
         "video-1",
         StageKind.OBJECTS,
     ) == prior_objects
+
+
+@pytest.fixture
+def ocr_indexer(tmp_path: Path) -> Indexer:
+    repository = Repository(tmp_path / "db.sqlite3")
+    repository.initialize()
+    media = tmp_path / "video.mp4"
+    media.write_bytes(b"video")
+    repository.create_video(
+        video_id="video-1",
+        original_name="match.mp4",
+        stored_name="video.mp4",
+        media_path=str(media),
+        size_bytes=5,
+    )
+    return Indexer(
+        repository=repository,
+        media_root=tmp_path,
+        thumbnails_dir=tmp_path / "thumbs",
+        specification_resolver=_specification_resolver(tmp_path),
+        ffmpeg=FakeFFmpeg(),  # type: ignore[arg-type]
+        scenes=FakeScenes(),  # type: ignore[arg-type]
+        ocr=FakeOCR(),  # type: ignore[arg-type]
+        vector_index=RecordingIndex(),  # type: ignore[arg-type]
+    )
+
+
+@pytest.mark.parametrize("outcome", ["complete", "provider_failure", "missing_scenes"])
+def test_ocr_releases_resources_before_generation_commit_and_later_stages(
+    ocr_indexer: Indexer,
+    monkeypatch: pytest.MonkeyPatch,
+    outcome: str,
+) -> None:
+    events: list[str] = []
+    repository = ocr_indexer.repository
+    commit_generation = repository.commit_segment_generation
+
+    class ReleasableOCR:
+        def read(self, _image: Path) -> list[tuple[str, float]]:
+            events.append("read")
+            if outcome == "provider_failure":
+                raise RuntimeError("OCR unavailable")
+            return [("HOME 87", 0.9)]
+
+        def release_ingestion_resources(self) -> None:
+            events.append("release")
+
+    class OrderedObjects:
+        def detect(self, _image: Path) -> list[ObjectTag]:
+            assert "release" in events
+            events.append("objects")
+            return []
+
+    class BrokenScenes:
+        def detect(self, _source: Path, _duration: float) -> list[tuple[float, float]]:
+            raise RuntimeError("scene detection unavailable")
+
+    def ordered_commit(run_id: str, **kwargs):  # type: ignore[no-untyped-def]
+        run = repository.get_latest_stage_run("video-1", StageKind.OCR)
+        if run is not None and run.run_id == run_id:
+            assert events[-1] == "release"
+            events.append("commit")
+        return commit_generation(run_id, **kwargs)
+
+    ocr_indexer.ocr = ReleasableOCR()
+    ocr_indexer.objects = OrderedObjects()
+    if outcome == "missing_scenes":
+        ocr_indexer.scenes = BrokenScenes()  # type: ignore[assignment]
+    monkeypatch.setattr(repository, "commit_segment_generation", ordered_commit)
+
+    ocr_indexer.process("video-1")
+
+    run = repository.get_latest_stage_run("video-1", StageKind.OCR)
+    assert run is not None
+    assert events.count("release") == 1
+    if outcome == "complete":
+        assert events == ["read", "read", "release", "commit", "objects", "objects"]
+        assert run.state is StageState.COMPLETE
+    else:
+        assert "commit" not in events
+        assert run.state is StageState.FAILED
+        assert run.error_code == (
+            "ocr_provider_failed"
+            if outcome == "provider_failure"
+            else "scene_dependency_unavailable"
+        )
+    video = repository.get_video("video-1")
+    assert video is not None and video.status == "ready"
+
+
+def test_ocr_release_runs_when_stage_creation_is_cancelled(
+    ocr_indexer: Indexer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    releases: list[bool] = []
+
+    class ReleasableOCR(FakeOCR):
+        def release_ingestion_resources(self) -> None:
+            releases.append(True)
+
+    def cancelled(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        raise JobCancelled("cancelled before OCR stage creation")
+
+    ocr_indexer.ocr = ReleasableOCR()
+    monkeypatch.setattr(ocr_indexer, "_create_running_stage", cancelled)
+    with pytest.raises(JobCancelled):
+        ocr_indexer._index_ocr(
+            "video-1",
+            [],
+            scenes_available=True,
+            specifications=ocr_indexer.specification_resolver(),
+            warnings=[],
+        )
+    assert releases == [True]
+
+
+def test_legacy_ocr_release_failure_preserves_active_generation_and_stops_later_stages(
+    ocr_indexer: Indexer,
+) -> None:
+    ocr_indexer.process("video-1")
+    repository = ocr_indexer.repository
+    prior_ocr = repository.get_active_segment_generation("video-1", StageKind.OCR)
+    prior_text_run = repository.get_latest_stage_run("video-1", StageKind.TEXT_VECTORS)
+    assert prior_ocr is not None and prior_text_run is not None
+
+    class FailingReleaseOCR(FakeOCR):
+        def release_ingestion_resources(self) -> None:
+            raise RuntimeError("OCR ingestion resource release failed")
+
+    ocr_indexer.ocr = FailingReleaseOCR()
+    with pytest.raises(RuntimeError, match="OCR ingestion resource release failed"):
+        ocr_indexer.process("video-1")
+
+    failed = repository.get_latest_stage_run("video-1", StageKind.OCR)
+    assert failed is not None and failed.state is StageState.FAILED
+    assert failed.error_code == "ocr_resource_release_failed"
+    assert failed.output_generation is None
+    assert repository.get_active_segment_generation("video-1", StageKind.OCR) == prior_ocr
+    assert repository.get_latest_stage_run(
+        "video-1", StageKind.TEXT_VECTORS
+    ) == prior_text_run
+    video = repository.get_video("video-1")
+    assert video is not None and video.status == "failed"

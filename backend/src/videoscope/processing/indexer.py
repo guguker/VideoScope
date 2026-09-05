@@ -775,7 +775,8 @@ class Indexer:
         warnings: list[str],
         context: VideoIndexExecutionContext | None = None,
     ) -> None:
-        if self.ocr is None:
+        provider = self.ocr
+        if provider is None:
             self._record_not_configured(
                 video_id,
                 specifications,
@@ -783,12 +784,71 @@ class Indexer:
                 context=context,
             )
             return
-        run = self._create_running_stage(
-            video_id,
-            specifications,
-            StageKind.OCR,
-            context=context,
-        )
+        run: StageRun | None = None
+        candidates: list[SegmentRecord] | None = None
+        stage_error: Exception | None = None
+        try:
+            run = self._create_running_stage(
+                video_id,
+                specifications,
+                StageKind.OCR,
+                context=context,
+            )
+            if scenes_available:
+                candidates = []
+                for index, (start, end, frame_path) in enumerate(frame_paths):
+                    unique: dict[str, tuple[str, float]] = {}
+                    self._checkpoint(context, progress=0.52, stage="vision")
+                    for text, confidence in provider.read(frame_path):
+                        normalized = " ".join(text.split()).strip()
+                        key = normalized.casefold()
+                        if len(key) < 2:
+                            continue
+                        current = unique.get(key)
+                        if current is None or confidence > current[1]:
+                            unique[key] = (normalized, confidence)
+                    self._checkpoint(context, progress=0.52, stage="vision")
+                    if not unique:
+                        continue
+                    ordered = list(unique.values())
+                    candidates.append(
+                        SegmentRecord(
+                            id=uuid4().hex,
+                            video_id=video_id,
+                            start=start,
+                            end=end,
+                            modality="ocr",
+                            text=" · ".join(text for text, _ in ordered),
+                            confidence=sum(confidence for _, confidence in ordered)
+                            / len(ordered),
+                            metadata={"scene_index": index, "line_count": len(ordered)},
+                            thumbnail_path=str(frame_path),
+                        )
+                    )
+        except JobCancelled:
+            raise
+        except Exception as error:
+            self._translate_job_cancellation(context, cause=error)
+            if run is None:
+                raise
+            stage_error = error
+        finally:
+            release = getattr(provider, "release_ingestion_resources", None)
+            if callable(release):
+                try:
+                    release()
+                except Exception as error:
+                    self._translate_job_cancellation(context, cause=error)
+                    if run is not None:
+                        self._record_failed(
+                            run,
+                            "ocr_resource_release_failed",
+                            error=error,
+                            context=context,
+                        )
+                    raise
+
+        assert run is not None
         if not scenes_available:
             self._record_failed(
                 run,
@@ -797,37 +857,18 @@ class Indexer:
             )
             warnings.append("ocr stage failed")
             return
+        if stage_error is not None:
+            self._record_failed(
+                run,
+                "ocr_provider_failed",
+                error=stage_error,
+                context=context,
+            )
+            warnings.append("ocr stage failed")
+            return
+        assert candidates is not None
+
         try:
-            candidates: list[SegmentRecord] = []
-            for index, (start, end, frame_path) in enumerate(frame_paths):
-                unique: dict[str, tuple[str, float]] = {}
-                self._checkpoint(context, progress=0.52, stage="vision")
-                for text, confidence in self.ocr.read(frame_path):
-                    normalized = " ".join(text.split()).strip()
-                    key = normalized.casefold()
-                    if len(key) < 2:
-                        continue
-                    current = unique.get(key)
-                    if current is None or confidence > current[1]:
-                        unique[key] = (normalized, confidence)
-                self._checkpoint(context, progress=0.52, stage="vision")
-                if not unique:
-                    continue
-                ordered = list(unique.values())
-                candidates.append(
-                    SegmentRecord(
-                        id=uuid4().hex,
-                        video_id=video_id,
-                        start=start,
-                        end=end,
-                        modality="ocr",
-                        text=" · ".join(text for text, _ in ordered),
-                        confidence=sum(confidence for _, confidence in ordered)
-                        / len(ordered),
-                        metadata={"scene_index": index, "line_count": len(ordered)},
-                        thumbnail_path=str(frame_path),
-                    )
-                )
             self._verify_run_specification(run, context=context)
             self._checkpoint(context, progress=0.58, stage="vision")
             self.repository.commit_segment_generation(
