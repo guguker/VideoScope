@@ -278,11 +278,13 @@ class Runtime:
     video_index_plan_factory: Callable[[], VideoIndexPlanSnapshot] | None = None
     legacy_job_adopter: Callable[[], object] | None = None
     text_embedding_runtime: ReviewedSemanticEmbeddingRuntime | None = None
+    ocr_reader: PaddleOCRReader | None = None
     _started: bool = field(default=False, init=False, repr=False)
     _closed: bool = field(default=False, init=False, repr=False)
     _shutdown_lock: Lock = field(default_factory=Lock, init=False, repr=False)
     _shutdown_complete: Event = field(default_factory=Event, init=False, repr=False)
     _shutdown_reaper: Thread | None = field(default=None, init=False, repr=False)
+    _ocr_reader_closed: bool = field(default=False, init=False, repr=False)
     _generation_store_closed: bool = field(default=False, init=False, repr=False)
     _text_embedding_runtime_closed: bool = field(
         default=False,
@@ -320,6 +322,14 @@ class Runtime:
     def _finalize_ownership(self) -> bool:
         if self._shutdown_complete.is_set():
             return True
+        if not self._ocr_reader_closed:
+            try:
+                if self.ocr_reader is not None:
+                    self.ocr_reader.close()
+            except Exception:
+                logger.exception("Runtime OCR cleanup failed; ownership retained")
+                return False
+            self._ocr_reader_closed = True
         if not self._generation_store_closed:
             try:
                 self.generation_store.close()
@@ -1438,6 +1448,7 @@ def build_runtime(
             indexing_toolchain=resolved_toolchain,
         ),
         text_embedding_runtime=text_embedding_runtime,
+        ocr_reader=ocr,
         legacy_job_adopter=lambda: adopt_legacy_video_index_jobs(
             repository,
             plan_factory=lambda: create_video_index_plan_snapshot(

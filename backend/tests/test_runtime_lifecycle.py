@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 import stat
 from threading import Event, Thread
+from types import SimpleNamespace
 
 import pytest
 
@@ -744,6 +746,10 @@ def test_runtime_orders_recovery_before_indexing_and_releases_resources() -> Non
             events.append("embedding-close")
             return True
 
+    class RecordingOCR:
+        def close(self) -> None:
+            events.append("ocr-close")
+
     runtime = Runtime(
         queue=RecordingQueue(),  # type: ignore[arg-type]
         search=object(),  # type: ignore[arg-type]
@@ -754,6 +760,7 @@ def test_runtime_orders_recovery_before_indexing_and_releases_resources() -> Non
         generation_store=RecordingStore(),  # type: ignore[arg-type]
         legacy_job_adopter=lambda: events.append("legacy-adopt"),
         text_embedding_runtime=RecordingEmbeddingRuntime(),  # type: ignore[arg-type]
+        ocr_reader=RecordingOCR(),  # type: ignore[arg-type]
     )
 
     runtime.start()
@@ -766,13 +773,17 @@ def test_runtime_orders_recovery_before_indexing_and_releases_resources() -> Non
         "queue-start",
     ]
     assert runtime.close() is True
-    assert events[-5:] == [
+    assert events[-6:] == [
         "queue-close",
         "gc-close",
+        "ocr-close",
         "store-close",
         "embedding-close",
         "lock-close",
     ]
+    completed_events = list(events)
+    assert runtime.close() is True
+    assert events == completed_events
 
 
 def test_runtime_start_failure_releases_preacquired_ownership() -> None:
@@ -1179,3 +1190,152 @@ def test_runtime_reaper_start_failure_finishes_retries_synchronously(
 
     assert runtime.close() is True
     assert events == ["store-close:1", "store-close:2", "lock-close"]
+
+
+@pytest.mark.parametrize("pending_role", ["queue", "artifact_gc"])
+def test_runtime_waits_for_workers_before_closing_owned_ocr(pending_role: str) -> None:
+    allow_stop = Event()
+    reaper_waiting = Event()
+    ownership_released = Event()
+    events: list[str] = []
+
+    class PendingWorker:
+        def close(self, *, timeout: float | None = 5) -> bool:
+            if timeout is not None:
+                return False
+            reaper_waiting.set()
+            assert allow_stop.wait(timeout=2)
+            events.append("worker-stopped")
+            return True
+
+    def close_lock() -> None:
+        events.append("lock-close")
+        ownership_released.set()
+
+    workers = {
+        "queue": SimpleNamespace(close=lambda **_kwargs: True),
+        "artifact_gc": SimpleNamespace(close=lambda **_kwargs: True),
+    }
+    workers[pending_role] = PendingWorker()
+    runtime = Runtime(
+        **workers,  # type: ignore[arg-type]
+        search=object(),  # type: ignore[arg-type]
+        clips=object(),  # type: ignore[arg-type]
+        providers=object(),  # type: ignore[arg-type]
+        runtime_lock=SimpleNamespace(close=close_lock),  # type: ignore[arg-type]
+        generation_store=SimpleNamespace(close=lambda: events.append("store-close")),  # type: ignore[arg-type]
+        ocr_reader=SimpleNamespace(close=lambda: events.append("ocr-close")),  # type: ignore[arg-type]
+    )
+
+    try:
+        assert runtime.close() is False
+        assert reaper_waiting.wait(timeout=2)
+        assert events == []
+        assert ownership_released.is_set() is False
+    finally:
+        allow_stop.set()
+    assert ownership_released.wait(timeout=2)
+    assert runtime.close() is True
+    assert events == ["worker-stopped", "ocr-close", "store-close", "lock-close"]
+
+
+@pytest.mark.parametrize("failed_resource", ["ocr", "store"])
+def test_runtime_retries_owned_ocr_cleanup_without_repeating_success(
+    failed_resource: str,
+) -> None:
+    retry_started = Event()
+    allow_retry = Event()
+    ownership_released = Event()
+    events: list[str] = []
+    calls = {"ocr": 0, "store": 0}
+
+    def close_resource(role: str) -> None:
+        calls[role] += 1
+        if role == failed_resource:
+            if calls[role] == 1:
+                events.append(f"{role}-failed")
+                raise RuntimeError("owned resource cleanup unavailable")
+            retry_started.set()
+            assert allow_retry.wait(timeout=2)
+        events.append(f"{role}-closed")
+
+    def close_lock() -> None:
+        events.append("lock-close")
+        ownership_released.set()
+
+    runtime = Runtime(
+        queue=SimpleNamespace(close=lambda **_kwargs: True),  # type: ignore[arg-type]
+        artifact_gc=SimpleNamespace(close=lambda **_kwargs: True),  # type: ignore[arg-type]
+        search=object(),  # type: ignore[arg-type]
+        clips=object(),  # type: ignore[arg-type]
+        providers=object(),  # type: ignore[arg-type]
+        runtime_lock=SimpleNamespace(close=close_lock),  # type: ignore[arg-type]
+        generation_store=SimpleNamespace(close=lambda: close_resource("store")),  # type: ignore[arg-type]
+        ocr_reader=SimpleNamespace(close=lambda: close_resource("ocr")),  # type: ignore[arg-type]
+    )
+
+    try:
+        assert runtime.close() is False
+        assert retry_started.wait(timeout=2)
+        assert ownership_released.is_set() is False
+        assert events == (
+            ["ocr-failed"]
+            if failed_resource == "ocr"
+            else ["ocr-closed", "store-failed"]
+        )
+    finally:
+        allow_retry.set()
+    assert ownership_released.wait(timeout=2)
+    assert runtime.close() is True
+    assert calls == {
+        "ocr": 2 if failed_resource == "ocr" else 1,
+        "store": 2 if failed_resource == "store" else 1,
+    }
+    assert events[-1] == "lock-close"
+
+
+@pytest.mark.parametrize("ocr_ready", [False, True])
+def test_build_runtime_owns_its_exact_ocr_reader_even_when_unavailable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    ocr_ready: bool,
+) -> None:
+    import videoscope.runtime as runtime_module
+    from videoscope.config import AppSettings
+    from videoscope.providers.base import ProviderState, ProviderStatus
+    from videoscope.repository import Repository
+
+    settings = AppSettings(
+        _env_file=None,
+        data_dir=tmp_path / "data",
+        ocr_worker_python=tmp_path / "missing-ocr-python",
+        ocr_worker_script=Path(__file__).parents[2] / "scripts/paddle-ocr-worker.py",
+    )
+    settings.ensure_directories()
+    repository = Repository(settings.database_path)
+    repository.initialize()
+    closed: list[object] = []
+    state = ProviderState.READY if ocr_ready else ProviderState.NEEDS_CONFIGURATION
+    ocr = SimpleNamespace(
+        id="paddleocr",
+        status=lambda: ProviderStatus("paddleocr", "PaddleOCR", state, "fixture"),
+        close=lambda: closed.append(ocr),
+    )
+    monkeypatch.setattr(runtime_module, "PaddleOCRReader", lambda **_kwargs: ocr)
+    toolchain = SimpleNamespace(
+        verify_current=lambda: "sha256:" + "a" * 64,
+        create_ffmpeg=runtime_module.FFmpeg,
+    )
+    runtime = runtime_module.build_runtime(
+        settings,
+        repository,
+        indexing_toolchain=toolchain,  # type: ignore[arg-type]
+    )
+    try:
+        assert runtime.ocr_reader is ocr
+        assert runtime.queue.indexer.ocr is (ocr if ocr_ready else None)
+    finally:
+        assert runtime.close() is True
+    assert closed == [ocr]
+    assert runtime.close() is True
+    assert closed == [ocr]

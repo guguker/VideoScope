@@ -164,6 +164,11 @@ before a job completes.
   media inference uses a private verified copy, and the pinned request-level
   model cache is cleared after every outcome; see
   `docs/whisper-worker.md`.
+- OCR children are scoped to the ingestion stage and must exit before its
+  generation is published. Retirement failure aborts the job and retains the
+  previous release; Runtime shutdown also closes its owned OCR reader before
+  releasing storage ownership. See
+  `docs/benchmarks/phase0/ocr-lifecycle-control.md`.
 - Qwen runs locally through MLX in an authenticated loopback-only worker with a
   dedicated locked environment. The backend shares only one-use files under
   `data/tmp`, never arbitrary library paths.

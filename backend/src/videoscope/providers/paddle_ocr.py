@@ -633,6 +633,7 @@ class PaddleOCRReader:
         self._model = None
         self._prepared_contract: _PreparedOCRContract | None = None
         self._worker_process: subprocess.Popen[bytes] | None = None
+        self._worker_retirement_pending = False
         self._worker_bundle_directory: Path | None = None
         self._worker_frame_directory: Path | None = None
         self._worker_lock = threading.Lock()
@@ -1018,9 +1019,11 @@ class PaddleOCRReader:
         process: subprocess.Popen[bytes] | None = None,
     ) -> None:
         active = process or self._worker_process
-        if process is None or process is self._worker_process:
-            self._worker_process = None
         if active is not None:
+            # Keep ownership until exit is confirmed. A failed kill must not
+            # leave an untracked child or allow reuse of its closed protocol.
+            self._worker_process = active
+            self._worker_retirement_pending = True
             for pipe_name in ("stdin", "stdout"):
                 pipe = getattr(active, pipe_name, None)
                 close = getattr(pipe, "close", None)
@@ -1031,20 +1034,24 @@ class PaddleOCRReader:
                         pass
             try:
                 if active.poll() is None:
-                    active.terminate()
                     try:
+                        active.terminate()
                         active.wait(timeout=2)
-                    except subprocess.TimeoutExpired:
-                        active.kill()
-                        active.wait(timeout=2)
+                    except (OSError, subprocess.SubprocessError):
+                        if active.poll() is None:
+                            active.kill()
+                            active.wait(timeout=2)
+                if active.poll() is None:
+                    raise RuntimeError("PaddleOCR worker retirement failed")
             except (OSError, subprocess.SubprocessError):
-                try:
-                    active.kill()
-                except (OSError, subprocess.SubprocessError):
-                    pass
+                raise RuntimeError("PaddleOCR worker retirement failed") from None
+        self._worker_process = None
+        self._worker_retirement_pending = False
         self._cleanup_private_bundle()
 
     def _load_worker(self) -> subprocess.Popen[bytes]:
+        if self._worker_retirement_pending:
+            self._discard_worker()
         try:
             prepared = self._ensure_contract_current()
         except ValueError as error:
@@ -1111,6 +1118,10 @@ class PaddleOCRReader:
     def close(self) -> None:
         with self._worker_lock:
             self._discard_worker()
+
+    def release_ingestion_resources(self) -> None:
+        """Retire the stage's child; the next indexing stage may load afresh."""
+        self.close()
 
     def _validated_worker_items(self, items: object) -> list[tuple[str, float]]:
         if not isinstance(items, list) or len(items) > MAX_OCR_ITEMS:

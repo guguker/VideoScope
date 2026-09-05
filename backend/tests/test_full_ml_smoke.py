@@ -182,8 +182,16 @@ class _OCR:
         "script_sha256": "1" * 64,
     }
 
-    def __init__(self, events: list[str]) -> None:
+    def __init__(
+        self,
+        events: list[str],
+        *,
+        read_outcome: str = "complete",
+        fail_ingestion_release: bool = False,
+    ) -> None:
         self.events = events
+        self.read_outcome = read_outcome
+        self.fail_ingestion_release = fail_ingestion_release
 
     def status(self) -> SimpleNamespace:
         self.events.append("ocr.status")
@@ -192,7 +200,16 @@ class _OCR:
     def read(self, image: Path) -> list[tuple[str, float]]:
         self.events.append("ocr.read")
         assert image.is_file()
+        if self.read_outcome == "failed":
+            raise RuntimeError("private OCR request diagnostics")
+        if self.read_outcome == "invalid":
+            return None  # type: ignore[return-value]
         return []
+
+    def release_ingestion_resources(self) -> None:
+        self.events.append("ocr.release_ingestion_resources")
+        if self.fail_ingestion_release:
+            raise RuntimeError("private OCR worker release diagnostics")
 
     def close(self) -> None:
         self.events.append("ocr.close")
@@ -451,6 +468,8 @@ def _dependencies(
     fail_image: bool = False,
     oom_image: bool = False,
     fail_ingestion_release: bool = False,
+    ocr_read_outcome: str = "complete",
+    fail_ocr_ingestion_release: bool = False,
 ) -> object:
     toolchain = _Toolchain(events)
 
@@ -498,7 +517,11 @@ def _dependencies(
                 fail_ingestion_release=fail_ingestion_release,
             ),
             whisper=_Whisper(events),
-            ocr=_OCR(events),
+            ocr=_OCR(
+                events,
+                read_outcome=ocr_read_outcome,
+                fail_ingestion_release=fail_ocr_ingestion_release,
+            ),
             lighthouse=_Lighthouse(events),
             qwen=_Qwen(events),
         ),
@@ -902,6 +925,7 @@ def test_component_smoke_is_sequential_pathless_and_completes_product_path(
         "whisper.transcribe",
         "ocr.status",
         "ocr.read",
+        "ocr.release_ingestion_resources",
         "lighthouse.status",
         "lighthouse.build",
         "lighthouse.search",
@@ -1020,6 +1044,84 @@ def test_vision_ingestion_release_failure_is_infrastructure_and_stops_before_whi
         "vision.text",
         "vision.detect",
         "vision.release_ingestion_resources",
+        "ocr.close",
+        "toolchain.verify.post",
+        "workers.close",
+    ]
+
+
+@pytest.mark.parametrize("read_outcome", ["complete", "failed", "invalid"])
+def test_ocr_ingestion_release_failure_stops_before_lighthouse(
+    tmp_path: Path,
+    read_outcome: str,
+) -> None:
+    script = _load_script()
+    root = tmp_path / "smoke"
+    root.mkdir(mode=0o700)
+    models_root = _models_root(tmp_path)
+    events: list[str] = []
+
+    with pytest.raises(script.SmokeInfrastructureError) as captured:
+        script.execute(
+            root,
+            models_root=models_root,
+            environ=_offline_environment(root, models_root),
+            dependencies=_dependencies(
+                script,
+                events,
+                ocr_read_outcome=read_outcome,
+                fail_ocr_ingestion_release=True,
+            ),
+        )
+
+    assert captured.value.code == "ingestion_resource_release_failed"
+    assert captured.value.component == "ocr"
+    assert captured.value.kind == "infrastructure"
+    assert "private OCR" not in str(captured.value)
+    assert "lighthouse.status" not in events
+    assert "product.integration" not in events
+    assert events[-5:] == [
+        "ocr.read",
+        "ocr.release_ingestion_resources",
+        "ocr.close",
+        "toolchain.verify.post",
+        "workers.close",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("read_outcome", "error_code"),
+    [("failed", "read_failed"), ("invalid", "read_contract_invalid")],
+)
+def test_ocr_read_failure_still_releases_ingestion_resources(
+    tmp_path: Path,
+    read_outcome: str,
+    error_code: str,
+) -> None:
+    script = _load_script()
+    root = tmp_path / "smoke"
+    root.mkdir(mode=0o700)
+    models_root = _models_root(tmp_path)
+    events: list[str] = []
+
+    with pytest.raises(script.SmokeError) as captured:
+        script.execute(
+            root,
+            models_root=models_root,
+            environ=_offline_environment(root, models_root),
+            dependencies=_dependencies(
+                script,
+                events,
+                ocr_read_outcome=read_outcome,
+            ),
+        )
+
+    assert captured.value.code == error_code
+    assert captured.value.component == "ocr"
+    assert "lighthouse.status" not in events
+    assert events[-5:] == [
+        "ocr.read",
+        "ocr.release_ingestion_resources",
         "ocr.close",
         "toolchain.verify.post",
         "workers.close",

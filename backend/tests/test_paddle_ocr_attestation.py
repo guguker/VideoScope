@@ -565,6 +565,99 @@ def test_reader_explicit_worker_environment_never_inherits_hostile_ambient(
     reader.close()
 
 
+def test_reader_stage_release_retires_worker_and_next_stage_reloads(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    reader, _script, _python = _reader_fixture(tmp_path)
+    first, second = _FakeProcess(_hello(reader)), _FakeProcess(_hello(reader))
+    processes = deque([first, second])
+    monkeypatch.setattr(paddle_module.subprocess, "Popen", lambda *a, **k: processes.popleft())
+    image = tmp_path / "frame.png"
+    image.write_bytes(_png_bytes())
+    assert reader.read(image) == [("SCORE 90", 0.96)]
+    reader.release_ingestion_resources()
+    reader.release_ingestion_resources()
+    assert first.terminated
+    assert reader._worker_process is None
+    assert reader.read(image) == [("SCORE 90", 0.96)]
+    assert reader._worker_process is second
+    reader.close()
+
+
+@pytest.mark.parametrize("failure", ["timeout", "signal"])
+def test_reader_retains_failed_retirement_and_never_reuses_worker(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, failure: str,
+) -> None:
+    reader, _script, _python = _reader_fixture(tmp_path)
+
+    class StubbornProcess(_FakeProcess):
+        can_exit = False
+
+        def terminate(self) -> None:
+            self.terminated = True
+            if failure == "signal" and not self.can_exit:
+                raise OSError("private signal failure")
+
+        def kill(self) -> None:
+            self.killed = True
+            if failure == "signal" and not self.can_exit:
+                raise OSError("private kill failure")
+
+        def wait(self, timeout: float | None = None) -> int:
+            if not self.can_exit:
+                raise subprocess.TimeoutExpired("private worker", timeout)
+            self.returncode = -9
+            return self.returncode
+
+    process = StubbornProcess(_hello(reader))
+    monkeypatch.setattr(paddle_module.subprocess, "Popen", lambda *a, **k: process)
+    image = tmp_path / "frame.png"
+    image.write_bytes(_png_bytes())
+    assert reader.read(image)
+    bundle = reader._worker_bundle_directory
+    assert bundle is not None
+    with pytest.raises(RuntimeError, match="OCR worker retirement failed"):
+        reader.close()
+    assert reader._worker_process is process
+    assert bundle.is_dir()
+    writes = len(process.stdin.writes)
+    with pytest.raises(RuntimeError, match="OCR worker retirement failed"):
+        reader.read(image)
+    assert len(process.stdin.writes) == writes
+    process.can_exit = True
+    reader.close()
+    assert reader._worker_process is None
+    assert not bundle.exists()
+
+
+def test_reader_waits_for_killed_worker_before_discarding_ownership(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    reader, _script, _python = _reader_fixture(tmp_path)
+    events: list[str] = []
+
+    class SlowProcess(_FakeProcess):
+        def terminate(self) -> None:
+            events.append("terminate")
+
+        def kill(self) -> None:
+            events.append("kill")
+
+        def wait(self, timeout: float | None = None) -> int:
+            assert reader._worker_process is self
+            events.append("wait")
+            if "kill" not in events:
+                raise subprocess.TimeoutExpired("worker", timeout)
+            self.returncode = -9
+            return self.returncode
+
+    process = SlowProcess(_hello(reader))
+    reader._worker_process = process  # type: ignore[assignment]
+    reader.close()
+    assert events == ["terminate", "wait", "kill", "wait"]
+    assert reader._worker_process is None
+
+
 def test_reader_rejects_explicit_override_of_attested_protocol_environment(
     tmp_path: Path,
 ) -> None:
