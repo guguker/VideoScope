@@ -205,7 +205,9 @@ FastEmbed and Qdrant have separate bounded, no-follow private snapshot paths.
 The FastEmbed copy is restricted to the reviewed byte manifest for the pinned
 model, and Qdrant is opened as an existing read-only snapshot whose generation
 payloads are validated for benchmark use. The FastEmbed path additionally
-rejects files outside its exact allowlist. Source/scratch overlap,
+selects the exact immutable `snapshots/<revision>` directory from the cache; it
+never treats the mutable cache root or `refs/main` as model input, and rejects
+files outside its exact allowlist. Source/scratch overlap,
 symbolic-link escapes, unstable inputs, and incomplete cleanup fail closed.
 The CLI composes these owners in a fixed order and does not publish until every
 owner reports a complete close.

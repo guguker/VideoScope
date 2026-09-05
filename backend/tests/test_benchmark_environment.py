@@ -29,6 +29,19 @@ from videoscope.runtime import build_runtime
 _SHA_A = "a" * 64
 _SHA_B = "b" * 64
 _SHA_C = "c" * 64
+_FASTEMBED_REPOSITORY_DIRECTORY = (
+    "models--xenova--paraphrase-multilingual-mpnet-base-v2"
+)
+_FASTEMBED_REVISION = "e5d116277351513fd260955ece953ecddde7046e"
+
+
+def _fastembed_snapshot_root(cache_root: Path) -> Path:
+    return (
+        cache_root
+        / _FASTEMBED_REPOSITORY_DIRECTORY
+        / "snapshots"
+        / _FASTEMBED_REVISION
+    )
 
 
 class _ExternalModelsSettings(AppSettings):
@@ -260,7 +273,8 @@ def environment_fakes(
     events: list[str] = []
     data_dir = tmp_path / "product" / "data"
     media_root = data_dir / "media"
-    fastembed_root = data_dir / "models" / "fastembed"
+    fastembed_cache_root = data_dir / "models" / "fastembed"
+    fastembed_root = _fastembed_snapshot_root(fastembed_cache_root)
     qdrant_root = data_dir / "qdrant" / "text"
     media_root.mkdir(parents=True)
     fastembed_root.mkdir(parents=True)
@@ -301,7 +315,13 @@ def environment_fakes(
         del manifest
         events.append("fastembed.snapshot")
         state.fastembed_source = source
-        assert getattr(source, "parts") == ("models", "fastembed")
+        assert getattr(source, "parts") == (
+            "models",
+            "fastembed",
+            _FASTEMBED_REPOSITORY_DIRECTORY,
+            "snapshots",
+            _FASTEMBED_REVISION,
+        )
         assert getattr(source, "root").logical_path == data_dir.absolute()
         assert (getattr(source, "stable_path") / "model.sentinel").read_bytes() == b"model"
         assert getattr(scratch, "logical_path").parent == scratch_parent.absolute()
@@ -353,6 +373,7 @@ def environment_fakes(
         lambda: SimpleNamespace(
             model_content_sha256=_SHA_B,
             model_name="sentence-transformers/paraphrase-multilingual-mpnet-base-v2",
+            model_revision=_FASTEMBED_REVISION,
             dimensions=768,
         ),
     )
@@ -472,7 +493,7 @@ def test_external_reviewed_fastembed_source_is_retained_exactly_and_released_aft
 ) -> None:
     state = environment_fakes
     immutable_models = tmp_path / "reviewed-models"
-    external_fastembed = immutable_models / "fastembed"
+    external_fastembed = _fastembed_snapshot_root(immutable_models / "fastembed")
     external_fastembed.mkdir(parents=True)
     (external_fastembed / "model.sentinel").write_bytes(b"reviewed external model")
     settings = _ExternalModelsSettings(
@@ -527,7 +548,8 @@ def test_external_reviewed_fastembed_source_is_retained_exactly_and_released_aft
     with pytest.raises(OSError):
         os.fstat(opened_source_descriptors[0])
     assert (
-        state.settings.models_dir / "fastembed" / "model.sentinel"
+        _fastembed_snapshot_root(state.settings.models_dir / "fastembed")
+        / "model.sentinel"
     ).read_bytes() == b"model"
 
     environment.close()
@@ -542,7 +564,7 @@ def test_external_fastembed_source_capability_is_released_when_snapshot_fails(
 ) -> None:
     state = environment_fakes
     immutable_models = tmp_path / "reviewed-models"
-    external_fastembed = immutable_models / "fastembed"
+    external_fastembed = _fastembed_snapshot_root(immutable_models / "fastembed")
     external_fastembed.mkdir(parents=True)
     (external_fastembed / "model.sentinel").write_bytes(b"reviewed external model")
     settings = _ExternalModelsSettings(
@@ -581,7 +603,7 @@ def test_external_fastembed_retention_failure_closes_the_opened_source_descripto
 ) -> None:
     state = environment_fakes
     immutable_models = tmp_path / "reviewed-models"
-    external_fastembed = immutable_models / "fastembed"
+    external_fastembed = _fastembed_snapshot_root(immutable_models / "fastembed")
     external_fastembed.mkdir(parents=True)
     settings = _ExternalModelsSettings(
         _env_file=None,
@@ -1359,7 +1381,9 @@ def test_product_root_replacement_after_retention_cannot_mix_component_bytes(
         manifest: object,
     ) -> object:
         lexical_data.rename(moved_data)
-        replacement_model = lexical_data / "models" / "fastembed"
+        replacement_model = _fastembed_snapshot_root(
+            lexical_data / "models" / "fastembed"
+        )
         replacement_qdrant = lexical_data / "qdrant" / "text"
         replacement_media = lexical_data / "media"
         replacement_model.mkdir(parents=True)
@@ -1394,7 +1418,10 @@ def test_product_root_replacement_after_retention_cannot_mix_component_bytes(
         Path(getattr(state.qdrant_source, "stable_path")) / "index.sentinel"
     ).read_bytes() == b"index"
     assert (
-        Path("product/data/models/fastembed/model.sentinel").read_bytes()
+        (
+            _fastembed_snapshot_root(Path("product/data/models/fastembed"))
+            / "model.sentinel"
+        ).read_bytes()
         == b"replacement model"
     )
 

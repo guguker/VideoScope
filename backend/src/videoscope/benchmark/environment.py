@@ -16,7 +16,11 @@ from typing import Literal, Self
 from videoscope.config import AppSettings
 from videoscope.indexing_attestation import attest_indexing_toolchain
 from videoscope.media.ffmpeg import FFmpeg
-from videoscope.model_manifest import model_identity, model_revision
+from videoscope.model_manifest import (
+    fastembed_cache_snapshot_path,
+    model_identity,
+    model_revision,
+)
 from videoscope.providers.lighthouse_worker import LighthouseWorkerClient
 from videoscope.providers.qwen_video import QwenVideoReranker
 from videoscope.providers.qwen_worker import QwenWorkerClient
@@ -1305,9 +1309,9 @@ def open_product_benchmark_environment(
     )
     data_dir = _absolute_path(settings.data_dir, label="product data")
     models_dir = _absolute_path(settings.models_dir, label="product models")
-    fastembed_source_path = _absolute_path(
+    fastembed_cache_root = _absolute_path(
         models_dir / "fastembed",
-        label="FastEmbed model source",
+        label="FastEmbed model cache",
     )
     # Freeze every derived product path against one canonical data root. This
     # keeps validated relative settings independent from later cwd changes.
@@ -1379,6 +1383,22 @@ def open_product_benchmark_environment(
             raise BenchmarkEnvironmentError(
                 "reviewed FastEmbed manifest differs from validated settings"
             )
+        fastembed_candidate = fastembed_cache_snapshot_path(
+            fastembed_cache_root,
+            resolved_settings.text_embedding_model,
+        )
+        if (
+            fastembed_candidate is None
+            or fastembed_candidate.name
+            != getattr(manifest, "model_revision", None)
+        ):
+            raise BenchmarkEnvironmentError(
+                "reviewed FastEmbed snapshot binding is unavailable"
+            )
+        fastembed_source_path = _absolute_path(
+            fastembed_candidate,
+            label="FastEmbed model source",
+        )
         try:
             fastembed_relative = fastembed_source_path.relative_to(data_dir)
         except ValueError:
