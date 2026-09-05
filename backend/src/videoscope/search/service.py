@@ -1802,6 +1802,7 @@ class SearchService:
 class _PinnedAssetState:
     binding: SearchAssetBinding
     video_fingerprint: tuple[object, ...]
+    external_release_bound: bool | None
     text_state: str
     active_text_generation_id: str | None
     text_binding: TextVectorSearchBinding | None
@@ -1928,6 +1929,16 @@ class PinnedProductSearchSession:
             self._pin_temporal_refiner()
         )
         self._reranker_state, self._reranker_attestation = self._pin_reranker()
+        self._external_release = (
+            self._read_external_release_snapshot(
+                tuple(asset.video_id for asset in self._assets)
+            )
+            if (
+                self.configuration.visual_search != "disabled"
+                or self.configuration.lighthouse
+            )
+            else None
+        )
         budget = _BenchmarkSessionBudget()
         pinned_states: list[_PinnedAssetState] = []
         for asset in self._assets:
@@ -2536,6 +2547,108 @@ class PinnedProductSearchSession:
         except (TypeError, ValueError):
             return None
 
+    def _read_external_release_snapshot(
+        self,
+        video_ids: tuple[str, ...],
+    ) -> ExternalIndexReleaseSnapshot:
+        selected = frozenset(video_ids)
+        if (
+            not video_ids
+            or len(selected) != len(video_ids)
+            or any(type(video_id) is not str or not video_id for video_id in video_ids)
+        ):
+            raise SearchDependencyError("external release scope is invalid")
+        try:
+            raw = self._service.repository.get_external_index_release_snapshot(
+                video_ids
+            )
+        except Exception as error:
+            raise SearchDependencyError(
+                "external index release snapshot is unavailable"
+            ) from error
+        if (
+            not isinstance(raw, ExternalIndexReleaseSnapshot)
+            or type(raw.job_backed_video_ids) is not frozenset
+            or not raw.job_backed_video_ids <= selected
+            or any(type(video_id) is not str for video_id in raw.job_backed_video_ids)
+            or type(raw.visual_dense) is not dict
+            or type(raw.lighthouse) is not dict
+        ):
+            raise SearchDependencyError("external index release snapshot is invalid")
+        normalized: dict[StageKind, dict[str, dict[str, object]]] = {}
+        for kind, bindings in (
+            (StageKind.VISUAL_DENSE, raw.visual_dense),
+            (StageKind.LIGHTHOUSE, raw.lighthouse),
+        ):
+            if any(
+                type(video_id) is not str
+                or video_id not in raw.job_backed_video_ids
+                or type(descriptor) is not dict
+                for video_id, descriptor in bindings.items()
+            ):
+                raise SearchDependencyError(
+                    "external index release snapshot is invalid"
+                )
+            normalized[kind] = {
+                video_id: dict(descriptor)
+                for video_id, descriptor in bindings.items()
+            }
+        return ExternalIndexReleaseSnapshot(
+            job_backed_video_ids=frozenset(raw.job_backed_video_ids),
+            visual_dense=normalized[StageKind.VISUAL_DENSE],
+            lighthouse=normalized[StageKind.LIGHTHOUSE],
+        )
+
+    def _pin_released_generation_provider(
+        self,
+        provider: object | None,
+        binding: SearchAssetBinding,
+        released_descriptor: object,
+        *,
+        content_field: str,
+        check_readiness: bool = True,
+    ) -> tuple[str, str | None, str | None]:
+        if provider is None:
+            return "not_configured", None, None
+        if check_readiness and not self._provider_is_ready(
+            provider,
+            check_index=False,
+        ):
+            return "not_configured", None, None
+        descriptor = getattr(provider, "generation_descriptor", None)
+        search_generations = getattr(provider, "search_generations", None)
+        if not all(callable(item) for item in (descriptor, search_generations)):
+            return "not_configured", None, None
+        if released_descriptor is None:
+            return "missing", None, None
+        generation_id = (
+            released_descriptor.get("generation_id")
+            if isinstance(released_descriptor, dict)
+            else None
+        )
+        if type(generation_id) is not str:
+            return "stale", None, None
+        released_json = self._validated_descriptor(
+            released_descriptor,
+            binding,
+            generation_id=generation_id,
+            content_field=content_field,
+        )
+        if released_json is None:
+            return "stale", generation_id, None
+        try:
+            current_json = self._validated_descriptor(
+                descriptor(binding.video_id, generation_id),
+                binding,
+                generation_id=generation_id,
+                content_field=content_field,
+            )
+        except Exception:
+            return "failed", generation_id, None
+        if current_json != released_json:
+            return "stale", generation_id, None
+        return "complete", generation_id, released_json
+
     def _pin_generation_provider(
         self,
         provider: object | None,
@@ -2772,11 +2885,27 @@ class PinnedProductSearchSession:
             verify_content=True,
         )
         text_state, text_id, text_binding, segments = self._pin_text(binding)
+        external_release = self._external_release
+        external_release_bound = (
+            binding.video_id in external_release.job_backed_video_ids
+            if external_release is not None
+            else None
+        )
         if self.configuration.visual_search == "disabled":
             visual_state, visual_id, visual_descriptor = (
                 "not_configured",
                 None,
                 None,
+            )
+        elif external_release_bound:
+            assert external_release is not None
+            visual_state, visual_id, visual_descriptor = (
+                self._pin_released_generation_provider(
+                    self._service.visual_search,
+                    binding,
+                    external_release.visual_dense.get(binding.video_id),
+                    content_field="content_sha256",
+                )
             )
         else:
             visual_state, visual_id, visual_descriptor = self._pin_generation_provider(
@@ -2790,6 +2919,16 @@ class PinnedProductSearchSession:
                 None,
                 None,
             )
+        elif external_release_bound:
+            assert external_release is not None
+            lighthouse_state, lighthouse_id, lighthouse_descriptor = (
+                self._pin_released_generation_provider(
+                    self._service.moment_search,
+                    binding,
+                    external_release.lighthouse.get(binding.video_id),
+                    content_field="manifest_sha256",
+                )
+            )
         else:
             lighthouse_state, lighthouse_id, lighthouse_descriptor = (
                 self._pin_generation_provider(
@@ -2801,6 +2940,7 @@ class PinnedProductSearchSession:
         return _PinnedAssetState(
             binding=binding,
             video_fingerprint=fingerprint,
+            external_release_bound=external_release_bound,
             text_state=text_state,
             active_text_generation_id=text_id,
             text_binding=text_binding,
@@ -2862,6 +3002,7 @@ class PinnedProductSearchSession:
         self,
         state: _PinnedAssetState,
         *,
+        external_release: ExternalIndexReleaseSnapshot | None,
         verify_persisted_content: bool = True,
     ) -> bool:
         try:
@@ -2870,6 +3011,14 @@ class PinnedProductSearchSession:
                 verify_content=False,
             ) != state.video_fingerprint:
                 return False
+            if state.external_release_bound is not None:
+                if external_release is None:
+                    return False
+                if (
+                    state.binding.video_id
+                    in external_release.job_backed_video_ids
+                ) != state.external_release_bound:
+                    return False
             if self.configuration.text_search != "disabled":
                 if state.text_state != "not_configured":
                     active_id = (
@@ -2912,11 +3061,27 @@ class PinnedProductSearchSession:
                         ):
                             return False
             if self.configuration.visual_search != "disabled":
-                current_visual = self._pin_generation_provider(
-                    self._service.visual_search,
-                    state.binding,
-                    content_field="content_sha256",
-                    check_readiness=False,
+                current_visual = (
+                    self._pin_released_generation_provider(
+                        self._service.visual_search,
+                        state.binding,
+                        (
+                            external_release.visual_dense.get(
+                                state.binding.video_id
+                            )
+                            if external_release is not None
+                            else None
+                        ),
+                        content_field="content_sha256",
+                        check_readiness=False,
+                    )
+                    if state.external_release_bound
+                    else self._pin_generation_provider(
+                        self._service.visual_search,
+                        state.binding,
+                        content_field="content_sha256",
+                        check_readiness=False,
+                    )
                 )
                 if current_visual != (
                     state.visual_state,
@@ -2925,11 +3090,27 @@ class PinnedProductSearchSession:
                 ):
                     return False
             if self.configuration.lighthouse:
-                current_lighthouse = self._pin_generation_provider(
-                    self._service.moment_search,
-                    state.binding,
-                    content_field="manifest_sha256",
-                    check_readiness=False,
+                current_lighthouse = (
+                    self._pin_released_generation_provider(
+                        self._service.moment_search,
+                        state.binding,
+                        (
+                            external_release.lighthouse.get(
+                                state.binding.video_id
+                            )
+                            if external_release is not None
+                            else None
+                        ),
+                        content_field="manifest_sha256",
+                        check_readiness=False,
+                    )
+                    if state.external_release_bound
+                    else self._pin_generation_provider(
+                        self._service.moment_search,
+                        state.binding,
+                        content_field="manifest_sha256",
+                        check_readiness=False,
+                    )
                 )
                 if current_lighthouse != (
                     state.lighthouse_state,
@@ -2983,6 +3164,19 @@ class PinnedProductSearchSession:
             return False
         return True
 
+    def _current_external_release_for_states(
+        self,
+        states: Iterable[_PinnedAssetState],
+    ) -> ExternalIndexReleaseSnapshot | None:
+        video_ids = tuple(
+            state.binding.video_id
+            for state in states
+            if state.external_release_bound is not None
+        )
+        if not video_ids:
+            return None
+        return self._read_external_release_snapshot(video_ids)
+
     def capability_state(self, video_id: str, capability: str) -> str:
         self._ensure_open()
         if type(video_id) is not str or video_id not in self._state_by_video:
@@ -2990,7 +3184,14 @@ class PinnedProductSearchSession:
         if capability not in self._CAPABILITIES:
             raise ValueError("unsupported product search capability")
         state = self._state_by_video[video_id]
-        if not self._state_is_current(state):
+        try:
+            external_release = self._current_external_release_for_states((state,))
+        except SearchDependencyError:
+            return "stale"
+        if not self._state_is_current(
+            state,
+            external_release=external_release,
+        ):
             return "stale"
         return self._capability_state_without_drift(state, capability)
 
@@ -3000,12 +3201,20 @@ class PinnedProductSearchSession:
         *,
         verify_persisted_content: bool = True,
     ) -> None:
+        states = tuple(self._state_by_video[video_id] for video_id in video_ids)
+        try:
+            external_release = self._current_external_release_for_states(states)
+        except SearchDependencyError as error:
+            raise SearchDependencyError(
+                "pinned product search snapshot changed"
+            ) from error
         if not self._provider_identities_are_current() or any(
             not self._state_is_current(
-                self._state_by_video[video_id],
+                state,
+                external_release=external_release,
                 verify_persisted_content=verify_persisted_content,
             )
-            for video_id in video_ids
+            for state in states
         ):
             raise SearchDependencyError("pinned product search snapshot changed")
 
@@ -3284,10 +3493,18 @@ class PinnedProductSearchSession:
         self._closed = True
         self._last_search_execution_trace = None
         failures: list[Exception] = []
+        try:
+            external_release = self._current_external_release_for_states(self._states)
+        except Exception as error:
+            failures.append(error)
+            # Keep checking media and provider content against the immutable
+            # opening snapshot; the release-read failure still makes close fail.
+            external_release = self._external_release
         for state in self._states:
             try:
                 if not self._state_is_current(
                     state,
+                    external_release=external_release,
                     verify_persisted_content=True,
                 ):
                     raise SearchDependencyError(
