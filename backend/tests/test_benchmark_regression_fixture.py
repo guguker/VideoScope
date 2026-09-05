@@ -4,6 +4,7 @@ from dataclasses import replace
 from hashlib import sha256
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -1027,6 +1028,171 @@ def test_owner_batch_retires_ingest_workers_runs_five_profiles_and_cleans_up(
     )
     assert persisted == receipt
     assert str(tmp_path) not in json.dumps(receipt, sort_keys=True)
+
+
+def _production_driver_id_harness(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    assets: tuple[object, ...],
+):  # type: ignore[no-untyped-def]
+    from videoscope.benchmark import regression_fixture as subject
+    from videoscope.jobs import JobState
+    from videoscope.processing import coordinator as coordinator_module
+    from videoscope.providers.lighthouse_worker import _validate_video_id
+    from videoscope import repository as repository_module
+    from videoscope import runtime as runtime_module
+    from videoscope.search.visual_index import SiglipVisualIndex
+
+    events: list[str] = []
+    submitted: list[dict[str, object]] = []
+    by_digest = {item.sha256: item for item in assets}
+
+    class Repository:
+        def __init__(self, _path: Path) -> None:
+            events.append("repository")
+
+        def initialize(self) -> None:
+            pass
+
+        def find_assets_by_sha256_bounded(self, digest, *, limit, video_id):  # type: ignore[no-untyped-def]
+            assert limit == 1
+            assert video_id == digest
+            return [by_digest[digest]]
+
+    class Runtime:
+        queue = object()
+        video_index_plan_factory = staticmethod(lambda: None)
+
+        def start(self) -> None:
+            events.append("runtime_start")
+
+        def close(self) -> bool:
+            events.append("runtime_close")
+            return True
+
+    class Coordinator:
+        def __init__(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
+            pass
+
+        def create_ingest(self, **kwargs):  # type: ignore[no-untyped-def]
+            video_id = kwargs["video_id"]
+            # Exercise the unchanged serving contracts without model execution.
+            if not SiglipVisualIndex._valid_video_id(video_id):
+                raise ValueError("invalid visual index video id")
+            assert _validate_video_id(video_id) == video_id
+            submitted.append(kwargs)
+            return None, SimpleNamespace(job_id=kwargs["job_id"])
+
+    settings = SimpleNamespace(
+        ensure_directories=lambda: events.append("create_directories"),
+        database_path=tmp_path / "library.sqlite3",
+        ocr_worker_environment={},
+        max_upload_bytes=1024**3,
+    )
+    driver = object.__new__(subject.ProductionRegressionDriver)
+    driver._models_root = tmp_path / "models"
+    driver._ocr_model_root = tmp_path / "ocr-models"
+    driver._worker_overrides = {}
+    driver._ffmpeg_binary = Path("/usr/bin/false")
+    driver._ffprobe_binary = Path("/usr/bin/false")
+    driver._toolchain = SimpleNamespace(verify_current=lambda: None)
+    monkeypatch.setattr(subject, "_explicit_product_settings", lambda **_kwargs: settings)
+    monkeypatch.setattr(repository_module, "Repository", Repository)
+    monkeypatch.setattr(runtime_module, "build_runtime", lambda *_args, **_kwargs: Runtime())
+    monkeypatch.setattr(coordinator_module, "VideoIndexCoordinator", Coordinator)
+    monkeypatch.setattr(
+        subject,
+        "_wait_for_index_job",
+        lambda *_args: SimpleNamespace(state=JobState.COMPLETE, plan_hash="a" * 64),
+    )
+    return driver, submitted, events
+
+
+def test_production_fixture_ids_fit_serving_contracts_and_keep_full_source_sha(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from videoscope.benchmark import regression_fixture as subject
+
+    assets = tuple(
+        subject.StagedRegressionAsset(
+            asset_id=asset.asset_id,
+            path=tmp_path / f"{asset.asset_id}.mp4",
+            sha256=asset.sha256,
+            byte_size=asset.byte_size,
+            duration_seconds=asset.duration_seconds,
+        )
+        for asset in load_dataset(PRODUCT_FIXTURE).assets
+    )
+    driver, submitted, events = _production_driver_id_harness(tmp_path, monkeypatch, assets)
+
+    first = driver.provision(data_root=tmp_path, assets=assets, timeout_seconds=10.0)
+    second = driver.provision(data_root=tmp_path, assets=assets, timeout_seconds=10.0)
+
+    assert first == second
+    assert len({item.video_id for item in first}) == len(assets) == 10
+    for item, result in zip(assets, first):
+        assert result.video_id == result.sha256 == item.sha256
+        assert result.job_id == f"regjob_{item.sha256}"
+    assert [item["source_sha256"] for item in submitted] == [
+        item.sha256 for item in (*assets, *assets)
+    ]
+    assert events.count("runtime_close") == 2
+
+
+@pytest.mark.parametrize("digest", ["a" * 63, "a" * 65, "A" * 64, "a" * 63 + "/"])
+def test_production_fixture_rejects_invalid_identity_before_runtime(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    digest: str,
+) -> None:
+    from videoscope.benchmark import regression_fixture as subject
+
+    assets = (subject.StagedRegressionAsset("fixture", tmp_path / "input.mp4", digest, 1, 1.0),)
+    driver, submitted, events = _production_driver_id_harness(tmp_path, monkeypatch, assets)
+
+    with pytest.raises(RegressionFixtureError, match="fixture_video_id_invalid"):
+        driver.provision(data_root=tmp_path, assets=assets, timeout_seconds=10.0)
+
+    assert submitted == []
+    assert events == []
+
+
+@pytest.mark.parametrize("entry_point", ["prepare", "batch"])
+def test_fixture_rejects_invalid_identity_before_preflight_side_effects(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    entry_point: str,
+) -> None:
+    from videoscope.benchmark import regression_fixture as subject
+
+    dataset = SimpleNamespace(assets=(SimpleNamespace(sha256="a" * 65),))
+    monkeypatch.setattr(subject, "load_regression_fixture", lambda _path: dataset)
+
+    def unexpected(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        pytest.fail("invalid fixture identity reached later preflight work")
+
+    monkeypatch.setattr(subject, "load_local_input_bindings", unexpected)
+    monkeypatch.setattr(subject, "load_frozen_metric_policy", unexpected)
+    arguments = {
+        "dataset_path": PRODUCT_FIXTURE,
+        "bindings_path": tmp_path / "bindings.json",
+        "data_root": tmp_path / "data",
+        "models_root": tmp_path / "models",
+    }
+    with pytest.raises(RegressionFixtureError, match="fixture_video_id_invalid"):
+        if entry_point == "prepare":
+            subject.prepare_regression_fixture(**arguments)
+        else:
+            subject._prevalidate_batch_inputs(
+                **arguments,
+                policy_path=tmp_path / "policy.json",
+                scratch_parent=tmp_path / "scratch",
+                registry_root=tmp_path / "registry",
+                worker_launch_path=tmp_path / "workers.json",
+                code_identity=lambda: "a" * 40,
+            )
+    assert tuple(tmp_path.iterdir()) == ()
 
 
 def test_production_driver_closes_partially_started_runtime(
