@@ -1,35 +1,35 @@
 # Phase 0 evidence bundle
 
-This directory defines the fail-closed evidence assembly gate for Phase 0. It
-does not contain a completed baseline. Phase 0 remains open until the five
-product profiles, direct verifier, full-ML smoke, target-host attestation and
-generated rollback proof have all been captured at one clean Git revision and
-accepted by the unchanged collector.
+Phase 0 is complete. The [accepted baseline](accepted/7054f13/README.md) binds
+five product profiles, the strict direct verifier, full-ML smoke, six freshly
+installed offline-attested environments and forced generation rollback to clean
+serving revision `7054f137f92c18676461242a18c8fc2619898b68`. Its four collector
+artifacts share bundle ID
+`sha256:5abee44ff9d4d85bd2c78de7b89e66668c4a1170aab9861eb5c56537b95111c1`.
+The clean checkout passed 2,527 backend tests.
 
-The latest [clean `7054f13` control](negative-controls/7054f13/README.md) passed
-2,527 backend tests, six-environment attestation and forced rollback. Its full
-diagnostic smoke completed all eight steps, five profiles and export, with a
-complete [stage/RSS timeline](diagnostic-timeline.md), but observed 176 swapin
-pages. Swapout and Metal recovery were zero; OOM was not observed. The unchanged
-resource gate remains unsatisfied.
+After an owner-provided fresh macOS session, one unchanged normal full smoke on
+the target M4 Pro completed all eight steps, five profiles, both Qwen paths and
+MP4 export. All 1,099 raw host observations have zero swapin, swapout and Metal
+recovery counters; OOM was not observed. Cleanup completed, the disposable root
+was empty and code SHA before/after matched. The 305.154-second host window
+recorded peak process-tree RSS of 8,253,521,920 bytes and separate system-wide
+Metal in-use peak of 11,172,855,808 bytes. RSS and Metal are non-additive.
 
-A separate valid 120-second control that started no model inference or workers
-in its controlled tree observed
-four swapin pages (65,536 bytes). Its earlier invalid driver attempt and the
-three fake-provider tests of the cleanup correction are retained in the same
-control record. This observation does not identify the cause of smoke swapins
-or permit background subtraction. The next bounded experiment is an unchanged
-normal full smoke after an owner-provided fresh macOS session; that condition
-does not guarantee a pass.
+The same-SHA five-profile batch and strict ten-case verifier remain unchanged:
+three direct matches, seven model misses and zero infrastructure errors, with
+completed worker retirement and cleanup. Model-quality guardrail failures and
+insufficient critical-slice support remain in the accepted report. Acceptance
+establishes a reproducible regression baseline; it is not model promotion or
+evidence of generalization. Training and later phases remain inactive; a Phase 1
+read-only data audit requires a separately authorized goal.
 
-The same `7054f13` now has five complete benchmark manifests and a complete
-strict ten-case direct verifier (three matches, seven model misses, zero
-infrastructure errors), with completed worker retirement and cleanup. Every
-non-smoke validator passes. The full collector returned exit 3 and created no
-bundle because the unchanged diagnostic smoke still fails the resource gate.
-The [earlier `1b11a54` control](negative-controls/1b11a54/README.md) remains
-separate; no older artifact was substituted. Training and later phases remain
-inactive.
+The [negative `7054f13` control](negative-controls/7054f13/README.md), its
+[stage/RSS timeline](diagnostic-timeline.md), the separate no-ML sampler control
+and the [earlier `1b11a54` controls](negative-controls/1b11a54/README.md) remain
+unchanged. Their swap events were not subtracted or reclassified. A passing
+fresh-session window does not identify the cause of those events or guarantee
+zero swap for every future workload.
 
 The collector never starts a model. It validates already produced JSON and
 publishes one create-once directory containing:

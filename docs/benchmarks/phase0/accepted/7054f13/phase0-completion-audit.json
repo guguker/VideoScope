@@ -1,0 +1,685 @@
+{
+  "audit_kind": "independent_whole_phase0_requirement_mapping",
+  "bundle_files": [
+    {
+      "byte_size": 15055,
+      "independent_rebuild_equal": true,
+      "name": "baseline-snapshot.json",
+      "sha256": "4ccd50d8b9c85a291bfcd79b3b13b38fc05a15fd2371cc541a889623cfd99120"
+    },
+    {
+      "byte_size": 640407,
+      "independent_rebuild_equal": true,
+      "name": "raw-measurements.json",
+      "sha256": "f817ee28756b37f280ecace82ac3bb1a59f65061d88f31ca345f3b07e34c078f"
+    },
+    {
+      "byte_size": 147921,
+      "independent_rebuild_equal": true,
+      "name": "sanitized-report.json",
+      "sha256": "bae9b44bd7f515150079e1532882fd125dd0fcd4c231fda9fd74e5a434b7feea"
+    },
+    {
+      "byte_size": 2126,
+      "independent_rebuild_equal": true,
+      "name": "error-ledger.json",
+      "sha256": "c45688cb9c1398742336c47937c2c6dadd04b0cbcfc4d0b5ba05b7294c852491"
+    }
+  ],
+  "bundle_id": "sha256:5abee44ff9d4d85bd2c78de7b89e66668c4a1170aab9861eb5c56537b95111c1",
+  "bundle_privacy_scan": "no_absolute_local_paths_urls_or_raw_user_queries_detected",
+  "code_sha": "7054f137f92c18676461242a18c8fc2619898b68",
+  "fresh_full_suite": {
+    "elapsed_seconds": 44.62,
+    "independently_read_completed_output": true,
+    "log": {
+      "byte_size": 3826,
+      "sha256": "5d166000385314f8015567e43c1fb37bd017eef85b131f3f53d45756e3f87a7a"
+    },
+    "passed": 2527,
+    "run_by": "root_agent",
+    "verified_test_scope": "backend/tests; exact root invocation is recorded separately by the launching agent",
+    "warnings": 2,
+    "working_directory": "clean_repository_root"
+  },
+  "independent_rebuild_all_four_payloads_equal": true,
+  "input_bindings": [
+    {
+      "byte_size": 1844,
+      "id": "baseline_batch",
+      "sha256": "db8ea6f22ecbc757d01daa19bf386742e4700888a96ca0e89a55aeebaef9e5b1"
+    },
+    {
+      "byte_size": 66322,
+      "id": "benchmark_run.dense_siglip",
+      "sha256": "40ce0f69f6836b3b5679ab0d24f30c0303890193e509d5e11281a3fce57cf7d0"
+    },
+    {
+      "byte_size": 64829,
+      "id": "benchmark_run.lexical_qdrant",
+      "sha256": "b9ab1f3a3d50c628608c8447ee048c3c2d06ea9d4e9d1c8fd1e98592febb1f9f"
+    },
+    {
+      "byte_size": 66618,
+      "id": "benchmark_run.lighthouse",
+      "sha256": "17604e56d0d773b13f5ee67a7dced2a1146738817eaadd617173f3d35f6510d8"
+    },
+    {
+      "byte_size": 127288,
+      "id": "benchmark_run.qwen_verification",
+      "sha256": "02d7f81e59e4ff8b17251107e3d335b41e19def80e7d19840a3b7fd1de9eb6da"
+    },
+    {
+      "byte_size": 66381,
+      "id": "benchmark_run.temporal_refinement",
+      "sha256": "db6c066960951d342846a32a3c8811da097b1fec8c971c8c489e0545614d4f82"
+    },
+    {
+      "byte_size": 12851,
+      "id": "frozen_metric_policy",
+      "sha256": "4bc80d09337e7f8cdb2148d8e522586316aea9c7c15386ef96e407e41b721b73"
+    },
+    {
+      "byte_size": 307474,
+      "id": "full_ml_smoke",
+      "sha256": "fcf13200f990bb5b04604ead2f4582b44d9dd10bf83221da6f3933400d42be64"
+    },
+    {
+      "byte_size": 7058,
+      "id": "ml_environment_attestation",
+      "sha256": "cff1ac988902db39c07846dab88ef03b9e445c9b2979117ccf24e5ae536974f0"
+    },
+    {
+      "byte_size": 12468,
+      "id": "product_dataset",
+      "sha256": "ef3d2180ff1655d6cf7ab49d6d0d743298fc06b881c2111abc5c61052467daa6"
+    },
+    {
+      "byte_size": 745,
+      "id": "rollback_proof",
+      "sha256": "258b06d3b66d2741e1e7051dcccb3ab2c16f6a157aba6929cc07895a1da5a5e8"
+    },
+    {
+      "byte_size": 12235,
+      "id": "video_verifier_dataset",
+      "sha256": "d8a55d9d6d2986a4782af092ed90dddc1f1cb4d7f09b5b78c12684e6e87e2e88"
+    },
+    {
+      "byte_size": 8993,
+      "id": "video_verifier_run",
+      "sha256": "10134e10ea99025e13056a0a5bb2d21659683f03d3335274bcc88b67c00514b0"
+    }
+  ],
+  "method": "Read original goal and mandatory contracts; inspect exact implementation and covering tests; rebuild all four complete collector payloads in memory from exact retained raw inputs; verify equality, source identity and privacy.",
+  "missing_implementation_or_measurement_gates": [],
+  "not_claimed": [
+    "model_quality_or_generalization_pass",
+    "promotion",
+    "training",
+    "phase1_execution",
+    "global_forensic_user_state_audit",
+    "new_browser_test_execution_by_this_agent"
+  ],
+  "quality_limitations": {
+    "absolute_quality_guard_failures": 15,
+    "critical_slice_support": "insufficient_for_promotion",
+    "direct_verifier": {
+      "case_count": 10,
+      "infrastructure_error_count": 0,
+      "match_count": 3,
+      "model_miss_count": 7
+    },
+    "independent_holdout": "unavailable",
+    "promotion_eligible": false,
+    "resource_scope": "observed_full_smoke_window_only; system Metal and VM are not per-process attribution",
+    "training_permission": "blocked_until_separate_phase_gate"
+  },
+  "remaining_root_finalization": [
+    "Retain accepted bundle and exact source receipts as repository artifacts.",
+    "Update Phase 0 status in plan and AGENTS, retaining quality limitations and separate authorization for Phase 1.",
+    "Verify documentation links, retained hashes, full-suite and rollback receipts; commit reviewed evidence/docs without changing serving code.",
+    "Only after committed evidence exists, perform final root goal completion audit."
+  ],
+  "requirements": [
+    {
+      "covering_test_nodes": [
+        "backend/tests/test_benchmark_regression_fixture.py::test_owner_batch_retires_ingest_workers_runs_five_profiles_and_cleans_up",
+        "backend/tests/test_benchmark_regression_fixture.py::test_required_profile_runner_uses_one_sha_revision_and_owned_workers",
+        "backend/tests/test_video_verifier_runner.py::test_runner_calls_only_strict_contract_and_separates_model_miss"
+      ],
+      "evidence_artifacts": [
+        "baseline-snapshot.json#/baseline_batch",
+        "baseline-snapshot.json#/video_verifier",
+        "docs/benchmarks/phase0/negative-controls/7054f13/baseline-run-order.json"
+      ],
+      "id": "committed_end_to_end_runner",
+      "implementation_sources": [
+        "backend/src/videoscope/benchmark/regression_fixture.py",
+        "backend/src/videoscope/benchmark/cli.py",
+        "backend/src/videoscope/benchmark/video_verifier_runner.py"
+      ],
+      "requirement": "Committed CLI owns prepare, workers, ingest, five measured product runs, cleanup and strict direct verifier attempts.",
+      "status": "proven_at_audited_code"
+    },
+    {
+      "covering_test_nodes": [
+        "backend/tests/test_phase0_evidence.py::test_full_ml_smoke_requires_substantive_selected_component_execution",
+        "backend/tests/test_phase0_evidence.py::test_full_ml_smoke_rejects_unselected_component_execution_leakage",
+        "backend/tests/test_benchmark_profiles.py::test_frozen_profiles_publish_exact_search_plans"
+      ],
+      "evidence_artifacts": [
+        "baseline-snapshot.json#/profiles",
+        "baseline-snapshot.json#/full_ml_smoke/component_execution"
+      ],
+      "id": "actually_executed_profiles",
+      "implementation_sources": [
+        "backend/src/videoscope/benchmark/profiles.py",
+        "backend/src/videoscope/search/service.py",
+        "scripts/full-ml-smoke.py"
+      ],
+      "requirement": "Five frozen profiles execute their selected production components; InternVideo is explicitly optional/not_configured.",
+      "status": "proven_at_audited_code"
+    },
+    {
+      "covering_test_nodes": [
+        "backend/tests/test_phase0_evidence.py::test_environment_attestation_is_pinned_to_the_current_manifest",
+        "backend/tests/test_phase0_evidence.py::test_full_ml_smoke_binds_clean_code_identity",
+        "backend/tests/test_benchmark_regression_fixture.py::test_ml_attestation_rejects_a_compatible_substitute_worker_environment"
+      ],
+      "evidence_artifacts": [
+        "baseline-snapshot.json#/code_sha",
+        "sanitized-report.json#/environment",
+        "ml-environment.json",
+        "clean-install-receipt.json",
+        "fresh-boot-control-launch-result.json"
+      ],
+      "id": "clean_target_runtime",
+      "implementation_sources": [
+        "workers/ml-environment.lock.json",
+        "backend/src/videoscope/ml_environment_attestation.py",
+        "backend/src/videoscope/benchmark/phase0_evidence.py"
+      ],
+      "requirement": "Exact clean 7054 serving source runs on Apple M4 Pro 24 GiB with the six pinned attested environments; current serving code is unchanged.",
+      "status": "proven_at_audited_code"
+    },
+    {
+      "covering_test_nodes": [
+        "backend/tests/test_paddle_ocr_attestation.py::test_reviewed_ocr_packaging_is_exact_hash_pinned_and_pathless",
+        "backend/tests/test_paddle_ocr_attestation.py::test_ocr_installer_attests_managed_runtime_before_package_sync",
+        "backend/tests/test_full_ml_smoke.py::test_ocr_read_failure_still_releases_ingestion_resources"
+      ],
+      "evidence_artifacts": [
+        "clean-install-receipt.json",
+        "ml-environment.json#/environments",
+        "full-ml-smoke-fresh-boot.json"
+      ],
+      "id": "clean_install_ocr",
+      "implementation_sources": [
+        "scripts/install-ocr.sh",
+        "workers/ocr/requirements.lock",
+        "workers/ocr/model-artifacts.lock.json",
+        "scripts/paddle-ocr-worker.py"
+      ],
+      "requirement": "Fresh owned OCR environment installs with pinned binary hashes and Python, attests assets offline, and performs actual OCR in full smoke.",
+      "status": "proven_at_audited_code"
+    },
+    {
+      "covering_test_nodes": [
+        "backend/tests/test_benchmark_measurements.py::test_audit_recomputes_system_metrics_and_rejects_raw_evidence_tampering",
+        "backend/tests/test_benchmark_measurements.py::test_measurement_evidence_parser_rejects_local_storage_identity_fields",
+        "backend/tests/test_benchmark_measurements.py::test_process_sampler_includes_recursive_descendants_and_excludes_unrelated_pids"
+      ],
+      "evidence_artifacts": [
+        "raw-measurements.json",
+        "full-ml-smoke-fresh-boot.json",
+        "docs/benchmarks/phase0/negative-controls/7054f13/lexical_qdrant-manifest.json",
+        "docs/benchmarks/phase0/negative-controls/7054f13/dense_siglip-manifest.json",
+        "docs/benchmarks/phase0/negative-controls/7054f13/temporal_refinement-manifest.json",
+        "docs/benchmarks/phase0/negative-controls/7054f13/lighthouse-manifest.json",
+        "docs/benchmarks/phase0/negative-controls/7054f13/qwen_verification-manifest.json"
+      ],
+      "id": "portable_raw_measurements",
+      "implementation_sources": [
+        "backend/src/videoscope/benchmark/measurements.py",
+        "backend/src/videoscope/benchmark/host_resources.py",
+        "backend/src/videoscope/benchmark/phase0_evidence.py"
+      ],
+      "limits": "System-wide Metal is standalone, not additive with RSS or attributable to a worker; profile manifests explicitly mark unavailable per-profile Metal telemetry.",
+      "requirement": "Bounded raw process-tree RSS and storage measurements plus system-wide Metal/VM observations remain portable and replayable.",
+      "status": "proven_at_audited_code"
+    },
+    {
+      "covering_test_nodes": [
+        "backend/tests/test_frozen_metric_policy.py::test_loader_rejects_silently_weakened_phase0_policy",
+        "backend/tests/test_frozen_metric_policy.py::test_loader_rejects_weakened_threshold_or_uncertainty_rule"
+      ],
+      "evidence_artifacts": [
+        "sanitized-report.json#/profiles",
+        "sanitized-report.json#/guardrail_observations",
+        "docs/benchmarks/phase0/negative-controls/7054f13/baseline-quality-summary.json"
+      ],
+      "id": "frozen_metrics_and_slices",
+      "implementation_sources": [
+        "docs/benchmarks/policies/phase0-regression-v1.json",
+        "backend/src/videoscope/benchmark/metric_policy.py"
+      ],
+      "limits": "Measured baseline quality fails 15 absolute product guards. Relative guards are not evaluable for a snapshot; every critical slice lacks promotion support.",
+      "requirement": "Freeze and retain candidate Recall@50, P@5, Recall@10/20, nDCG, boundary metrics, latency, resource metrics, failures and all critical slices.",
+      "status": "proven_at_audited_code"
+    },
+    {
+      "covering_test_nodes": [
+        "backend/tests/test_video_verifier_runner.py::test_runner_records_sanitized_infrastructure_errors_not_model_misses",
+        "backend/tests/test_video_verifier_runner.py::test_invalid_strict_return_is_an_infrastructure_error",
+        "backend/tests/test_phase0_evidence.py::test_video_verifier_status_cannot_disagree_with_its_raw_prediction"
+      ],
+      "evidence_artifacts": [
+        "error-ledger.json",
+        "baseline-snapshot.json#/video_verifier",
+        "docs/benchmarks/phase0/negative-controls/7054f13/video-verifier-run.json",
+        "docs/benchmarks/phase0/negative-controls/7054f13/error-ledger-baseline-diagnostic.json"
+      ],
+      "id": "error_ledger_classification",
+      "implementation_sources": [
+        "backend/src/videoscope/benchmark/video_verifier_runner.py",
+        "backend/src/videoscope/benchmark/phase0_evidence.py"
+      ],
+      "limits": "Direct verifier: 3 matches, 7 model misses. Product Qwen profile has 1 missed query; zero missed queries in another profile does not mean zero false positives.",
+      "requirement": "Infrastructure failures stay separate from model misses; all ten strict direct attempts complete with zero infrastructure errors.",
+      "status": "proven_at_audited_code"
+    },
+    {
+      "covering_test_nodes": [
+        "backend/tests/test_phase0_evidence.py::test_full_ml_smoke_rejects_oom_swap_and_memory_breach",
+        "backend/tests/test_phase0_evidence.py::test_full_ml_smoke_rejects_counter_reset",
+        "backend/tests/test_full_ml_smoke.py::test_production_product_integration_uses_durable_generation_pinned_path"
+      ],
+      "evidence_artifacts": [
+        "full-ml-smoke-fresh-boot.json",
+        "fresh-boot-control-plan.json",
+        "fresh-boot-control-launch-result.json",
+        "fresh-smoke-independent-audit.json",
+        "raw-measurements.json#/full_ml_smoke"
+      ],
+      "id": "full_ml_zero_swap_smoke",
+      "implementation_sources": [
+        "scripts/full-ml-smoke.py",
+        "backend/src/videoscope/benchmark/phase0_evidence.py",
+        "Makefile"
+      ],
+      "limits": "This proves the observed fresh-session window only. No background subtraction, model removal, gate relaxation or inference behavior change was used.",
+      "requirement": "Normal full-ML smoke completes eight steps, five profiles, both Qwen paths and export with unchanged SHA, cleanup, zero swapin/swapout/recovery, no OOM and RSS below 16 GiB.",
+      "status": "proven_at_audited_code"
+    },
+    {
+      "covering_test_nodes": [
+        "backend/tests/test_video_index_jobs_repository.py::test_failed_full_job_publish_keeps_prior_release_searchable_after_restart"
+      ],
+      "evidence_artifacts": [
+        "baseline-snapshot.json#/rollback",
+        "docs/benchmarks/phase0/negative-controls/7054f13/phase0-rollback-proof.json"
+      ],
+      "id": "forced_generation_rollback",
+      "implementation_sources": [
+        "scripts/phase0-rollback-proof.py",
+        "backend/tests/test_video_index_jobs_repository.py"
+      ],
+      "limits": "The forced drill uses deterministic synthetic features with real persisted storage; the independent full smoke establishes the exact ML runtime path.",
+      "requirement": "Injected pre-commit publication failure preserves seven prior active generations and search after durable-reader restart; candidate remains inactive/addressable, source unchanged, no reindex.",
+      "status": "proven_at_audited_code"
+    },
+    {
+      "covering_test_nodes": [
+        "backend/tests/test_search_service.py::test_strict_search_requires_verified_text_vector_generation_but_interactive_falls_back",
+        "backend/tests/test_search_service.py::test_missing_physical_generation_is_lexical_fallback_interactively_and_error_strictly",
+        "backend/tests/test_indexer.py::test_indexer_keeps_working_when_optional_provider_fails",
+        "backend/tests/test_reranker_candidate_contract.py::test_fallback_restores_original_candidates_after_in_place_attack",
+        "backend/tests/test_clip_service.py::test_clip_service_validates_and_exports_montage"
+      ],
+      "evidence_artifacts": [
+        "baseline-snapshot.json#/full_ml_smoke/component_execution/lexical_qdrant",
+        "full-ml-smoke-fresh-boot.json"
+      ],
+      "id": "universal_local_fallback",
+      "implementation_sources": [
+        "backend/src/videoscope/search/service.py",
+        "backend/src/videoscope/processing/indexer.py",
+        "backend/src/videoscope/benchmark/profiles.py"
+      ],
+      "limits": "The full ML smoke exports the lexical_qdrant result. Provider-failure behavior is covered by synthetic integration/unit controls; no new browser UI change is in this slice.",
+      "requirement": "Universal lexical/semantic retrieval remains usable without learned domain reranking; optional failures preserve base results and the media/export path.",
+      "status": "proven_at_audited_code"
+    },
+    {
+      "covering_test_nodes": [
+        "backend/tests/test_benchmark_product_runtime.py::test_wal_product_snapshot_preserves_full_source_tree_and_copies_all_sidecars",
+        "backend/tests/test_benchmark_regression_fixture.py::test_provision_rejects_nonempty_symlink_and_identity_mismatch_roots",
+        "backend/tests/test_benchmark_regression_fixture.py::test_disposable_and_model_roots_reject_checkout_home_and_overlap",
+        "backend/tests/test_full_ml_smoke.py::test_worker_scaffold_baseline_is_preserved_while_smoke_writes_are_removed"
+      ],
+      "evidence_artifacts": [
+        "fresh-boot-control-launch-result.json",
+        "source_prepared_input_identity_checks",
+        "docs/benchmarks/phase0/negative-controls/7054f13/baseline-run-order.json"
+      ],
+      "id": "preserve_user_state",
+      "implementation_sources": [
+        "backend/src/videoscope/benchmark/regression_fixture.py",
+        "backend/src/videoscope/benchmark/product_runtime.py",
+        "scripts/full-ml-smoke.py"
+      ],
+      "limits": "The audit rehashes only the ten expressly authorized prepared inputs. It does not claim a forensic scan of all user files or external application state.",
+      "requirement": "Prepared source media are read-only; benchmark-owned roots are isolated; read-only snapshots preserve SQLite/WAL/SHM and release cleanup cannot delete active generations.",
+      "status": "proven_at_audited_code"
+    },
+    {
+      "covering_test_nodes": [
+        "backend/tests/test_benchmark_regression_fixture.py::test_committed_fixture_keeps_every_prepared_clip_in_its_source_group",
+        "backend/tests/test_frozen_metric_policy.py::test_regression_policy_rejects_any_promotion_claim",
+        "backend/tests/test_benchmark_regression_fixture.py::test_regression_settings_ignore_ambient_remote_provider_configuration"
+      ],
+      "evidence_artifacts": [
+        "baseline-snapshot.json#/datasets",
+        "sanitized-report.json#/decision",
+        "fresh-boot-control-plan.json",
+        "docs/benchmarks/phase0/negative-controls/7054f13/baseline-run-order.json"
+      ],
+      "id": "regression_only_and_scope",
+      "implementation_sources": [
+        "docs/benchmarks/product-retrieval/seed-v1.json",
+        "docs/benchmarks/video-verifier/seed-v1.json",
+        "docs/benchmarks/policies/phase0-regression-v1.json"
+      ],
+      "limits": "Scope conclusion is based on exact commands, offline contracts and retained controlled-run records; an independent promotion dataset remains unavailable and Phase 1 requires separate authorization.",
+      "requirement": "Current studies remain regression_seen, never promotion/holdout; no training, external/user-data import, upload or later phase is introduced by this control.",
+      "status": "proven_at_audited_code"
+    },
+    {
+      "covering_test_nodes": [
+        "backend/tests/test_phase0_evidence.py::test_builds_complete_path_free_bundle_from_five_auditable_runs",
+        "backend/tests/test_phase0_evidence.py::test_collector_parses_the_exact_bytes_it_hashes_under_input_swap"
+      ],
+      "evidence_artifacts": [
+        "baseline-snapshot.json",
+        "raw-measurements.json",
+        "sanitized-report.json",
+        "error-ledger.json"
+      ],
+      "id": "four_file_collector_bundle",
+      "implementation_sources": [
+        "scripts/phase0-evidence.py",
+        "backend/src/videoscope/benchmark/phase0_evidence.py"
+      ],
+      "limits": "This audit independently reconstructs and compares every full payload in memory; it does not merely trust the collector status string.",
+      "requirement": "Unchanged committed collector accepts one same-code/same-environment input set and emits four mutually bound deterministic portable artifacts.",
+      "status": "proven_at_audited_code"
+    }
+  ],
+  "same_code_in_current_serving_sources": true,
+  "schema_version": 1,
+  "source_bindings": [
+    {
+      "byte_size": 9300,
+      "repository_path": "Makefile",
+      "sha256": "d83ae3a8f016d138ffadcdb3b8a7b479e6629317b8155ab7baf8552e69e2545a"
+    },
+    {
+      "byte_size": 37363,
+      "repository_path": "backend/src/videoscope/benchmark/cli.py",
+      "sha256": "24b874f50482a3d3f5048c9b1c4ba88b9241fb33e259308c941ad93dd655ff2d"
+    },
+    {
+      "byte_size": 35197,
+      "repository_path": "backend/src/videoscope/benchmark/host_resources.py",
+      "sha256": "3c67bd678ab1ddfa243b3b0cda3c426d1b3c18ebba8b814058fb667ec1d46fa5"
+    },
+    {
+      "byte_size": 58590,
+      "repository_path": "backend/src/videoscope/benchmark/measurements.py",
+      "sha256": "1097d29f0e73e64ecd0f375383239da255d64cef807117bbf1dde4335782a0f5"
+    },
+    {
+      "byte_size": 51860,
+      "repository_path": "backend/src/videoscope/benchmark/metric_policy.py",
+      "sha256": "279f0bb9a45ddccb207fa30a0d51279ed7b28ab526978fb7e9c12cdb7b19c39b"
+    },
+    {
+      "byte_size": 95895,
+      "repository_path": "backend/src/videoscope/benchmark/phase0_evidence.py",
+      "sha256": "cbf35a15cbdfe940f42ba3a7a2a6a00a9533dfd2c3e6d534124154cfe7f80b7c"
+    },
+    {
+      "byte_size": 50120,
+      "repository_path": "backend/src/videoscope/benchmark/product_runtime.py",
+      "sha256": "f48b4ae3d6a28e632c025bc029d9ac13d9fdcffafab27e161845a528302ca6e5"
+    },
+    {
+      "byte_size": 23142,
+      "repository_path": "backend/src/videoscope/benchmark/profiles.py",
+      "sha256": "1615b2b5cf42826aad036bb535fd7e044d7ba67ce33a97d533908ce41d4c6101"
+    },
+    {
+      "byte_size": 63305,
+      "repository_path": "backend/src/videoscope/benchmark/regression_fixture.py",
+      "sha256": "6085ea3ca5c60137c0714b0b29cc0584bd9479e7478f487c278a5eb54ae5092e"
+    },
+    {
+      "byte_size": 49111,
+      "repository_path": "backend/src/videoscope/benchmark/video_verifier_runner.py",
+      "sha256": "06b52909fc3f33cda2cfb019d69f00fd638985306b1031f3c6e256d1e906c7b3"
+    },
+    {
+      "byte_size": 47484,
+      "repository_path": "backend/src/videoscope/ml_environment_attestation.py",
+      "sha256": "96aace98545d707750da9a45778ac07657c422659b2fcbe29ada2b97d7358348"
+    },
+    {
+      "byte_size": 57009,
+      "repository_path": "backend/src/videoscope/processing/indexer.py",
+      "sha256": "ef5018adabf5c56b11e61fd1fbf09a40b04773ebbe55b1bd3a0859471244fdb1"
+    },
+    {
+      "byte_size": 149350,
+      "repository_path": "backend/src/videoscope/search/service.py",
+      "sha256": "aa5f7e90e88433ebbf3646ff6e1965f2076dd79c0e08cce5221265d3c1a4ff26"
+    },
+    {
+      "byte_size": 44500,
+      "repository_path": "backend/tests/test_benchmark_measurements.py",
+      "sha256": "27778d30efdff427cbecc2192624e57e3149bc06845b3bde28cf3a851f886b2d"
+    },
+    {
+      "byte_size": 39074,
+      "repository_path": "backend/tests/test_benchmark_product_runtime.py",
+      "sha256": "dc1afc28852d4896010ccf9c0dbde144ff4513c39fb59c74d9183200eb91bcf2"
+    },
+    {
+      "byte_size": 9503,
+      "repository_path": "backend/tests/test_benchmark_profiles.py",
+      "sha256": "ecc91e7ff8b6bcf48724c45a25795f6070fb786bbc06f86e864b5da6b7276ada"
+    },
+    {
+      "byte_size": 56528,
+      "repository_path": "backend/tests/test_benchmark_regression_fixture.py",
+      "sha256": "c34021d8b252a494ed90041abd1db3dfaaab87ca3c14a0694b780ee2ee39564e"
+    },
+    {
+      "byte_size": 4291,
+      "repository_path": "backend/tests/test_clip_service.py",
+      "sha256": "18b9b5973f742858c973fef3efcae280e159d692a62a3036858796560e081d98"
+    },
+    {
+      "byte_size": 11647,
+      "repository_path": "backend/tests/test_frozen_metric_policy.py",
+      "sha256": "01e229909789a00abdf4f9b90bc81e30ab184e4578f754a918ac4d5079ecdfa5"
+    },
+    {
+      "byte_size": 90993,
+      "repository_path": "backend/tests/test_full_ml_smoke.py",
+      "sha256": "86915e477381fe258e4f5142b16e1f6f97966b9e521b77803b8d81b3b326a3ed"
+    },
+    {
+      "byte_size": 19726,
+      "repository_path": "backend/tests/test_indexer.py",
+      "sha256": "001fd5bc204c5e1fefff6ff3888c767030debea7ddc4f145a184df10fa1721db"
+    },
+    {
+      "byte_size": 74947,
+      "repository_path": "backend/tests/test_paddle_ocr_attestation.py",
+      "sha256": "ad231f028b7b4103905de9f0bed42fd3563914e1cc88cf21f50aecd4442f7651"
+    },
+    {
+      "byte_size": 51088,
+      "repository_path": "backend/tests/test_phase0_evidence.py",
+      "sha256": "ad5ffa9b06849a50db5b36330e5ae48095e10d80e9f28cd0cc5f45e46713f6a4"
+    },
+    {
+      "byte_size": 15175,
+      "repository_path": "backend/tests/test_reranker_candidate_contract.py",
+      "sha256": "23af35e77ffb2158996f0babfdc75ae9bede89a217d889d9e681d131592fafed"
+    },
+    {
+      "byte_size": 81108,
+      "repository_path": "backend/tests/test_search_service.py",
+      "sha256": "5dec46528ebf03b808e15063e2a3ab689b0936b994ecef1f003d0aeddb505241"
+    },
+    {
+      "byte_size": 79226,
+      "repository_path": "backend/tests/test_video_index_jobs_repository.py",
+      "sha256": "d58995756414c39da9f830b1df5b6ccc3f2584e0dc135c8c12c4de4c1dcc2bd7"
+    },
+    {
+      "byte_size": 22131,
+      "repository_path": "backend/tests/test_video_verifier_runner.py",
+      "sha256": "4e8a3235f4dd56ca8fc1cac15f145cfeb7358210ee49293df5b55db54f82f1e6"
+    },
+    {
+      "byte_size": 12851,
+      "repository_path": "docs/benchmarks/policies/phase0-regression-v1.json",
+      "sha256": "4bc80d09337e7f8cdb2148d8e522586316aea9c7c15386ef96e407e41b721b73"
+    },
+    {
+      "byte_size": 12468,
+      "repository_path": "docs/benchmarks/product-retrieval/seed-v1.json",
+      "sha256": "ef3d2180ff1655d6cf7ab49d6d0d743298fc06b881c2111abc5c61052467daa6"
+    },
+    {
+      "byte_size": 12235,
+      "repository_path": "docs/benchmarks/video-verifier/seed-v1.json",
+      "sha256": "d8a55d9d6d2986a4782af092ed90dddc1f1cb4d7f09b5b78c12684e6e87e2e88"
+    },
+    {
+      "byte_size": 148417,
+      "repository_path": "scripts/full-ml-smoke.py",
+      "sha256": "f49b11e9d7b5c231dba304596de8ddf6f582d7dfcabfeb00a4bb1698a21530db"
+    },
+    {
+      "byte_size": 1442,
+      "repository_path": "scripts/install-ocr.sh",
+      "sha256": "5cce79ad93876bdf358dfc6bee501dfc7798538e2380d053ae74c67967bd3fa0"
+    },
+    {
+      "byte_size": 39363,
+      "repository_path": "scripts/paddle-ocr-worker.py",
+      "sha256": "26325ac53b0cf29f3810bbd58facbd9aebef09dacf89fc7169fbe863bfa3eebd"
+    },
+    {
+      "byte_size": 493,
+      "repository_path": "scripts/phase0-evidence.py",
+      "sha256": "db4e342809f721d3317ea62fa1b2d56fff3a69c4fa0a2cbf2fa7c2a374c2646a"
+    },
+    {
+      "byte_size": 6190,
+      "repository_path": "scripts/phase0-rollback-proof.py",
+      "sha256": "7d7003fce3b5b89616297606300ca534250cce4a991ad649df62131459b774dd"
+    },
+    {
+      "byte_size": 8952,
+      "repository_path": "workers/ml-environment.lock.json",
+      "sha256": "f4d551a169e981af2279647e900cf7f87b8c174548cd0356c8df5e6cee82c9ac"
+    },
+    {
+      "byte_size": 1734,
+      "repository_path": "workers/ocr/model-artifacts.lock.json",
+      "sha256": "9b5004e5c4d1ac4fd5e18322c3ce1fc4b45465d91affdc82e9f830edd01e0168"
+    },
+    {
+      "byte_size": 25421,
+      "repository_path": "workers/ocr/requirements.lock",
+      "sha256": "f1d9979471ad0a051576e9cdd0e5de25ca20f1e67ed48d284f0f904353c356a0"
+    }
+  ],
+  "source_prepared_input_identity_checks": [
+    {
+      "byte_size": 782967,
+      "case_id": "panel-light-top-gesture-negative",
+      "frozen_identity_matches": true,
+      "sha256": "3939304753591a688247c6ef42bcba85b55b0fabbb2bd2c107f7bd6287324883",
+      "split": "regression_seen"
+    },
+    {
+      "byte_size": 945255,
+      "case_id": "panel-light-top-gesture-positive",
+      "frozen_identity_matches": true,
+      "sha256": "7fefaa3adc740a8e764b188188ba787651d512cf7d7f28dabf995dc4fb6aeb26",
+      "split": "regression_seen"
+    },
+    {
+      "byte_size": 866950,
+      "case_id": "panel-roundtable-negative",
+      "frozen_identity_matches": true,
+      "sha256": "b3731b367380115bc40202e7b1d298bd58fa9192b4ef70403e88aa480159fb47",
+      "split": "regression_seen"
+    },
+    {
+      "byte_size": 4915894,
+      "case_id": "panel-roundtable-positive",
+      "frozen_identity_matches": true,
+      "sha256": "6b8d2e1b103660ddd1caf7f8404d7a36bdc5db087414487f96178b1a97c568bf",
+      "split": "regression_seen"
+    },
+    {
+      "byte_size": 2981704,
+      "case_id": "sports-abstain",
+      "frozen_identity_matches": true,
+      "sha256": "b82bac93bb0aa1af32ed5624cbf986bb577e9c7a635d774c57a2f3ed5a3a954b",
+      "split": "regression_seen"
+    },
+    {
+      "byte_size": 4020157,
+      "case_id": "sports-commercial-positive",
+      "frozen_identity_matches": true,
+      "sha256": "30217cc33264b685f4ebc9bc39cd0d2083e84805e9936946c6d04b429f6d0902",
+      "split": "regression_seen"
+    },
+    {
+      "byte_size": 1027665,
+      "case_id": "sports-commercial-slate-negative",
+      "frozen_identity_matches": true,
+      "sha256": "43a1fec52a5d8e88e0743ac524f3a8746867108d2a0709a3bfeebadb80e8dd23",
+      "split": "regression_seen"
+    },
+    {
+      "byte_size": 4987913,
+      "case_id": "sports-made-free-throw",
+      "frozen_identity_matches": true,
+      "sha256": "4f6ea5056153761d7d05737c315c797615d135f99092fc1d46f05bb8a3566588",
+      "split": "regression_seen"
+    },
+    {
+      "byte_size": 6882258,
+      "case_id": "sports-made-three-blue-15",
+      "frozen_identity_matches": true,
+      "sha256": "884d52b34becf01adf940c2b979a67651e436f6deda03bf001f3b0973c9aa31b",
+      "split": "regression_seen"
+    },
+    {
+      "byte_size": 5345772,
+      "case_id": "sports-made-three-white-9",
+      "frozen_identity_matches": true,
+      "sha256": "aa203e4639b33bceb61c31fc96da56cb96a20df1d133ea777e2a7cfea6aeeb49",
+      "split": "regression_seen"
+    }
+  ],
+  "status": "technical_evidence_proven_pending_repository_finalization"
+}

@@ -104,29 +104,27 @@ future work does not inherit a stale decision.
 
 ## Current next phase
 
-The default next objective is Phase 0 of `docs/ml-autonomy-plan.md`: establish a
-reproducible and trustworthy baseline before training. Phase 0 remains open:
-the clean `7054f13` diagnostic smoke completed all coverage with an intact
-stage/RSS timeline, six attested environments, 2,527 passing backend tests and
-forced rollback, but observed 176 swapin pages and failed the unchanged resource
-gate. A separate valid 120-second control that started no model inference or workers
-in its controlled tree observed four swapin pages; this does not attribute the smoke's events to a
-process or permit background subtraction. Exact evidence is retained in
-`docs/benchmarks/phase0/negative-controls/7054f13/README.md`.
-The same-SHA five-profile batch and strict ten-case direct verifier are now
-complete (3 matches, 7 model misses, 0 infrastructure errors). All non-smoke
-validators pass. The full collector returned exit 3 and created no bundle
-because the original 176-page smoke still fails the resource gate. Earlier
-`1b11a54` evidence remains separate. The next bounded experiment is an unchanged
-normal full smoke after an owner-provided fresh macOS session; a fresh session
-is not a promise of zero swap.
-No training or later phase is active. The active scope is Phase 0 only;
-a Phase 1 read-only dataset audit requires a separately authorized goal.
-No external or user data may be imported,
-uploaded or trained on merely because it is listed as a candidate.
+Phase 0 of `docs/ml-autonomy-plan.md` is complete at serving revision
+`7054f137f92c18676461242a18c8fc2619898b68`. The unchanged collector accepted the
+five-profile baseline, strict ten-case verifier, six offline-attested
+environments, full-ML smoke and forced generation rollback in one four-file
+bundle. The clean checkout passed 2,527 backend tests. Evidence and replay
+commands are retained in `docs/benchmarks/phase0/accepted/7054f13/README.md`.
 
-When Phase 0 is demonstrably complete, update both the plan's status and this
-section before proposing Phase 1 as the next active goal.
+After an owner-provided fresh macOS session, the unchanged normal full smoke on
+the target M4 Pro completed all eight steps, five profiles, both Qwen paths and
+MP4 export. It recorded zero swapins, swapouts and Metal recovery, with no
+observed OOM, complete cleanup and an empty disposable workspace. The earlier
+negative controls remain unchanged; this accepted window does not guarantee
+zero swap for every future workload or attribute earlier swap events.
+
+The accepted baseline remains `regression_seen`, with failed model-quality
+guardrails and a direct verifier result of 3 matches, 7 model misses and
+0 infrastructure errors. It is not promotion evidence. No training or later
+phase is active. The next proposed bounded goal is a Phase 1 read-only
+data/provenance audit; it requires separate owner authorization before work
+starts. No external or user data may be imported, uploaded or trained on merely
+because it is listed as a candidate.
 
 ## Verification and handoff
 

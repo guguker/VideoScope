@@ -1,0 +1,14 @@
+{
+  "boot_unix_seconds": 1788693664,
+  "code_sha_after": "7054f137f92c18676461242a18c8fc2619898b68",
+  "code_sha_before": "7054f137f92c18676461242a18c8fc2619898b68",
+  "command_exit_code": 0,
+  "elapsed_seconds": 310.4438472080001,
+  "postflight_matching_ml_workers": [],
+  "schema_version": 1,
+  "smoke_root_empty": true,
+  "smoke_status": "ready",
+  "stdout_bytes": 307474,
+  "stdout_sha256": "fcf13200f990bb5b04604ead2f4582b44d9dd10bf83221da6f3933400d42be64",
+  "workspace_cleanup": "complete"
+}
