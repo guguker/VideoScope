@@ -1,0 +1,20 @@
+{
+  "clean_checkout": true,
+  "code_sha": "7054f137f92c18676461242a18c8fc2619898b68",
+  "command": [
+    "./.venv/bin/pytest",
+    "backend/tests"
+  ],
+  "elapsed_seconds_reported_by_pytest": 44.62,
+  "environment_id": "base",
+  "exit_code": 0,
+  "log_byte_size": 3826,
+  "log_sha256": "5d166000385314f8015567e43c1fb37bd017eef85b131f3f53d45756e3f87a7a",
+  "passed": 2527,
+  "raw_log_retention": "private_log_contains_local_paths",
+  "retained_log_summary": "2527 passed, 2 warnings in 44.62s",
+  "schema_version": 1,
+  "scope": "entire_backend_suite_including_forced_generation_rollback",
+  "warnings": 2,
+  "working_directory": "checkout_root"
+}

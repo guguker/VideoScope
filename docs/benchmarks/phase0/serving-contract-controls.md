@@ -1,8 +1,12 @@
 # Phase 0: serving contract controls
 
-Status: complete diagnostic smoke at `7054f13`; resource gate rejected.
-The five-profile benchmark batch and direct verifier also completed at `7054f13`;
-all non-smoke validators pass. Phase 0 remains open, with no accepted bundle.
+Status: Phase 0 complete at clean serving revision `7054f13`. The
+[accepted baseline](accepted/7054f13/README.md) combines the five-profile batch,
+strict direct verifier, attestation, forced rollback and a subsequent unchanged
+normal smoke that passed the zero-swap gate after an owner-provided fresh macOS
+session. Earlier diagnostic and normal-smoke rejections below remain historical
+negative controls. Model-quality failures remain visible; this regression-only
+baseline does not authorize promotion, training or a later phase.
 
 The path under test is `index → query → interval → evidence → clip`. These
 controls use only the existing ten prepared `regression_seen` inputs or generated
@@ -248,16 +252,40 @@ The initial private driver attempt left an empty raw file after the erroneous
 preservation, including a failure after RSS starts.
 
 These observations do not identify the process responsible for the smoke's
-system-wide swapins. On September 6 the host still reported the August 18 boot
-(`1787056703`) and 1,798.75 MiB used swap. The next bounded experiment is an
-unchanged normal full smoke after an owner-provided fresh macOS session; this
-condition does not guarantee a pass. Do not subtract background pressure,
-change the gate, or infer a model-lifecycle fix from temporal association.
+system-wide swapins. Before the owner rebooted on September 6, the host still
+reported the August 18 boot (`1787056703`) and 1,798.75 MiB used swap. This led
+to the unchanged normal full-smoke control in a fresh macOS session recorded
+below. Background pressure was not subtracted, the gate was not changed, and
+temporal association did not justify a model-lifecycle fix.
 
 The five-profile batch and strict direct verifier subsequently completed at
 `7054f13`, with completed cleanup. The direct result is three matches, seven
 model misses and zero infrastructure errors across all ten cases. All non-smoke
-validators pass; the unchanged full collector still returns exit 3 because the
+validators passed; the unchanged full collector returned exit 3 because the
 original smoke recorded 176 swapin pages. The same-SHA receipts and raw
 manifests are retained in the control record; older `1b11a54` outputs were not
-substituted. No accepted baseline bundle, training or later phase is active.
+substituted.
+
+## Accepted 7054f13 fresh-session control
+
+The owner rebooted the Mac, and one predeclared unchanged normal full smoke ran
+at the same clean `7054f137f92c18676461242a18c8fc2619898b68` after all six
+environments were reinstalled offline and produced the byte-identical
+attestation. All eight steps, five profiles, both Qwen paths and MP4 export
+completed; InternVideo remained `not_configured`. Cleanup completed and the
+disposable smoke root was empty. All 1,099 raw host observations contained zero
+swapin, swapout and Metal recovery counters, with no observed OOM. The host
+window lasted 305.153625375 seconds; the launcher took 310.443847208 seconds.
+The 4,853 RSS samples recorded a peak of 8,253,521,920 bytes. System-wide Metal
+in-use peaked at 11,172,855,808 bytes and remains a separate, non-additive metric.
+
+The unchanged collector accepted this receipt with the existing exact-SHA
+five-profile batch, strict verifier and forced rollback, producing all four
+artifacts with bundle ID
+`sha256:5abee44ff9d4d85bd2c78de7b89e66668c4a1170aab9861eb5c56537b95111c1`.
+The [accepted report](accepted/7054f13/README.md) retains the raw evidence and
+replay commands. Phase 0 is complete. Earlier resource failures are preserved,
+and the new window does not explain their cause or guarantee all future runs.
+The frozen quality failures remain model limitations, with no promotion claim.
+Training and later phases remain inactive; a Phase 1 audit requires a separately
+authorized goal.

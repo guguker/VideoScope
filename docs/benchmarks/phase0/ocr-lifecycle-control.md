@@ -1,6 +1,10 @@
 # Phase 0: bounded OCR lifetime
 
-Status: implementation control; Phase 0 remains open.
+Status: historical implementation control. Phase 0 subsequently completed at
+clean `7054f13`; see the [accepted baseline](accepted/7054f13/README.md). The
+rejections and decisions below describe the earlier OCR/lifecycle iteration and
+remain unchanged as evidence. The accepted baseline provides no model-promotion
+or training authorization.
 
 ## Frozen experiment
 

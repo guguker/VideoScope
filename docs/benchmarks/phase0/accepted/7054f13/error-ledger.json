@@ -1,0 +1,85 @@
+{
+  "bundle_id": "sha256:5abee44ff9d4d85bd2c78de7b89e66668c4a1170aab9861eb5c56537b95111c1",
+  "code_sha": "7054f137f92c18676461242a18c8fc2619898b68",
+  "entries": [
+    {
+      "category": "model_miss",
+      "count": 0,
+      "diagnostic_code": "relevant_interval_not_retrieved",
+      "profile_id": "lexical_qdrant",
+      "source": "product_benchmark"
+    },
+    {
+      "category": "model_miss",
+      "count": 0,
+      "diagnostic_code": "relevant_interval_not_retrieved",
+      "profile_id": "dense_siglip",
+      "source": "product_benchmark"
+    },
+    {
+      "category": "model_miss",
+      "count": 0,
+      "diagnostic_code": "relevant_interval_not_retrieved",
+      "profile_id": "temporal_refinement",
+      "source": "product_benchmark"
+    },
+    {
+      "category": "model_miss",
+      "count": 0,
+      "diagnostic_code": "relevant_interval_not_retrieved",
+      "profile_id": "lighthouse",
+      "source": "product_benchmark"
+    },
+    {
+      "category": "model_miss",
+      "count": 1,
+      "diagnostic_code": "relevant_interval_not_retrieved",
+      "profile_id": "qwen_verification",
+      "source": "product_benchmark"
+    },
+    {
+      "category": "model_miss",
+      "count": 7,
+      "diagnostic_code": "strict_verifier_label_mismatch",
+      "source": "video_verifier"
+    }
+  ],
+  "infrastructure_error_count": 0,
+  "infrastructure_status": "clear",
+  "model_miss_count_by_source": [
+    {
+      "count": 0,
+      "profile_id": "lexical_qdrant",
+      "source": "product_benchmark"
+    },
+    {
+      "count": 0,
+      "profile_id": "dense_siglip",
+      "source": "product_benchmark"
+    },
+    {
+      "count": 0,
+      "profile_id": "temporal_refinement",
+      "source": "product_benchmark"
+    },
+    {
+      "count": 0,
+      "profile_id": "lighthouse",
+      "source": "product_benchmark"
+    },
+    {
+      "count": 1,
+      "profile_id": "qwen_verification",
+      "source": "product_benchmark"
+    },
+    {
+      "count": 7,
+      "source": "video_verifier"
+    }
+  ],
+  "rollback_control": {
+    "forced_failure_observed": true,
+    "status": "verified"
+  },
+  "schema_version": 1
+}

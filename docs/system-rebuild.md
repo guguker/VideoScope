@@ -249,9 +249,15 @@ path from synthetic upload and durable indexing through five generation-bound
 search profiles, inspectable evidence and an FFprobe-verified MP4 export. Its
 receipt includes raw process-tree RSS plus system-wide Metal and VM samples;
 system-wide Metal is standalone and non-additive with process RSS, not a
-per-worker attribution. The smoke implementation is present, but Phase 0 remains
-open until the exact clean-checkout artifacts and target M4 Pro produce and pass
-the retained evidence gate.
+per-worker attribution. Phase 0 is complete at clean serving revision `7054f13`:
+the unchanged collector accepted the full baseline after an owner-provided fresh
+macOS session produced a complete normal smoke with zero swapin, swapout and
+Metal recovery, no observed OOM and complete cleanup. The
+[accepted evidence and replay commands](benchmarks/phase0/accepted/7054f13/README.md)
+bind all five profiles, the strict direct verifier, six attested environments,
+portable raw measurements and forced rollback to that revision. Quality failures
+remain visible in this regression-only baseline; it does not permit model
+promotion, training or the start of a later phase without a separate goal.
 
 ## Model direction
 

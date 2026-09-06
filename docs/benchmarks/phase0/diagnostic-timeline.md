@@ -125,12 +125,21 @@ of the primary error while both samplers stop.
 The valid control demonstrates that swapin increments can occur in a window
 without VideoScope workers or model inference in the controlled process tree;
 it does not assign the smoke's
-events to background processes. No counts are subtracted. On September 6 the
-host still reported its August 18 boot (`1787056703`) and 1,798.75 MiB used swap.
-The next bounded experiment is an unchanged normal full smoke after an
-owner-provided fresh macOS session. That condition is a control, not a promise
-of zero swap or evidence for a speculative model-lifecycle fix. No accepted
-baseline bundle exists. The same-SHA five-profile batch and strict ten-case
-direct verifier have since completed; every non-smoke validator passes and the
-full collector still rejects the original smoke. Those complete baseline inputs
-are retained separately from the diagnostic timeline in the control record.
+events to background processes. No counts are subtracted. Before the owner
+rebooted on September 6, the host still reported its August 18 boot
+(`1787056703`) and 1,798.75 MiB used swap.
+These observations motivated an unchanged normal full smoke after an
+owner-provided fresh macOS session. The same-SHA five-profile batch and strict
+ten-case direct verifier completed with every non-smoke validator passing;
+the original 176-page diagnostic receipt remains rejected. Those complete
+baseline inputs are retained separately from the diagnostic timeline in the
+control record.
+
+The subsequent [fresh-session normal smoke](accepted/7054f13/README.md) passed
+the unchanged resource gate and the full collector accepted the Phase-0 bundle
+at the same clean `7054f13`. All eight steps, five profiles, both Qwen paths and
+MP4 export completed, with zero swapins, swapouts and Metal recovery, no observed
+OOM and complete cleanup. This closes Phase 0 without changing the diagnostic
+receipt or weakening its limitations. It does not establish a causal diagnosis
+for earlier swapins or guarantee zero swap in every future session. The baseline
+remains regression-only, and training and later phases have not started.
