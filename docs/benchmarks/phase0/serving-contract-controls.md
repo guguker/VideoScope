@@ -1,7 +1,8 @@
 # Phase 0: serving contract controls
 
-Status: complete functional control at `1b11a54`; resource gate rejected;
-Phase 0 remains open.
+Status: complete diagnostic smoke at `7054f13`; resource gate rejected.
+The five-profile benchmark batch and direct verifier remain at `1b11a54`;
+Phase 0 remains open, with no accepted bundle.
 
 The path under test is `index → query → interval → evidence → clip`. These
 controls use only the existing ten prepared `regression_seen` inputs or generated
@@ -218,7 +219,41 @@ above remain unchanged.
 
 The new opt-in [diagnostic control](diagnostic-timeline.md) records stage
 boundaries and RSS by worker role on a shared monotonic timeline, preserving
-model lifecycle and smoke coverage. Its real clean-checkout measurement remains
-pending. No further identical run is planned. Do not close owner
-applications, subtract background pressure, change the zero-swap criterion,
-or infer a model-residency cause without the missing attribution evidence.
+model lifecycle and smoke coverage. Its subsequent clean-checkout result is
+recorded below; it does not change the earlier rejection or quality ledger.
+
+## Clean 7054f13 diagnostic control
+
+Clean `7054f137f92c18676461242a18c8fc2619898b68` passed 2,527 backend tests,
+installed and attested all six environments, and passed forced generation
+rollback. The diagnostic full smoke completed all eight steps, five product
+profiles, export and cleanup. InternVideo remained `not_configured`. The
+sidecar completed without diagnostic errors and binds the exact native bytes;
+4,808 role observations match the formal process samples one for one.
+
+The host window recorded **176 swapin pages (2,883,584 bytes)** over 280.402
+seconds, with zero swapout and Metal recovery and no observed OOM. The launcher
+took 281.92 seconds. The native `ready` result is functional completion; the
+unchanged zero-swap gate still rejects these measurements. The longer window
+than the earlier normal smoke prevents interpreting the page count as an
+improvement. Exact receipts and diagnostic limits are retained in the
+[control record](negative-controls/7054f13/README.md).
+
+A separate valid fixed 120-second sampler control, with no ML inference or
+VideoScope workers, observed **four swapin pages (65,536 bytes)**. Peak owner
+process RSS was 69,533,696 bytes, with 2,088 matching native/timeline samples.
+The initial private driver attempt left an empty raw file after the erroneous
+`host.close()` cleanup call and is retained as invalid. The correction uses
+`host.finish()`; three fake-provider tests verify cleanup and primary-error
+preservation, including a failure after RSS starts.
+
+These observations do not identify the process responsible for the smoke's
+system-wide swapins. On September 6 the host still reported the August 18 boot
+(`1787056703`) and 1,798.75 MiB used swap. The next bounded experiment is an
+unchanged normal full smoke after an owner-provided fresh macOS session; this
+condition does not guarantee a pass. Do not subtract background pressure,
+change the gate, or infer a model-lifecycle fix from temporal association.
+
+No five-profile benchmark batch or direct verifier at `7054f13` is claimed.
+The retained `1b11a54` outputs cannot supply missing same-SHA evidence. No
+accepted baseline bundle, training or later phase is active.

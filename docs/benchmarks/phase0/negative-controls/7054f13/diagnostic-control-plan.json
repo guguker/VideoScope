@@ -1,0 +1,21 @@
+{
+  "agent_helper_process_lease": "No parallel tools, shell readers, Python, tests or scans; root polls existing launcher only.",
+  "code_sha": "7054f137f92c18676461242a18c8fc2619898b68",
+  "control_kind": "diagnostic_stage_and_role_timeline",
+  "coverage_changed": false,
+  "declared_at_utc": "2026-09-05T16:17:17.620019+00:00",
+  "declared_before_inference": true,
+  "external_data_import": false,
+  "host_cold_state": "not_established",
+  "hypothesis": "Stage timestamps and exclusive worker RSS from existing snapshots can localize the remaining swap observations enough to choose one bounded follow-up. Temporal association alone cannot identify the process causing system-wide swap.",
+  "later_phases": false,
+  "maximum_attempts": 1,
+  "measurement_use": "diagnostic_only_not_gate_evidence",
+  "owner_readiness_previously_confirmed": true,
+  "principal_change": "opt-in diagnostic timeline only",
+  "promotion_eligible": false,
+  "runtime_changed": false,
+  "schema_version": 1,
+  "training": false,
+  "zero_swap_gate_changed": false
+}

@@ -106,14 +106,18 @@ future work does not inherit a stale decision.
 
 The default next objective is Phase 0 of `docs/ml-autonomy-plan.md`: establish a
 reproducible and trustworthy baseline before training. Phase 0 remains open:
-the clean `1b11a54` control completed all five profiles and direct verifier, but
-its first full smoke and one unchanged owner-confirmed quiet-window control
-failed the unchanged zero-swap gate (446 and 116 swapin pages). An opt-in
-diagnostic stage/RSS timeline now preserves model lifecycle and coverage; the
-next control measures it from a new clean checkout.
-Exact evidence is retained in
-`docs/benchmarks/phase0/negative-controls/1b11a54/README.md`; no accepted baseline
-bundle, training or later phase is active. The active scope is Phase 0 only;
+the clean `7054f13` diagnostic smoke completed all coverage with an intact
+stage/RSS timeline, six attested environments, 2,527 passing backend tests and
+forced rollback, but observed 176 swapin pages and failed the unchanged resource
+gate. A separate valid 120-second control that started no model inference or workers
+in its controlled tree observed four swapin pages; this does not attribute the smoke's events to a
+process or permit background subtraction. Exact evidence is retained in
+`docs/benchmarks/phase0/negative-controls/7054f13/README.md`.
+The five-profile batch and direct verifier at `1b11a54` remain separate evidence;
+no new batch at `7054f13` or accepted baseline bundle exists. The next bounded
+experiment is an unchanged normal full smoke after an owner-provided fresh
+macOS session, with same-SHA batch/direct inputs prepared independently; a fresh session is not a promise of zero swap.
+No training or later phase is active. The active scope is Phase 0 only;
 a Phase 1 read-only dataset audit requires a separately authorized goal.
 No external or user data may be imported,
 uploaded or trained on merely because it is listed as a candidate.

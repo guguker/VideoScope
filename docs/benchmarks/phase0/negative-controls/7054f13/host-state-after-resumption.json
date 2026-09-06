@@ -1,0 +1,20 @@
+{
+  "boot_time_unix_seconds": 1787056703,
+  "boot_time_utc": "2026-08-18T12:38:23+00:00",
+  "causal_attribution": "not_established",
+  "cpu": "Apple M4 Pro",
+  "limitation": "This point-in-time read occurred outside all recorded sample windows and cannot correct their counts.",
+  "matching_ml_process_count": 0,
+  "measurement_use": "diagnostic_context_outside_smoke_window",
+  "memory_bytes": 25769803776,
+  "process_scan_scope": "explicit -m videoscope.providers.* or videoscope.benchmark.* modules only; not an inventory of every possible model process",
+  "read_at_utc": "2026-09-06T09:20:09.961285+00:00",
+  "read_scope": "after_task_resumption_2026_09_06",
+  "sampler_read_command": "sysctl kern.boottime vm.swapusage hw.memsize machdep.cpu.brand_string",
+  "schema_version": 1,
+  "swap_usage_mebibytes": {
+    "free": 1273.25,
+    "total": 3072.0,
+    "used": 1798.75
+  }
+}
