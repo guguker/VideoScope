@@ -12,8 +12,8 @@ The [control record](control-record.json) binds exact retained bytes and
 separates resource failures, the invalid diagnostic driver attempt and model
 quality. The five-profile batch and ten-case direct verifier previously retained
 at [1b11a54](../1b11a54/README.md) are not measurements of this revision and cannot
-be mixed into a `7054f13` bundle. Preparing their same-revision replacements is
-still required. Neither diagnostic below used those user clips; the full smoke
+be mixed into a `7054f13` bundle. Fresh same-revision replacements have now
+completed, as described below. Neither diagnostic below used those user clips; the full smoke
 used its existing synthetic fixture and the second control ran no inference.
 
 ## Complete diagnostic smoke, failed resource gate
@@ -36,8 +36,10 @@ disposable smoke root was empty. The optional wrapper and
 
 RSS and Metal are separate and must not be added. The unchanged collector's
 `validate_full_ml_smoke` rejects this receipt with `full_ml_smoke_invalid`.
-The full four-file collector was not run with mismatched older benchmark inputs;
-no accepted bundle was created.
+After the same-SHA benchmark inputs completed, the full collector was invoked
+with their exact files and returned exit 3 (`invalid_evidence`), with no output
+bundle. All non-smoke inputs passed separate unchanged validators; no older
+benchmark artifact was substituted.
 
 The [derived analysis](diagnostic-analysis.json) preserves all 18 swap-counter
 observation windows, overlapping stages and adjacent measured worker RSS. All
@@ -95,6 +97,44 @@ contains no measurements: its counts are unavailable, not zero. The
 stops both samplers and preserves an original failure. Three synthetic-provider
 tests passed, including secondary cleanup failure; they are not native evidence.
 
+## Same-revision benchmark inputs
+
+The [batch receipt](phase0-baseline-receipt.json) binds all five complete profile
+manifests, with completed worker retirement and cleanup. The
+[strict direct verifier](video-verifier-run.json) attempted all ten authorized
+prepared cases: **three matches, seven model misses, zero infrastructure
+errors**. Its [launch receipt](direct-verifier-launch-result.json) confirms
+runner/worker cleanup. The [predeclared run order](baseline-run-order.json)
+retains configuration and private-plan hashes without the original local paths.
+All inference and scoring ran through the committed public CLIs.
+
+The [independent input audit](baseline-input-audit.json) checks the frozen policy,
+both datasets, all five raw manifests, direct verifier, environment and rollback
+at this exact SHA. All non-smoke validators pass. It retains critical slices,
+model misses and absolute quality guardrail observations; functional completion
+is not a claim of promotion-quality retrieval. The unchanged full collector
+still rejects the original smoke and publishes no accepted bundle.
+
+The [quality summary](baseline-quality-summary.json) and
+[diagnostic error ledger](error-ledger-baseline-diagnostic.json) retain exact
+values, units and case/slice support. Rounded primary values are:
+
+| Profile | Candidate R@50 | P@5 | R@10 / R@20 | nDCG@10 | Boundary error, s | Query p95, s |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| lexical_qdrant | 1.000 | 0.240 | 1.000 / 1.000 | 0.840 | 1.633 | 1.628 |
+| dense_siglip | 1.000 | 0.240 | 1.000 / 1.000 | 0.975 | 1.564 | 6.201 |
+| temporal_refinement | 1.000 | 0.240 | 1.000 / 1.000 | 0.975 | 1.564 | 3.142 |
+| lighthouse | 1.000 | 0.240 | 1.000 / 1.000 | 0.975 | 1.562 | 3.216 |
+| qwen_verification | 0.833 | 0.200 | 0.833 / 0.833 | 0.714 | 0.130 | 128.249 |
+
+All non-latency quality metrics match the earlier `1b11a54` results. Qwen still
+misses the roundtable product case. All profiles fail the absolute P@5 and
+hard-negative guardrails; the first four also fail the boundary guardrail, and
+Qwen fails the candidate-recall floor. Four critical slices are represented and
+seven absent; every slice has insufficient independent support. These are
+visible baseline limitations, not infrastructure failures or promotion evidence.
+Latency and RSS were freshly measured; no causal speedup claim is made.
+
 ## Replay and next control
 
 From the repository root, with the attested backend environment:
@@ -109,7 +149,8 @@ TEST_NO_ML_DRIVER="$PWD/docs/benchmarks/phase0/negative-controls/7054f13/run-no-
   docs/benchmarks/phase0/negative-controls/7054f13/test_no_ml_driver_lifecycle.py -q
 ```
 
-The replay verifies hashes, environment, rollback, raw counter consistency,
+The replay verifies hashes, environment, rollback, both frozen datasets, all five
+benchmark runs, the batch and direct verifier, raw counter consistency,
 timeline/RSS agreement and the expected rejection by the unchanged smoke gate.
 It runs no inference and creates no accepted bundle. The tests use synthetic
 providers and a controlled clock, not another 120-second host measurement.
@@ -119,10 +160,12 @@ still reported the August 18 boot and 1,798.75 MiB of used swap. This observatio
 was outside the measured windows and cannot correct their counts. No owner
 application was closed or altered.
 
-The next environmental control is one unchanged normal full-ML smoke after an
-owner-provided fresh macOS session. A reboot tests a host-state hypothesis; it
-does not promise zero swap or excuse a failing result. Complete the same-SHA
-benchmark inputs independently, retain every control and keep the zero-swap
+The [prepared next environmental control](fresh-boot-control-preparation.json)
+is one unchanged normal full-ML smoke after an owner-provided fresh macOS
+session. Its preflight currently exits before inference because the boot ID has
+not changed. A reboot tests a host-state hypothesis; it
+does not promise zero swap or excuse a failing result. The same-SHA benchmark
+inputs are complete; retain every control and keep the zero-swap
 gate unchanged. A baseline can be accepted only when all required inputs at one
 clean SHA pass the full collector. No training, data import/upload, promotion or
 later phase has started.

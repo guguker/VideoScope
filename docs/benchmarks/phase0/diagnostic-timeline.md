@@ -123,11 +123,14 @@ three fake-provider tests, including failure after RSS startup and preservation
 of the primary error while both samplers stop.
 
 The valid control demonstrates that swapin increments can occur in a window
-without VideoScope workers or model inference; it does not assign the smoke's
+without VideoScope workers or model inference in the controlled process tree;
+it does not assign the smoke's
 events to background processes. No counts are subtracted. On September 6 the
 host still reported its August 18 boot (`1787056703`) and 1,798.75 MiB used swap.
 The next bounded experiment is an unchanged normal full smoke after an
 owner-provided fresh macOS session. That condition is a control, not a promise
 of zero swap or evidence for a speculative model-lifecycle fix. No accepted
-baseline bundle exists, and no new five-profile benchmark batch at this SHA
-has been claimed.
+baseline bundle exists. The same-SHA five-profile batch and strict ten-case
+direct verifier have since completed; every non-smoke validator passes and the
+full collector still rejects the original smoke. Those complete baseline inputs
+are retained separately from the diagnostic timeline in the control record.

@@ -1,0 +1,3967 @@
+{
+  "bindings": {
+    "baseline_batch": {
+      "byte_size": 1844,
+      "sha256": "db8ea6f22ecbc757d01daa19bf386742e4700888a96ca0e89a55aeebaef9e5b1"
+    },
+    "benchmark_run.dense_siglip": {
+      "byte_size": 66322,
+      "sha256": "40ce0f69f6836b3b5679ab0d24f30c0303890193e509d5e11281a3fce57cf7d0"
+    },
+    "benchmark_run.lexical_qdrant": {
+      "byte_size": 64829,
+      "sha256": "b9ab1f3a3d50c628608c8447ee048c3c2d06ea9d4e9d1c8fd1e98592febb1f9f"
+    },
+    "benchmark_run.lighthouse": {
+      "byte_size": 66618,
+      "sha256": "17604e56d0d773b13f5ee67a7dced2a1146738817eaadd617173f3d35f6510d8"
+    },
+    "benchmark_run.qwen_verification": {
+      "byte_size": 127288,
+      "sha256": "02d7f81e59e4ff8b17251107e3d335b41e19def80e7d19840a3b7fd1de9eb6da"
+    },
+    "benchmark_run.temporal_refinement": {
+      "byte_size": 66381,
+      "sha256": "db6c066960951d342846a32a3c8811da097b1fec8c971c8c489e0545614d4f82"
+    },
+    "frozen_metric_policy": {
+      "byte_size": 12851,
+      "sha256": "4bc80d09337e7f8cdb2148d8e522586316aea9c7c15386ef96e407e41b721b73"
+    },
+    "full_ml_smoke": {
+      "byte_size": 317195,
+      "sha256": "75382419d542c6a809e9c849b5f97f2380a6a860af09073bd545baa5b026c97f"
+    },
+    "ml_environment_attestation": {
+      "byte_size": 7058,
+      "sha256": "cff1ac988902db39c07846dab88ef03b9e445c9b2979117ccf24e5ae536974f0"
+    },
+    "product_dataset": {
+      "byte_size": 12468,
+      "sha256": "ef3d2180ff1655d6cf7ab49d6d0d743298fc06b881c2111abc5c61052467daa6"
+    },
+    "rollback_proof": {
+      "byte_size": 745,
+      "sha256": "258b06d3b66d2741e1e7051dcccb3ab2c16f6a157aba6929cc07895a1da5a5e8"
+    },
+    "video_verifier_dataset": {
+      "byte_size": 12235,
+      "sha256": "d8a55d9d6d2986a4782af092ed90dddc1f1cb4d7f09b5b78c12684e6e87e2e88"
+    },
+    "video_verifier_run": {
+      "byte_size": 8993,
+      "sha256": "10134e10ea99025e13056a0a5bb2d21659683f03d3335274bcc88b67c00514b0"
+    }
+  },
+  "bundle_written": false,
+  "checked_identities": {
+    "environment_attestation_id": "videoscope-phase0-ml-environment-v1",
+    "environment_bindings": {
+      "lighthouse": "lighthouse",
+      "ocr": "ocr",
+      "owner": "base",
+      "qwen": "qwen",
+      "vision": "vision",
+      "vision_index": "vision",
+      "whisper": "whisper"
+    },
+    "environment_manifest_identity": "sha256:f4d551a169e981af2279647e900cf7f87b8c174548cd0356c8df5e6cee82c9ac",
+    "frozen_policy_revision": "e387059314c5c7372520f971c815d03f3cfd181f92135e08e8fdea0bd5340eef",
+    "product_dataset_binding": {
+      "case_count": 5,
+      "dataset_id": "video-verifier-product-regression",
+      "dataset_revision": "8cda261148ce3f459e08c3762017cec86970ab7c85d36eaa77ef9f832a2ae6a1",
+      "dataset_schema_version": 1,
+      "dataset_version": "1.0.0",
+      "evidence_use": "regression_only",
+      "promotion_eligible": false,
+      "promotion_evidence_status": "not_promotion_evidence",
+      "source_group_count": 2
+    },
+    "product_dataset_revision": "8cda261148ce3f459e08c3762017cec86970ab7c85d36eaa77ef9f832a2ae6a1",
+    "profile_runs": [
+      {
+        "manifest_sha256": "b9ab1f3a3d50c628608c8447ee048c3c2d06ea9d4e9d1c8fd1e98592febb1f9f",
+        "profile_id": "lexical_qdrant",
+        "run_id": "phase0-proof19-7054f13-product-lexical_qdrant"
+      },
+      {
+        "manifest_sha256": "40ce0f69f6836b3b5679ab0d24f30c0303890193e509d5e11281a3fce57cf7d0",
+        "profile_id": "dense_siglip",
+        "run_id": "phase0-proof19-7054f13-product-dense_siglip"
+      },
+      {
+        "manifest_sha256": "db6c066960951d342846a32a3c8811da097b1fec8c971c8c489e0545614d4f82",
+        "profile_id": "temporal_refinement",
+        "run_id": "phase0-proof19-7054f13-product-temporal_refinement"
+      },
+      {
+        "manifest_sha256": "17604e56d0d773b13f5ee67a7dced2a1146738817eaadd617173f3d35f6510d8",
+        "profile_id": "lighthouse",
+        "run_id": "phase0-proof19-7054f13-product-lighthouse"
+      },
+      {
+        "manifest_sha256": "02d7f81e59e4ff8b17251107e3d335b41e19def80e7d19840a3b7fd1de9eb6da",
+        "profile_id": "qwen_verification",
+        "run_id": "phase0-proof19-7054f13-product-qwen_verification"
+      }
+    ],
+    "qwen_capability": {
+      "id": "qwen_verification",
+      "model_identities": [
+        "mlx-community/Qwen3.5-9B-MLX-4bit@938d8919941c6e7efd3c7150eff7fe9d12afa631"
+      ],
+      "runtime_identity": "videoscope-qwen-worker-v4|python==3.12.13|platform==aarch64-apple-darwin-macos14plus|runtime-manifest-sha256:0481dda4b0aef9927d5f9adb1a5f7292f997cac39a6d59ecef0087913d80335f|model-manifest-sha256:abaeb6d14ccbdc1741cccea700edd3385eb7cb3d215796b465c4d5a1a0504fe0",
+      "status": "complete"
+    },
+    "rollback": {
+      "forced_failure": "injected_pre_commit_publication_failure",
+      "proof_id": "phase0-persisted-generation-rollback-v1",
+      "semantic_assertions": [
+        "candidate_release_not_activated_after_forced_failure",
+        "prior_release_active_after_process_restart",
+        "prior_release_searchable_after_process_restart",
+        "candidate_generation_addressable_but_inactive",
+        "source_asset_identity_unchanged",
+        "source_reindex_not_required"
+      ],
+      "status": "verified",
+      "test_node_id": "backend/tests/test_video_index_jobs_repository.py::test_failed_full_job_publish_keeps_prior_release_searchable_after_restart",
+      "test_result": "passed",
+      "test_source_sha256": "d58995756414c39da9f830b1df5b6ccc3f2584e0dc135c8c12c4de4c1dcc2bd7"
+    },
+    "video_verifier_dataset_revision": "2758ce6fd86c4ad921ae29bff83126a31a5ddbfabdca79748c58fa3d42f1763b",
+    "worker_lifecycle": {
+      "cleanup_status": "complete",
+      "retirement_status": "complete"
+    }
+  },
+  "checks": {
+    "baseline_batch": "pass",
+    "clean_code_sha_before_and_after": "pass",
+    "direct_video_verifier": "pass",
+    "environment_attestation": "pass",
+    "exact_input_bytes_unchanged": "pass",
+    "five_benchmark_runs": "pass",
+    "frozen_policy_parsing": "pass",
+    "full_ml_smoke": "fail",
+    "product_dataset_binding": "pass",
+    "rollback": "pass",
+    "smoke_environment_binding": "pass",
+    "video_verifier_dataset_binding": "pass"
+  },
+  "code_sha": "7054f137f92c18676461242a18c8fc2619898b68",
+  "collector": {
+    "bundle_written": false,
+    "exit_code": 3,
+    "stderr": "{\"error\":\"invalid_evidence\",\"message\":\"Phase-0 evidence is invalid\"}\n",
+    "stdout": ""
+  },
+  "collector_receipt_binding": {
+    "byte_size": 2716,
+    "sha256": "abfc550fff0fbc45ef66528199fee0069324443c476e8b67e5e26e1b343197d4"
+  },
+  "collector_script_sha256": "db4e342809f721d3317ea62fa1b2d56fff3a69c4fa0a2cbf2fa7c2a374c2646a",
+  "direct_verifier": {
+    "candidate_set_revision": "afecb0793cd37471ccc6791fcbcec1346f18517e2024154fc378ae334a171f40",
+    "dataset_id": "video-verifier-private-regression",
+    "dataset_revision": "2758ce6fd86c4ad921ae29bff83126a31a5ddbfabdca79748c58fa3d42f1763b",
+    "dataset_version": "1.0.0",
+    "run_id": "phase0-proof19-7054f13-qwen",
+    "run_status": "complete",
+    "strict_no_fallback": true,
+    "summary": {
+      "case_count": 10,
+      "infrastructure_error_count": 0,
+      "match_count": 3,
+      "model_miss_count": 7
+    },
+    "verifier_identity": "sha256:414fbf7448ee89e2bdf065eaf1b0f9deafe8f34b6d4c0d4f4ddd050b038dd024"
+  },
+  "evidence_kind": "independent_rejected_baseline_input_audit",
+  "frozen_absolute_guardrail_observations": [
+    {
+      "actual": 1.0,
+      "direction": "higher_is_better",
+      "guardrail_id": "candidate_recall_floor",
+      "profile_id": "lexical_qdrant",
+      "status": "pass",
+      "threshold": 0.95
+    },
+    {
+      "actual": 1.0,
+      "direction": "higher_is_better",
+      "guardrail_id": "candidate_recall_floor",
+      "profile_id": "dense_siglip",
+      "status": "pass",
+      "threshold": 0.95
+    },
+    {
+      "actual": 1.0,
+      "direction": "higher_is_better",
+      "guardrail_id": "candidate_recall_floor",
+      "profile_id": "temporal_refinement",
+      "status": "pass",
+      "threshold": 0.95
+    },
+    {
+      "actual": 1.0,
+      "direction": "higher_is_better",
+      "guardrail_id": "candidate_recall_floor",
+      "profile_id": "lighthouse",
+      "status": "pass",
+      "threshold": 0.95
+    },
+    {
+      "actual": 0.8333333333333334,
+      "direction": "higher_is_better",
+      "guardrail_id": "candidate_recall_floor",
+      "profile_id": "qwen_verification",
+      "status": "fail",
+      "threshold": 0.95
+    },
+    {
+      "guardrail_id": "critical_ndcg_regression",
+      "reason_code": "comparison_baseline_not_applicable_to_snapshot",
+      "status": "not_evaluable"
+    },
+    {
+      "guardrail_id": "critical_recall_regression",
+      "reason_code": "comparison_baseline_not_applicable_to_snapshot",
+      "status": "not_evaluable"
+    },
+    {
+      "actual": 1.0,
+      "direction": "lower_is_better",
+      "guardrail_id": "hard_negative_false_positive_ceiling",
+      "profile_id": "lexical_qdrant",
+      "status": "fail",
+      "threshold": 0.0
+    },
+    {
+      "actual": 1.0,
+      "direction": "lower_is_better",
+      "guardrail_id": "hard_negative_false_positive_ceiling",
+      "profile_id": "dense_siglip",
+      "status": "fail",
+      "threshold": 0.0
+    },
+    {
+      "actual": 1.0,
+      "direction": "lower_is_better",
+      "guardrail_id": "hard_negative_false_positive_ceiling",
+      "profile_id": "temporal_refinement",
+      "status": "fail",
+      "threshold": 0.0
+    },
+    {
+      "actual": 1.0,
+      "direction": "lower_is_better",
+      "guardrail_id": "hard_negative_false_positive_ceiling",
+      "profile_id": "lighthouse",
+      "status": "fail",
+      "threshold": 0.0
+    },
+    {
+      "actual": 0.8,
+      "direction": "lower_is_better",
+      "guardrail_id": "hard_negative_false_positive_ceiling",
+      "profile_id": "qwen_verification",
+      "status": "fail",
+      "threshold": 0.0
+    },
+    {
+      "actual": 0.0,
+      "direction": "lower_is_better",
+      "guardrail_id": "infrastructure_error_ceiling",
+      "profile_id": "lexical_qdrant",
+      "status": "pass",
+      "threshold": 0.0
+    },
+    {
+      "actual": 0.0,
+      "direction": "lower_is_better",
+      "guardrail_id": "infrastructure_error_ceiling",
+      "profile_id": "dense_siglip",
+      "status": "pass",
+      "threshold": 0.0
+    },
+    {
+      "actual": 0.0,
+      "direction": "lower_is_better",
+      "guardrail_id": "infrastructure_error_ceiling",
+      "profile_id": "temporal_refinement",
+      "status": "pass",
+      "threshold": 0.0
+    },
+    {
+      "actual": 0.0,
+      "direction": "lower_is_better",
+      "guardrail_id": "infrastructure_error_ceiling",
+      "profile_id": "lighthouse",
+      "status": "pass",
+      "threshold": 0.0
+    },
+    {
+      "actual": 0.0,
+      "direction": "lower_is_better",
+      "guardrail_id": "infrastructure_error_ceiling",
+      "profile_id": "qwen_verification",
+      "status": "pass",
+      "threshold": 0.0
+    },
+    {
+      "guardrail_id": "interactive_latency_regression",
+      "reason_code": "comparison_baseline_not_applicable_to_snapshot",
+      "status": "not_evaluable"
+    },
+    {
+      "actual": 1.6333575658137394,
+      "direction": "lower_is_better",
+      "guardrail_id": "mean_boundary_error_ceiling",
+      "profile_id": "lexical_qdrant",
+      "status": "fail",
+      "threshold": 1.0
+    },
+    {
+      "actual": 1.5644444444444443,
+      "direction": "lower_is_better",
+      "guardrail_id": "mean_boundary_error_ceiling",
+      "profile_id": "dense_siglip",
+      "status": "fail",
+      "threshold": 1.0
+    },
+    {
+      "actual": 1.5644444444444443,
+      "direction": "lower_is_better",
+      "guardrail_id": "mean_boundary_error_ceiling",
+      "profile_id": "temporal_refinement",
+      "status": "fail",
+      "threshold": 1.0
+    },
+    {
+      "actual": 1.5616666666666665,
+      "direction": "lower_is_better",
+      "guardrail_id": "mean_boundary_error_ceiling",
+      "profile_id": "lighthouse",
+      "status": "fail",
+      "threshold": 1.0
+    },
+    {
+      "actual": 0.13000000000000006,
+      "direction": "lower_is_better",
+      "guardrail_id": "mean_boundary_error_ceiling",
+      "profile_id": "qwen_verification",
+      "status": "pass",
+      "threshold": 1.0
+    },
+    {
+      "actual": 4315332608.0,
+      "direction": "lower_is_better",
+      "guardrail_id": "peak_process_tree_rss_ceiling",
+      "profile_id": "lexical_qdrant",
+      "status": "pass",
+      "threshold": 17179869184.0
+    },
+    {
+      "actual": 5296930816.0,
+      "direction": "lower_is_better",
+      "guardrail_id": "peak_process_tree_rss_ceiling",
+      "profile_id": "dense_siglip",
+      "status": "pass",
+      "threshold": 17179869184.0
+    },
+    {
+      "actual": 5293391872.0,
+      "direction": "lower_is_better",
+      "guardrail_id": "peak_process_tree_rss_ceiling",
+      "profile_id": "temporal_refinement",
+      "status": "pass",
+      "threshold": 17179869184.0
+    },
+    {
+      "actual": 5316034560.0,
+      "direction": "lower_is_better",
+      "guardrail_id": "peak_process_tree_rss_ceiling",
+      "profile_id": "lighthouse",
+      "status": "pass",
+      "threshold": 17179869184.0
+    },
+    {
+      "actual": 8876081152.0,
+      "direction": "lower_is_better",
+      "guardrail_id": "peak_process_tree_rss_ceiling",
+      "profile_id": "qwen_verification",
+      "status": "pass",
+      "threshold": 17179869184.0
+    },
+    {
+      "actual": 0.24000000000000002,
+      "direction": "higher_is_better",
+      "guardrail_id": "precision_at_5_floor",
+      "profile_id": "lexical_qdrant",
+      "status": "fail",
+      "threshold": 0.6
+    },
+    {
+      "actual": 0.24000000000000002,
+      "direction": "higher_is_better",
+      "guardrail_id": "precision_at_5_floor",
+      "profile_id": "dense_siglip",
+      "status": "fail",
+      "threshold": 0.6
+    },
+    {
+      "actual": 0.24000000000000002,
+      "direction": "higher_is_better",
+      "guardrail_id": "precision_at_5_floor",
+      "profile_id": "temporal_refinement",
+      "status": "fail",
+      "threshold": 0.6
+    },
+    {
+      "actual": 0.24000000000000002,
+      "direction": "higher_is_better",
+      "guardrail_id": "precision_at_5_floor",
+      "profile_id": "lighthouse",
+      "status": "fail",
+      "threshold": 0.6
+    },
+    {
+      "actual": 0.2,
+      "direction": "higher_is_better",
+      "guardrail_id": "precision_at_5_floor",
+      "profile_id": "qwen_verification",
+      "status": "fail",
+      "threshold": 0.6
+    },
+    {
+      "actual": 1.0,
+      "direction": "higher_is_better",
+      "guardrail_id": "recall_at_20_floor",
+      "profile_id": "lexical_qdrant",
+      "status": "pass",
+      "threshold": 0.8
+    },
+    {
+      "actual": 1.0,
+      "direction": "higher_is_better",
+      "guardrail_id": "recall_at_20_floor",
+      "profile_id": "dense_siglip",
+      "status": "pass",
+      "threshold": 0.8
+    },
+    {
+      "actual": 1.0,
+      "direction": "higher_is_better",
+      "guardrail_id": "recall_at_20_floor",
+      "profile_id": "temporal_refinement",
+      "status": "pass",
+      "threshold": 0.8
+    },
+    {
+      "actual": 1.0,
+      "direction": "higher_is_better",
+      "guardrail_id": "recall_at_20_floor",
+      "profile_id": "lighthouse",
+      "status": "pass",
+      "threshold": 0.8
+    },
+    {
+      "actual": 0.8333333333333334,
+      "direction": "higher_is_better",
+      "guardrail_id": "recall_at_20_floor",
+      "profile_id": "qwen_verification",
+      "status": "pass",
+      "threshold": 0.8
+    },
+    {
+      "guardrail_id": "universal_ndcg_regression",
+      "reason_code": "comparison_baseline_not_applicable_to_snapshot",
+      "status": "not_evaluable"
+    },
+    {
+      "guardrail_id": "universal_recall_regression",
+      "reason_code": "comparison_baseline_not_applicable_to_snapshot",
+      "status": "not_evaluable"
+    },
+    {
+      "actual": 0,
+      "direction": "lower_is_better",
+      "guardrail_id": "verifier_infrastructure_error_ceiling",
+      "profile_id": "lexical_qdrant",
+      "status": "pass",
+      "threshold": 0.0
+    },
+    {
+      "actual": 0,
+      "direction": "lower_is_better",
+      "guardrail_id": "verifier_infrastructure_error_ceiling",
+      "profile_id": "dense_siglip",
+      "status": "pass",
+      "threshold": 0.0
+    },
+    {
+      "actual": 0,
+      "direction": "lower_is_better",
+      "guardrail_id": "verifier_infrastructure_error_ceiling",
+      "profile_id": "temporal_refinement",
+      "status": "pass",
+      "threshold": 0.0
+    },
+    {
+      "actual": 0,
+      "direction": "lower_is_better",
+      "guardrail_id": "verifier_infrastructure_error_ceiling",
+      "profile_id": "lighthouse",
+      "status": "pass",
+      "threshold": 0.0
+    },
+    {
+      "actual": 0,
+      "direction": "lower_is_better",
+      "guardrail_id": "verifier_infrastructure_error_ceiling",
+      "profile_id": "qwen_verification",
+      "status": "pass",
+      "threshold": 0.0
+    }
+  ],
+  "full_ml_smoke": {
+    "classification": "infrastructure.resource_gate",
+    "counts_modified": false,
+    "native_functional_status": "ready",
+    "oom": {
+      "status": "not_observed"
+    },
+    "pressure_deltas": {
+      "metal_recovery_count": 0,
+      "swapins_bytes": 2883584,
+      "swapins_pages": 176,
+      "swapouts_bytes": 0,
+      "swapouts_pages": 0
+    },
+    "reason_code": "full_ml_smoke_invalid",
+    "status": "rejected",
+    "workspace_cleanup": "complete"
+  },
+  "interpretation": "Every input is bound to the clean 7054f13 code SHA and exact bytes. Non-smoke validators pass; the original full smoke remains rejected. Model misses and frozen quality failures remain visible. No accepted bundle, training, later phase or background subtraction.",
+  "phase0_complete": false,
+  "product_model_misses": [
+    {
+      "category": "model_miss",
+      "count": 0,
+      "diagnostic_code": "relevant_interval_not_retrieved",
+      "profile_id": "lexical_qdrant",
+      "source": "product_benchmark"
+    },
+    {
+      "category": "model_miss",
+      "count": 0,
+      "diagnostic_code": "relevant_interval_not_retrieved",
+      "profile_id": "dense_siglip",
+      "source": "product_benchmark"
+    },
+    {
+      "category": "model_miss",
+      "count": 0,
+      "diagnostic_code": "relevant_interval_not_retrieved",
+      "profile_id": "temporal_refinement",
+      "source": "product_benchmark"
+    },
+    {
+      "category": "model_miss",
+      "count": 0,
+      "diagnostic_code": "relevant_interval_not_retrieved",
+      "profile_id": "lighthouse",
+      "source": "product_benchmark"
+    },
+    {
+      "category": "model_miss",
+      "count": 1,
+      "diagnostic_code": "relevant_interval_not_retrieved",
+      "profile_id": "qwen_verification",
+      "source": "product_benchmark"
+    }
+  ],
+  "product_profiles": [
+    {
+      "execution_mode": "warm",
+      "metrics": {
+        "candidate_recall_at_50": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "error_count": {
+          "status": "measured",
+          "unit": "count",
+          "value": 0.0
+        },
+        "hard_negative_hit_rate": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "infrastructure_error_count": {
+          "status": "measured",
+          "unit": "count",
+          "value": 0
+        },
+        "mean_boundary_error_seconds": {
+          "status": "measured",
+          "unit": "seconds",
+          "value": 1.6333575658137394
+        },
+        "model_miss_count": {
+          "status": "measured",
+          "unit": "count",
+          "value": 0.0
+        },
+        "ndcg_at_10": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 0.8403142945053556
+        },
+        "p95_latency_ms": {
+          "status": "measured",
+          "unit": "milliseconds",
+          "value": 1628.2293749973178
+        },
+        "precision_at_5": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 0.24000000000000002
+        },
+        "recall_at_10": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "recall_at_20": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "sampled_peak_process_tree_rss_bytes": {
+          "status": "measured",
+          "unit": "bytes",
+          "value": 4315332608.0
+        },
+        "slice.capture_condition.low_resolution.candidate_recall_at_50": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.capture_condition.low_resolution.case_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.capture_condition.low_resolution.completed_case_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.capture_condition.low_resolution.error_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.capture_condition.low_resolution.hard_negative_hit_rate": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.capture_condition.low_resolution.mean_boundary_error_seconds": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "seconds"
+        },
+        "slice.capture_condition.low_resolution.ndcg_at_10": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.capture_condition.low_resolution.p95_latency_ms": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "milliseconds"
+        },
+        "slice.capture_condition.low_resolution.precision_at_5": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.capture_condition.low_resolution.recall_at_10": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.capture_condition.low_resolution.recall_at_20": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.capture_condition.scoreboard_hidden.candidate_recall_at_50": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.capture_condition.scoreboard_hidden.case_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.capture_condition.scoreboard_hidden.completed_case_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.capture_condition.scoreboard_hidden.error_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.capture_condition.scoreboard_hidden.hard_negative_hit_rate": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.capture_condition.scoreboard_hidden.mean_boundary_error_seconds": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "seconds"
+        },
+        "slice.capture_condition.scoreboard_hidden.ndcg_at_10": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.capture_condition.scoreboard_hidden.p95_latency_ms": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "milliseconds"
+        },
+        "slice.capture_condition.scoreboard_hidden.precision_at_5": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.capture_condition.scoreboard_hidden.recall_at_10": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.capture_condition.scoreboard_hidden.recall_at_20": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.distribution_shift.different_camera_or_league.candidate_recall_at_50": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.distribution_shift.different_camera_or_league.case_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.distribution_shift.different_camera_or_league.completed_case_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.distribution_shift.different_camera_or_league.error_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.distribution_shift.different_camera_or_league.hard_negative_hit_rate": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.distribution_shift.different_camera_or_league.mean_boundary_error_seconds": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "seconds"
+        },
+        "slice.distribution_shift.different_camera_or_league.ndcg_at_10": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.distribution_shift.different_camera_or_league.p95_latency_ms": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "milliseconds"
+        },
+        "slice.distribution_shift.different_camera_or_league.precision_at_5": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.distribution_shift.different_camera_or_league.recall_at_10": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.distribution_shift.different_camera_or_league.recall_at_20": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.domain.ood_non_basketball.candidate_recall_at_50": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.domain.ood_non_basketball.case_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.domain.ood_non_basketball.completed_case_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.domain.ood_non_basketball.error_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.domain.ood_non_basketball.hard_negative_hit_rate": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.domain.ood_non_basketball.mean_boundary_error_seconds": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "seconds"
+        },
+        "slice.domain.ood_non_basketball.ndcg_at_10": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.domain.ood_non_basketball.p95_latency_ms": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "milliseconds"
+        },
+        "slice.domain.ood_non_basketball.precision_at_5": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.domain.ood_non_basketball.recall_at_10": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.domain.ood_non_basketball.recall_at_20": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.domain.universal_non_sports.candidate_recall_at_50": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.domain.universal_non_sports.case_count": {
+          "status": "measured",
+          "unit": "count",
+          "value": 2.0
+        },
+        "slice.domain.universal_non_sports.completed_case_count": {
+          "status": "measured",
+          "unit": "count",
+          "value": 2.0
+        },
+        "slice.domain.universal_non_sports.error_count": {
+          "status": "measured",
+          "unit": "count",
+          "value": 0.0
+        },
+        "slice.domain.universal_non_sports.hard_negative_hit_rate": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.domain.universal_non_sports.mean_boundary_error_seconds": {
+          "status": "measured",
+          "unit": "seconds",
+          "value": 4.891739364107885
+        },
+        "slice.domain.universal_non_sports.ndcg_at_10": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 0.8154648767857288
+        },
+        "slice.domain.universal_non_sports.p95_latency_ms": {
+          "status": "measured",
+          "unit": "milliseconds",
+          "value": 1628.2293749973178
+        },
+        "slice.domain.universal_non_sports.precision_at_5": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 0.2
+        },
+        "slice.domain.universal_non_sports.recall_at_10": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.domain.universal_non_sports.recall_at_20": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.event_class.advertisement_non_game.candidate_recall_at_50": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.event_class.advertisement_non_game.case_count": {
+          "status": "measured",
+          "unit": "count",
+          "value": 1.0
+        },
+        "slice.event_class.advertisement_non_game.completed_case_count": {
+          "status": "measured",
+          "unit": "count",
+          "value": 1.0
+        },
+        "slice.event_class.advertisement_non_game.error_count": {
+          "status": "measured",
+          "unit": "count",
+          "value": 0.0
+        },
+        "slice.event_class.advertisement_non_game.hard_negative_hit_rate": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.event_class.advertisement_non_game.mean_boundary_error_seconds": {
+          "status": "measured",
+          "unit": "seconds",
+          "value": 0.0
+        },
+        "slice.event_class.advertisement_non_game.ndcg_at_10": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.event_class.advertisement_non_game.p95_latency_ms": {
+          "status": "measured",
+          "unit": "milliseconds",
+          "value": 1583.701000083238
+        },
+        "slice.event_class.advertisement_non_game.precision_at_5": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 0.2
+        },
+        "slice.event_class.advertisement_non_game.recall_at_10": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.event_class.advertisement_non_game.recall_at_20": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.event_class.free_throw.candidate_recall_at_50": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.event_class.free_throw.case_count": {
+          "status": "measured",
+          "unit": "count",
+          "value": 1.0
+        },
+        "slice.event_class.free_throw.completed_case_count": {
+          "status": "measured",
+          "unit": "count",
+          "value": 1.0
+        },
+        "slice.event_class.free_throw.error_count": {
+          "status": "measured",
+          "unit": "count",
+          "value": 0.0
+        },
+        "slice.event_class.free_throw.hard_negative_hit_rate": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.event_class.free_throw.mean_boundary_error_seconds": {
+          "status": "measured",
+          "unit": "seconds",
+          "value": 0.0
+        },
+        "slice.event_class.free_throw.ndcg_at_10": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.event_class.free_throw.p95_latency_ms": {
+          "status": "measured",
+          "unit": "milliseconds",
+          "value": 1575.3024169243872
+        },
+        "slice.event_class.free_throw.precision_at_5": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 0.2
+        },
+        "slice.event_class.free_throw.recall_at_10": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.event_class.free_throw.recall_at_20": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.event_class.made_2.candidate_recall_at_50": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.made_2.case_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.event_class.made_2.completed_case_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.event_class.made_2.error_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.event_class.made_2.hard_negative_hit_rate": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.made_2.mean_boundary_error_seconds": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "seconds"
+        },
+        "slice.event_class.made_2.ndcg_at_10": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.made_2.p95_latency_ms": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "milliseconds"
+        },
+        "slice.event_class.made_2.precision_at_5": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.made_2.recall_at_10": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.made_2.recall_at_20": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.made_3.candidate_recall_at_50": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.event_class.made_3.case_count": {
+          "status": "measured",
+          "unit": "count",
+          "value": 1.0
+        },
+        "slice.event_class.made_3.completed_case_count": {
+          "status": "measured",
+          "unit": "count",
+          "value": 1.0
+        },
+        "slice.event_class.made_3.error_count": {
+          "status": "measured",
+          "unit": "count",
+          "value": 0.0
+        },
+        "slice.event_class.made_3.hard_negative_hit_rate": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.event_class.made_3.mean_boundary_error_seconds": {
+          "status": "measured",
+          "unit": "seconds",
+          "value": 0.008333333333333304
+        },
+        "slice.event_class.made_3.ndcg_at_10": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 0.5706417189553201
+        },
+        "slice.event_class.made_3.p95_latency_ms": {
+          "status": "measured",
+          "unit": "milliseconds",
+          "value": 1596.5729590971023
+        },
+        "slice.event_class.made_3.precision_at_5": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 0.4
+        },
+        "slice.event_class.made_3.recall_at_10": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.event_class.made_3.recall_at_20": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.event_class.miss.candidate_recall_at_50": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.miss.case_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.event_class.miss.completed_case_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.event_class.miss.error_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.event_class.miss.hard_negative_hit_rate": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.miss.mean_boundary_error_seconds": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "seconds"
+        },
+        "slice.event_class.miss.ndcg_at_10": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.miss.p95_latency_ms": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "milliseconds"
+        },
+        "slice.event_class.miss.precision_at_5": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.miss.recall_at_10": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.miss.recall_at_20": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.replay.candidate_recall_at_50": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.replay.case_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.event_class.replay.completed_case_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.event_class.replay.error_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.event_class.replay.hard_negative_hit_rate": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.replay.mean_boundary_error_seconds": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "seconds"
+        },
+        "slice.event_class.replay.ndcg_at_10": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.replay.p95_latency_ms": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "milliseconds"
+        },
+        "slice.event_class.replay.precision_at_5": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.replay.recall_at_10": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.replay.recall_at_20": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        }
+      },
+      "profile_id": "lexical_qdrant",
+      "profile_identity": "lexical_qdrant@2:c969abf7df5d61c960cd80e809ac2fd5ddd1720fa952fd1ca7990a92ba83ea28",
+      "run_id": "phase0-proof19-7054f13-product-lexical_qdrant",
+      "run_status": "complete",
+      "search_plan_identity": "evaluation-search-plan@1:a15fc64b8e4ed52541e7e0ccc3420c82dd5124e2d7e297dc05877a81d60130d1"
+    },
+    {
+      "execution_mode": "warm",
+      "metrics": {
+        "candidate_recall_at_50": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "error_count": {
+          "status": "measured",
+          "unit": "count",
+          "value": 0.0
+        },
+        "hard_negative_hit_rate": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "infrastructure_error_count": {
+          "status": "measured",
+          "unit": "count",
+          "value": 0
+        },
+        "mean_boundary_error_seconds": {
+          "status": "measured",
+          "unit": "seconds",
+          "value": 1.5644444444444443
+        },
+        "model_miss_count": {
+          "status": "measured",
+          "unit": "count",
+          "value": 0.0
+        },
+        "ndcg_at_10": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 0.9754430630676099
+        },
+        "p95_latency_ms": {
+          "status": "measured",
+          "unit": "milliseconds",
+          "value": 6201.134042115882
+        },
+        "precision_at_5": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 0.24000000000000002
+        },
+        "recall_at_10": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "recall_at_20": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "sampled_peak_process_tree_rss_bytes": {
+          "status": "measured",
+          "unit": "bytes",
+          "value": 5296930816.0
+        },
+        "slice.capture_condition.low_resolution.candidate_recall_at_50": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.capture_condition.low_resolution.case_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.capture_condition.low_resolution.completed_case_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.capture_condition.low_resolution.error_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.capture_condition.low_resolution.hard_negative_hit_rate": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.capture_condition.low_resolution.mean_boundary_error_seconds": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "seconds"
+        },
+        "slice.capture_condition.low_resolution.ndcg_at_10": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.capture_condition.low_resolution.p95_latency_ms": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "milliseconds"
+        },
+        "slice.capture_condition.low_resolution.precision_at_5": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.capture_condition.low_resolution.recall_at_10": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.capture_condition.low_resolution.recall_at_20": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.capture_condition.scoreboard_hidden.candidate_recall_at_50": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.capture_condition.scoreboard_hidden.case_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.capture_condition.scoreboard_hidden.completed_case_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.capture_condition.scoreboard_hidden.error_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.capture_condition.scoreboard_hidden.hard_negative_hit_rate": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.capture_condition.scoreboard_hidden.mean_boundary_error_seconds": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "seconds"
+        },
+        "slice.capture_condition.scoreboard_hidden.ndcg_at_10": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.capture_condition.scoreboard_hidden.p95_latency_ms": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "milliseconds"
+        },
+        "slice.capture_condition.scoreboard_hidden.precision_at_5": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.capture_condition.scoreboard_hidden.recall_at_10": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.capture_condition.scoreboard_hidden.recall_at_20": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.distribution_shift.different_camera_or_league.candidate_recall_at_50": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.distribution_shift.different_camera_or_league.case_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.distribution_shift.different_camera_or_league.completed_case_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.distribution_shift.different_camera_or_league.error_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.distribution_shift.different_camera_or_league.hard_negative_hit_rate": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.distribution_shift.different_camera_or_league.mean_boundary_error_seconds": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "seconds"
+        },
+        "slice.distribution_shift.different_camera_or_league.ndcg_at_10": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.distribution_shift.different_camera_or_league.p95_latency_ms": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "milliseconds"
+        },
+        "slice.distribution_shift.different_camera_or_league.precision_at_5": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.distribution_shift.different_camera_or_league.recall_at_10": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.distribution_shift.different_camera_or_league.recall_at_20": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.domain.ood_non_basketball.candidate_recall_at_50": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.domain.ood_non_basketball.case_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.domain.ood_non_basketball.completed_case_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.domain.ood_non_basketball.error_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.domain.ood_non_basketball.hard_negative_hit_rate": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.domain.ood_non_basketball.mean_boundary_error_seconds": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "seconds"
+        },
+        "slice.domain.ood_non_basketball.ndcg_at_10": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.domain.ood_non_basketball.p95_latency_ms": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "milliseconds"
+        },
+        "slice.domain.ood_non_basketball.precision_at_5": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.domain.ood_non_basketball.recall_at_10": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.domain.ood_non_basketball.recall_at_20": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.domain.universal_non_sports.candidate_recall_at_50": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.domain.universal_non_sports.case_count": {
+          "status": "measured",
+          "unit": "count",
+          "value": 2.0
+        },
+        "slice.domain.universal_non_sports.completed_case_count": {
+          "status": "measured",
+          "unit": "count",
+          "value": 2.0
+        },
+        "slice.domain.universal_non_sports.error_count": {
+          "status": "measured",
+          "unit": "count",
+          "value": 0.0
+        },
+        "slice.domain.universal_non_sports.hard_negative_hit_rate": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.domain.universal_non_sports.mean_boundary_error_seconds": {
+          "status": "measured",
+          "unit": "seconds",
+          "value": 4.685
+        },
+        "slice.domain.universal_non_sports.ndcg_at_10": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.domain.universal_non_sports.p95_latency_ms": {
+          "status": "measured",
+          "unit": "milliseconds",
+          "value": 6201.134042115882
+        },
+        "slice.domain.universal_non_sports.precision_at_5": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 0.2
+        },
+        "slice.domain.universal_non_sports.recall_at_10": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.domain.universal_non_sports.recall_at_20": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.event_class.advertisement_non_game.candidate_recall_at_50": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.event_class.advertisement_non_game.case_count": {
+          "status": "measured",
+          "unit": "count",
+          "value": 1.0
+        },
+        "slice.event_class.advertisement_non_game.completed_case_count": {
+          "status": "measured",
+          "unit": "count",
+          "value": 1.0
+        },
+        "slice.event_class.advertisement_non_game.error_count": {
+          "status": "measured",
+          "unit": "count",
+          "value": 0.0
+        },
+        "slice.event_class.advertisement_non_game.hard_negative_hit_rate": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.event_class.advertisement_non_game.mean_boundary_error_seconds": {
+          "status": "measured",
+          "unit": "seconds",
+          "value": 0.0
+        },
+        "slice.event_class.advertisement_non_game.ndcg_at_10": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.event_class.advertisement_non_game.p95_latency_ms": {
+          "status": "measured",
+          "unit": "milliseconds",
+          "value": 1593.485875055194
+        },
+        "slice.event_class.advertisement_non_game.precision_at_5": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 0.2
+        },
+        "slice.event_class.advertisement_non_game.recall_at_10": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.event_class.advertisement_non_game.recall_at_20": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.event_class.free_throw.candidate_recall_at_50": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.event_class.free_throw.case_count": {
+          "status": "measured",
+          "unit": "count",
+          "value": 1.0
+        },
+        "slice.event_class.free_throw.completed_case_count": {
+          "status": "measured",
+          "unit": "count",
+          "value": 1.0
+        },
+        "slice.event_class.free_throw.error_count": {
+          "status": "measured",
+          "unit": "count",
+          "value": 0.0
+        },
+        "slice.event_class.free_throw.hard_negative_hit_rate": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.event_class.free_throw.mean_boundary_error_seconds": {
+          "status": "measured",
+          "unit": "seconds",
+          "value": 0.0
+        },
+        "slice.event_class.free_throw.ndcg_at_10": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.event_class.free_throw.p95_latency_ms": {
+          "status": "measured",
+          "unit": "milliseconds",
+          "value": 1809.8429581150413
+        },
+        "slice.event_class.free_throw.precision_at_5": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 0.2
+        },
+        "slice.event_class.free_throw.recall_at_10": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.event_class.free_throw.recall_at_20": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.event_class.made_2.candidate_recall_at_50": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.made_2.case_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.event_class.made_2.completed_case_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.event_class.made_2.error_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.event_class.made_2.hard_negative_hit_rate": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.made_2.mean_boundary_error_seconds": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "seconds"
+        },
+        "slice.event_class.made_2.ndcg_at_10": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.made_2.p95_latency_ms": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "milliseconds"
+        },
+        "slice.event_class.made_2.precision_at_5": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.made_2.recall_at_10": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.made_2.recall_at_20": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.made_3.candidate_recall_at_50": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.event_class.made_3.case_count": {
+          "status": "measured",
+          "unit": "count",
+          "value": 1.0
+        },
+        "slice.event_class.made_3.completed_case_count": {
+          "status": "measured",
+          "unit": "count",
+          "value": 1.0
+        },
+        "slice.event_class.made_3.error_count": {
+          "status": "measured",
+          "unit": "count",
+          "value": 0.0
+        },
+        "slice.event_class.made_3.hard_negative_hit_rate": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.event_class.made_3.mean_boundary_error_seconds": {
+          "status": "measured",
+          "unit": "seconds",
+          "value": 0.008333333333333304
+        },
+        "slice.event_class.made_3.ndcg_at_10": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 0.8772153153380493
+        },
+        "slice.event_class.made_3.p95_latency_ms": {
+          "status": "measured",
+          "unit": "milliseconds",
+          "value": 1798.0590830557048
+        },
+        "slice.event_class.made_3.precision_at_5": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 0.4
+        },
+        "slice.event_class.made_3.recall_at_10": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.event_class.made_3.recall_at_20": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.event_class.miss.candidate_recall_at_50": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.miss.case_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.event_class.miss.completed_case_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.event_class.miss.error_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.event_class.miss.hard_negative_hit_rate": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.miss.mean_boundary_error_seconds": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "seconds"
+        },
+        "slice.event_class.miss.ndcg_at_10": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.miss.p95_latency_ms": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "milliseconds"
+        },
+        "slice.event_class.miss.precision_at_5": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.miss.recall_at_10": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.miss.recall_at_20": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.replay.candidate_recall_at_50": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.replay.case_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.event_class.replay.completed_case_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.event_class.replay.error_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.event_class.replay.hard_negative_hit_rate": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.replay.mean_boundary_error_seconds": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "seconds"
+        },
+        "slice.event_class.replay.ndcg_at_10": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.replay.p95_latency_ms": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "milliseconds"
+        },
+        "slice.event_class.replay.precision_at_5": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.replay.recall_at_10": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.replay.recall_at_20": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        }
+      },
+      "profile_id": "dense_siglip",
+      "profile_identity": "dense_siglip@2:fed33a018e21985309d3bb2ff2dfcdd1fbabd28f09348d2f9e3eab1aea0f69f9",
+      "run_id": "phase0-proof19-7054f13-product-dense_siglip",
+      "run_status": "complete",
+      "search_plan_identity": "evaluation-search-plan@1:4f166f8b52495ff3fecf8bcd6ef3feb3d719fdd1efe836e7699314c6282990b8"
+    },
+    {
+      "execution_mode": "warm",
+      "metrics": {
+        "candidate_recall_at_50": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "error_count": {
+          "status": "measured",
+          "unit": "count",
+          "value": 0.0
+        },
+        "hard_negative_hit_rate": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "infrastructure_error_count": {
+          "status": "measured",
+          "unit": "count",
+          "value": 0
+        },
+        "mean_boundary_error_seconds": {
+          "status": "measured",
+          "unit": "seconds",
+          "value": 1.5644444444444443
+        },
+        "model_miss_count": {
+          "status": "measured",
+          "unit": "count",
+          "value": 0.0
+        },
+        "ndcg_at_10": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 0.9754430630676099
+        },
+        "p95_latency_ms": {
+          "status": "measured",
+          "unit": "milliseconds",
+          "value": 3141.86141686514
+        },
+        "precision_at_5": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 0.24000000000000002
+        },
+        "recall_at_10": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "recall_at_20": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "sampled_peak_process_tree_rss_bytes": {
+          "status": "measured",
+          "unit": "bytes",
+          "value": 5293391872.0
+        },
+        "slice.capture_condition.low_resolution.candidate_recall_at_50": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.capture_condition.low_resolution.case_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.capture_condition.low_resolution.completed_case_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.capture_condition.low_resolution.error_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.capture_condition.low_resolution.hard_negative_hit_rate": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.capture_condition.low_resolution.mean_boundary_error_seconds": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "seconds"
+        },
+        "slice.capture_condition.low_resolution.ndcg_at_10": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.capture_condition.low_resolution.p95_latency_ms": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "milliseconds"
+        },
+        "slice.capture_condition.low_resolution.precision_at_5": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.capture_condition.low_resolution.recall_at_10": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.capture_condition.low_resolution.recall_at_20": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.capture_condition.scoreboard_hidden.candidate_recall_at_50": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.capture_condition.scoreboard_hidden.case_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.capture_condition.scoreboard_hidden.completed_case_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.capture_condition.scoreboard_hidden.error_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.capture_condition.scoreboard_hidden.hard_negative_hit_rate": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.capture_condition.scoreboard_hidden.mean_boundary_error_seconds": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "seconds"
+        },
+        "slice.capture_condition.scoreboard_hidden.ndcg_at_10": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.capture_condition.scoreboard_hidden.p95_latency_ms": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "milliseconds"
+        },
+        "slice.capture_condition.scoreboard_hidden.precision_at_5": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.capture_condition.scoreboard_hidden.recall_at_10": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.capture_condition.scoreboard_hidden.recall_at_20": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.distribution_shift.different_camera_or_league.candidate_recall_at_50": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.distribution_shift.different_camera_or_league.case_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.distribution_shift.different_camera_or_league.completed_case_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.distribution_shift.different_camera_or_league.error_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.distribution_shift.different_camera_or_league.hard_negative_hit_rate": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.distribution_shift.different_camera_or_league.mean_boundary_error_seconds": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "seconds"
+        },
+        "slice.distribution_shift.different_camera_or_league.ndcg_at_10": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.distribution_shift.different_camera_or_league.p95_latency_ms": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "milliseconds"
+        },
+        "slice.distribution_shift.different_camera_or_league.precision_at_5": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.distribution_shift.different_camera_or_league.recall_at_10": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.distribution_shift.different_camera_or_league.recall_at_20": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.domain.ood_non_basketball.candidate_recall_at_50": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.domain.ood_non_basketball.case_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.domain.ood_non_basketball.completed_case_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.domain.ood_non_basketball.error_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.domain.ood_non_basketball.hard_negative_hit_rate": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.domain.ood_non_basketball.mean_boundary_error_seconds": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "seconds"
+        },
+        "slice.domain.ood_non_basketball.ndcg_at_10": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.domain.ood_non_basketball.p95_latency_ms": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "milliseconds"
+        },
+        "slice.domain.ood_non_basketball.precision_at_5": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.domain.ood_non_basketball.recall_at_10": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.domain.ood_non_basketball.recall_at_20": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.domain.universal_non_sports.candidate_recall_at_50": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.domain.universal_non_sports.case_count": {
+          "status": "measured",
+          "unit": "count",
+          "value": 2.0
+        },
+        "slice.domain.universal_non_sports.completed_case_count": {
+          "status": "measured",
+          "unit": "count",
+          "value": 2.0
+        },
+        "slice.domain.universal_non_sports.error_count": {
+          "status": "measured",
+          "unit": "count",
+          "value": 0.0
+        },
+        "slice.domain.universal_non_sports.hard_negative_hit_rate": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.domain.universal_non_sports.mean_boundary_error_seconds": {
+          "status": "measured",
+          "unit": "seconds",
+          "value": 4.685
+        },
+        "slice.domain.universal_non_sports.ndcg_at_10": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.domain.universal_non_sports.p95_latency_ms": {
+          "status": "measured",
+          "unit": "milliseconds",
+          "value": 3141.86141686514
+        },
+        "slice.domain.universal_non_sports.precision_at_5": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 0.2
+        },
+        "slice.domain.universal_non_sports.recall_at_10": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.domain.universal_non_sports.recall_at_20": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.event_class.advertisement_non_game.candidate_recall_at_50": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.event_class.advertisement_non_game.case_count": {
+          "status": "measured",
+          "unit": "count",
+          "value": 1.0
+        },
+        "slice.event_class.advertisement_non_game.completed_case_count": {
+          "status": "measured",
+          "unit": "count",
+          "value": 1.0
+        },
+        "slice.event_class.advertisement_non_game.error_count": {
+          "status": "measured",
+          "unit": "count",
+          "value": 0.0
+        },
+        "slice.event_class.advertisement_non_game.hard_negative_hit_rate": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.event_class.advertisement_non_game.mean_boundary_error_seconds": {
+          "status": "measured",
+          "unit": "seconds",
+          "value": 0.0
+        },
+        "slice.event_class.advertisement_non_game.ndcg_at_10": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.event_class.advertisement_non_game.p95_latency_ms": {
+          "status": "measured",
+          "unit": "milliseconds",
+          "value": 3111.4867909345776
+        },
+        "slice.event_class.advertisement_non_game.precision_at_5": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 0.2
+        },
+        "slice.event_class.advertisement_non_game.recall_at_10": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.event_class.advertisement_non_game.recall_at_20": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.event_class.free_throw.candidate_recall_at_50": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.event_class.free_throw.case_count": {
+          "status": "measured",
+          "unit": "count",
+          "value": 1.0
+        },
+        "slice.event_class.free_throw.completed_case_count": {
+          "status": "measured",
+          "unit": "count",
+          "value": 1.0
+        },
+        "slice.event_class.free_throw.error_count": {
+          "status": "measured",
+          "unit": "count",
+          "value": 0.0
+        },
+        "slice.event_class.free_throw.hard_negative_hit_rate": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.event_class.free_throw.mean_boundary_error_seconds": {
+          "status": "measured",
+          "unit": "seconds",
+          "value": 0.0
+        },
+        "slice.event_class.free_throw.ndcg_at_10": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.event_class.free_throw.p95_latency_ms": {
+          "status": "measured",
+          "unit": "milliseconds",
+          "value": 2349.18991709128
+        },
+        "slice.event_class.free_throw.precision_at_5": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 0.2
+        },
+        "slice.event_class.free_throw.recall_at_10": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.event_class.free_throw.recall_at_20": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.event_class.made_2.candidate_recall_at_50": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.made_2.case_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.event_class.made_2.completed_case_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.event_class.made_2.error_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.event_class.made_2.hard_negative_hit_rate": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.made_2.mean_boundary_error_seconds": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "seconds"
+        },
+        "slice.event_class.made_2.ndcg_at_10": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.made_2.p95_latency_ms": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "milliseconds"
+        },
+        "slice.event_class.made_2.precision_at_5": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.made_2.recall_at_10": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.made_2.recall_at_20": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.made_3.candidate_recall_at_50": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.event_class.made_3.case_count": {
+          "status": "measured",
+          "unit": "count",
+          "value": 1.0
+        },
+        "slice.event_class.made_3.completed_case_count": {
+          "status": "measured",
+          "unit": "count",
+          "value": 1.0
+        },
+        "slice.event_class.made_3.error_count": {
+          "status": "measured",
+          "unit": "count",
+          "value": 0.0
+        },
+        "slice.event_class.made_3.hard_negative_hit_rate": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.event_class.made_3.mean_boundary_error_seconds": {
+          "status": "measured",
+          "unit": "seconds",
+          "value": 0.008333333333333304
+        },
+        "slice.event_class.made_3.ndcg_at_10": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 0.8772153153380493
+        },
+        "slice.event_class.made_3.p95_latency_ms": {
+          "status": "measured",
+          "unit": "milliseconds",
+          "value": 1981.0774167999625
+        },
+        "slice.event_class.made_3.precision_at_5": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 0.4
+        },
+        "slice.event_class.made_3.recall_at_10": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.event_class.made_3.recall_at_20": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.event_class.miss.candidate_recall_at_50": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.miss.case_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.event_class.miss.completed_case_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.event_class.miss.error_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.event_class.miss.hard_negative_hit_rate": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.miss.mean_boundary_error_seconds": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "seconds"
+        },
+        "slice.event_class.miss.ndcg_at_10": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.miss.p95_latency_ms": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "milliseconds"
+        },
+        "slice.event_class.miss.precision_at_5": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.miss.recall_at_10": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.miss.recall_at_20": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.replay.candidate_recall_at_50": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.replay.case_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.event_class.replay.completed_case_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.event_class.replay.error_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.event_class.replay.hard_negative_hit_rate": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.replay.mean_boundary_error_seconds": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "seconds"
+        },
+        "slice.event_class.replay.ndcg_at_10": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.replay.p95_latency_ms": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "milliseconds"
+        },
+        "slice.event_class.replay.precision_at_5": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.replay.recall_at_10": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.replay.recall_at_20": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        }
+      },
+      "profile_id": "temporal_refinement",
+      "profile_identity": "temporal_refinement@2:327c7aaa021dbb05d541a98791f9897ef66f557d0490155273bd3fa01f2a00ed",
+      "run_id": "phase0-proof19-7054f13-product-temporal_refinement",
+      "run_status": "complete",
+      "search_plan_identity": "evaluation-search-plan@1:da8141c594867c593a9dbb32c58e2f604e05e62a65348fc2d50aa70fc6e2bd42"
+    },
+    {
+      "execution_mode": "warm",
+      "metrics": {
+        "candidate_recall_at_50": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "error_count": {
+          "status": "measured",
+          "unit": "count",
+          "value": 0.0
+        },
+        "hard_negative_hit_rate": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "infrastructure_error_count": {
+          "status": "measured",
+          "unit": "count",
+          "value": 0
+        },
+        "mean_boundary_error_seconds": {
+          "status": "measured",
+          "unit": "seconds",
+          "value": 1.5616666666666665
+        },
+        "model_miss_count": {
+          "status": "measured",
+          "unit": "count",
+          "value": 0.0
+        },
+        "ndcg_at_10": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 0.9754430630676099
+        },
+        "p95_latency_ms": {
+          "status": "measured",
+          "unit": "milliseconds",
+          "value": 3216.092208167538
+        },
+        "precision_at_5": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 0.24000000000000002
+        },
+        "recall_at_10": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "recall_at_20": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "sampled_peak_process_tree_rss_bytes": {
+          "status": "measured",
+          "unit": "bytes",
+          "value": 5316034560.0
+        },
+        "slice.capture_condition.low_resolution.candidate_recall_at_50": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.capture_condition.low_resolution.case_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.capture_condition.low_resolution.completed_case_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.capture_condition.low_resolution.error_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.capture_condition.low_resolution.hard_negative_hit_rate": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.capture_condition.low_resolution.mean_boundary_error_seconds": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "seconds"
+        },
+        "slice.capture_condition.low_resolution.ndcg_at_10": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.capture_condition.low_resolution.p95_latency_ms": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "milliseconds"
+        },
+        "slice.capture_condition.low_resolution.precision_at_5": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.capture_condition.low_resolution.recall_at_10": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.capture_condition.low_resolution.recall_at_20": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.capture_condition.scoreboard_hidden.candidate_recall_at_50": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.capture_condition.scoreboard_hidden.case_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.capture_condition.scoreboard_hidden.completed_case_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.capture_condition.scoreboard_hidden.error_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.capture_condition.scoreboard_hidden.hard_negative_hit_rate": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.capture_condition.scoreboard_hidden.mean_boundary_error_seconds": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "seconds"
+        },
+        "slice.capture_condition.scoreboard_hidden.ndcg_at_10": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.capture_condition.scoreboard_hidden.p95_latency_ms": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "milliseconds"
+        },
+        "slice.capture_condition.scoreboard_hidden.precision_at_5": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.capture_condition.scoreboard_hidden.recall_at_10": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.capture_condition.scoreboard_hidden.recall_at_20": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.distribution_shift.different_camera_or_league.candidate_recall_at_50": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.distribution_shift.different_camera_or_league.case_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.distribution_shift.different_camera_or_league.completed_case_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.distribution_shift.different_camera_or_league.error_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.distribution_shift.different_camera_or_league.hard_negative_hit_rate": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.distribution_shift.different_camera_or_league.mean_boundary_error_seconds": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "seconds"
+        },
+        "slice.distribution_shift.different_camera_or_league.ndcg_at_10": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.distribution_shift.different_camera_or_league.p95_latency_ms": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "milliseconds"
+        },
+        "slice.distribution_shift.different_camera_or_league.precision_at_5": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.distribution_shift.different_camera_or_league.recall_at_10": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.distribution_shift.different_camera_or_league.recall_at_20": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.domain.ood_non_basketball.candidate_recall_at_50": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.domain.ood_non_basketball.case_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.domain.ood_non_basketball.completed_case_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.domain.ood_non_basketball.error_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.domain.ood_non_basketball.hard_negative_hit_rate": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.domain.ood_non_basketball.mean_boundary_error_seconds": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "seconds"
+        },
+        "slice.domain.ood_non_basketball.ndcg_at_10": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.domain.ood_non_basketball.p95_latency_ms": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "milliseconds"
+        },
+        "slice.domain.ood_non_basketball.precision_at_5": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.domain.ood_non_basketball.recall_at_10": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.domain.ood_non_basketball.recall_at_20": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.domain.universal_non_sports.candidate_recall_at_50": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.domain.universal_non_sports.case_count": {
+          "status": "measured",
+          "unit": "count",
+          "value": 2.0
+        },
+        "slice.domain.universal_non_sports.completed_case_count": {
+          "status": "measured",
+          "unit": "count",
+          "value": 2.0
+        },
+        "slice.domain.universal_non_sports.error_count": {
+          "status": "measured",
+          "unit": "count",
+          "value": 0.0
+        },
+        "slice.domain.universal_non_sports.hard_negative_hit_rate": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.domain.universal_non_sports.mean_boundary_error_seconds": {
+          "status": "measured",
+          "unit": "seconds",
+          "value": 4.685
+        },
+        "slice.domain.universal_non_sports.ndcg_at_10": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.domain.universal_non_sports.p95_latency_ms": {
+          "status": "measured",
+          "unit": "milliseconds",
+          "value": 3201.486208010465
+        },
+        "slice.domain.universal_non_sports.precision_at_5": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 0.2
+        },
+        "slice.domain.universal_non_sports.recall_at_10": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.domain.universal_non_sports.recall_at_20": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.event_class.advertisement_non_game.candidate_recall_at_50": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.event_class.advertisement_non_game.case_count": {
+          "status": "measured",
+          "unit": "count",
+          "value": 1.0
+        },
+        "slice.event_class.advertisement_non_game.completed_case_count": {
+          "status": "measured",
+          "unit": "count",
+          "value": 1.0
+        },
+        "slice.event_class.advertisement_non_game.error_count": {
+          "status": "measured",
+          "unit": "count",
+          "value": 0.0
+        },
+        "slice.event_class.advertisement_non_game.hard_negative_hit_rate": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.event_class.advertisement_non_game.mean_boundary_error_seconds": {
+          "status": "measured",
+          "unit": "seconds",
+          "value": 0.0
+        },
+        "slice.event_class.advertisement_non_game.ndcg_at_10": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.event_class.advertisement_non_game.p95_latency_ms": {
+          "status": "measured",
+          "unit": "milliseconds",
+          "value": 3216.092208167538
+        },
+        "slice.event_class.advertisement_non_game.precision_at_5": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 0.2
+        },
+        "slice.event_class.advertisement_non_game.recall_at_10": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.event_class.advertisement_non_game.recall_at_20": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.event_class.free_throw.candidate_recall_at_50": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.event_class.free_throw.case_count": {
+          "status": "measured",
+          "unit": "count",
+          "value": 1.0
+        },
+        "slice.event_class.free_throw.completed_case_count": {
+          "status": "measured",
+          "unit": "count",
+          "value": 1.0
+        },
+        "slice.event_class.free_throw.error_count": {
+          "status": "measured",
+          "unit": "count",
+          "value": 0.0
+        },
+        "slice.event_class.free_throw.hard_negative_hit_rate": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.event_class.free_throw.mean_boundary_error_seconds": {
+          "status": "measured",
+          "unit": "seconds",
+          "value": 0.0
+        },
+        "slice.event_class.free_throw.ndcg_at_10": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.event_class.free_throw.p95_latency_ms": {
+          "status": "measured",
+          "unit": "milliseconds",
+          "value": 2390.197457978502
+        },
+        "slice.event_class.free_throw.precision_at_5": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 0.2
+        },
+        "slice.event_class.free_throw.recall_at_10": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.event_class.free_throw.recall_at_20": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.event_class.made_2.candidate_recall_at_50": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.made_2.case_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.event_class.made_2.completed_case_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.event_class.made_2.error_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.event_class.made_2.hard_negative_hit_rate": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.made_2.mean_boundary_error_seconds": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "seconds"
+        },
+        "slice.event_class.made_2.ndcg_at_10": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.made_2.p95_latency_ms": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "milliseconds"
+        },
+        "slice.event_class.made_2.precision_at_5": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.made_2.recall_at_10": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.made_2.recall_at_20": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.made_3.candidate_recall_at_50": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.event_class.made_3.case_count": {
+          "status": "measured",
+          "unit": "count",
+          "value": 1.0
+        },
+        "slice.event_class.made_3.completed_case_count": {
+          "status": "measured",
+          "unit": "count",
+          "value": 1.0
+        },
+        "slice.event_class.made_3.error_count": {
+          "status": "measured",
+          "unit": "count",
+          "value": 0.0
+        },
+        "slice.event_class.made_3.hard_negative_hit_rate": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.event_class.made_3.mean_boundary_error_seconds": {
+          "status": "measured",
+          "unit": "seconds",
+          "value": 0.0
+        },
+        "slice.event_class.made_3.ndcg_at_10": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 0.8772153153380493
+        },
+        "slice.event_class.made_3.p95_latency_ms": {
+          "status": "measured",
+          "unit": "milliseconds",
+          "value": 2091.6655419860035
+        },
+        "slice.event_class.made_3.precision_at_5": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 0.4
+        },
+        "slice.event_class.made_3.recall_at_10": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.event_class.made_3.recall_at_20": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.event_class.miss.candidate_recall_at_50": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.miss.case_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.event_class.miss.completed_case_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.event_class.miss.error_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.event_class.miss.hard_negative_hit_rate": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.miss.mean_boundary_error_seconds": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "seconds"
+        },
+        "slice.event_class.miss.ndcg_at_10": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.miss.p95_latency_ms": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "milliseconds"
+        },
+        "slice.event_class.miss.precision_at_5": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.miss.recall_at_10": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.miss.recall_at_20": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.replay.candidate_recall_at_50": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.replay.case_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.event_class.replay.completed_case_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.event_class.replay.error_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.event_class.replay.hard_negative_hit_rate": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.replay.mean_boundary_error_seconds": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "seconds"
+        },
+        "slice.event_class.replay.ndcg_at_10": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.replay.p95_latency_ms": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "milliseconds"
+        },
+        "slice.event_class.replay.precision_at_5": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.replay.recall_at_10": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.replay.recall_at_20": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        }
+      },
+      "profile_id": "lighthouse",
+      "profile_identity": "lighthouse@2:cd682ea319b7c588e34374664f9a202c7f2dd370e009a8163d1a34615244055c",
+      "run_id": "phase0-proof19-7054f13-product-lighthouse",
+      "run_status": "complete",
+      "search_plan_identity": "evaluation-search-plan@1:8c17f88070d32850b7de41c227a2108786071d8ee3bdc65bce24235bc745c085"
+    },
+    {
+      "execution_mode": "warm",
+      "metrics": {
+        "candidate_recall_at_50": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 0.8333333333333334
+        },
+        "error_count": {
+          "status": "measured",
+          "unit": "count",
+          "value": 0.0
+        },
+        "hard_negative_hit_rate": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 0.8
+        },
+        "infrastructure_error_count": {
+          "status": "measured",
+          "unit": "count",
+          "value": 0
+        },
+        "mean_boundary_error_seconds": {
+          "status": "measured",
+          "unit": "seconds",
+          "value": 0.13000000000000006
+        },
+        "model_miss_count": {
+          "status": "measured",
+          "unit": "count",
+          "value": 1.0
+        },
+        "ndcg_at_10": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 0.714128343791064
+        },
+        "p95_latency_ms": {
+          "status": "measured",
+          "unit": "milliseconds",
+          "value": 128248.75433300622
+        },
+        "precision_at_5": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 0.2
+        },
+        "recall_at_10": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 0.8333333333333334
+        },
+        "recall_at_20": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 0.8333333333333334
+        },
+        "sampled_peak_process_tree_rss_bytes": {
+          "status": "measured",
+          "unit": "bytes",
+          "value": 8876081152.0
+        },
+        "slice.capture_condition.low_resolution.candidate_recall_at_50": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.capture_condition.low_resolution.case_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.capture_condition.low_resolution.completed_case_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.capture_condition.low_resolution.error_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.capture_condition.low_resolution.hard_negative_hit_rate": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.capture_condition.low_resolution.mean_boundary_error_seconds": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "seconds"
+        },
+        "slice.capture_condition.low_resolution.ndcg_at_10": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.capture_condition.low_resolution.p95_latency_ms": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "milliseconds"
+        },
+        "slice.capture_condition.low_resolution.precision_at_5": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.capture_condition.low_resolution.recall_at_10": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.capture_condition.low_resolution.recall_at_20": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.capture_condition.scoreboard_hidden.candidate_recall_at_50": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.capture_condition.scoreboard_hidden.case_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.capture_condition.scoreboard_hidden.completed_case_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.capture_condition.scoreboard_hidden.error_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.capture_condition.scoreboard_hidden.hard_negative_hit_rate": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.capture_condition.scoreboard_hidden.mean_boundary_error_seconds": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "seconds"
+        },
+        "slice.capture_condition.scoreboard_hidden.ndcg_at_10": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.capture_condition.scoreboard_hidden.p95_latency_ms": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "milliseconds"
+        },
+        "slice.capture_condition.scoreboard_hidden.precision_at_5": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.capture_condition.scoreboard_hidden.recall_at_10": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.capture_condition.scoreboard_hidden.recall_at_20": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.distribution_shift.different_camera_or_league.candidate_recall_at_50": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.distribution_shift.different_camera_or_league.case_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.distribution_shift.different_camera_or_league.completed_case_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.distribution_shift.different_camera_or_league.error_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.distribution_shift.different_camera_or_league.hard_negative_hit_rate": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.distribution_shift.different_camera_or_league.mean_boundary_error_seconds": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "seconds"
+        },
+        "slice.distribution_shift.different_camera_or_league.ndcg_at_10": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.distribution_shift.different_camera_or_league.p95_latency_ms": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "milliseconds"
+        },
+        "slice.distribution_shift.different_camera_or_league.precision_at_5": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.distribution_shift.different_camera_or_league.recall_at_10": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.distribution_shift.different_camera_or_league.recall_at_20": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.domain.ood_non_basketball.candidate_recall_at_50": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.domain.ood_non_basketball.case_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.domain.ood_non_basketball.completed_case_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.domain.ood_non_basketball.error_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.domain.ood_non_basketball.hard_negative_hit_rate": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.domain.ood_non_basketball.mean_boundary_error_seconds": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "seconds"
+        },
+        "slice.domain.ood_non_basketball.ndcg_at_10": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.domain.ood_non_basketball.p95_latency_ms": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "milliseconds"
+        },
+        "slice.domain.ood_non_basketball.precision_at_5": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.domain.ood_non_basketball.recall_at_10": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.domain.ood_non_basketball.recall_at_20": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.domain.universal_non_sports.candidate_recall_at_50": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 0.5
+        },
+        "slice.domain.universal_non_sports.case_count": {
+          "status": "measured",
+          "unit": "count",
+          "value": 2.0
+        },
+        "slice.domain.universal_non_sports.completed_case_count": {
+          "status": "measured",
+          "unit": "count",
+          "value": 2.0
+        },
+        "slice.domain.universal_non_sports.error_count": {
+          "status": "measured",
+          "unit": "count",
+          "value": 0.0
+        },
+        "slice.domain.universal_non_sports.hard_negative_hit_rate": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 0.5
+        },
+        "slice.domain.universal_non_sports.mean_boundary_error_seconds": {
+          "status": "measured",
+          "unit": "seconds",
+          "value": 0.20000000000000018
+        },
+        "slice.domain.universal_non_sports.ndcg_at_10": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 0.5
+        },
+        "slice.domain.universal_non_sports.p95_latency_ms": {
+          "status": "measured",
+          "unit": "milliseconds",
+          "value": 21730.626082979143
+        },
+        "slice.domain.universal_non_sports.precision_at_5": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 0.1
+        },
+        "slice.domain.universal_non_sports.recall_at_10": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 0.5
+        },
+        "slice.domain.universal_non_sports.recall_at_20": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 0.5
+        },
+        "slice.event_class.advertisement_non_game.candidate_recall_at_50": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.event_class.advertisement_non_game.case_count": {
+          "status": "measured",
+          "unit": "count",
+          "value": 1.0
+        },
+        "slice.event_class.advertisement_non_game.completed_case_count": {
+          "status": "measured",
+          "unit": "count",
+          "value": 1.0
+        },
+        "slice.event_class.advertisement_non_game.error_count": {
+          "status": "measured",
+          "unit": "count",
+          "value": 0.0
+        },
+        "slice.event_class.advertisement_non_game.hard_negative_hit_rate": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.event_class.advertisement_non_game.mean_boundary_error_seconds": {
+          "status": "measured",
+          "unit": "seconds",
+          "value": 0.4500000000000002
+        },
+        "slice.event_class.advertisement_non_game.ndcg_at_10": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.event_class.advertisement_non_game.p95_latency_ms": {
+          "status": "measured",
+          "unit": "milliseconds",
+          "value": 15352.02412493527
+        },
+        "slice.event_class.advertisement_non_game.precision_at_5": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 0.2
+        },
+        "slice.event_class.advertisement_non_game.recall_at_10": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.event_class.advertisement_non_game.recall_at_20": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.event_class.free_throw.candidate_recall_at_50": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.event_class.free_throw.case_count": {
+          "status": "measured",
+          "unit": "count",
+          "value": 1.0
+        },
+        "slice.event_class.free_throw.completed_case_count": {
+          "status": "measured",
+          "unit": "count",
+          "value": 1.0
+        },
+        "slice.event_class.free_throw.error_count": {
+          "status": "measured",
+          "unit": "count",
+          "value": 0.0
+        },
+        "slice.event_class.free_throw.hard_negative_hit_rate": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.event_class.free_throw.mean_boundary_error_seconds": {
+          "status": "measured",
+          "unit": "seconds",
+          "value": 0.0
+        },
+        "slice.event_class.free_throw.ndcg_at_10": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.event_class.free_throw.p95_latency_ms": {
+          "status": "measured",
+          "unit": "milliseconds",
+          "value": 128248.75433300622
+        },
+        "slice.event_class.free_throw.precision_at_5": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 0.2
+        },
+        "slice.event_class.free_throw.recall_at_10": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.event_class.free_throw.recall_at_20": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.event_class.made_2.candidate_recall_at_50": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.made_2.case_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.event_class.made_2.completed_case_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.event_class.made_2.error_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.event_class.made_2.hard_negative_hit_rate": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.made_2.mean_boundary_error_seconds": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "seconds"
+        },
+        "slice.event_class.made_2.ndcg_at_10": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.made_2.p95_latency_ms": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "milliseconds"
+        },
+        "slice.event_class.made_2.precision_at_5": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.made_2.recall_at_10": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.made_2.recall_at_20": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.made_3.candidate_recall_at_50": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.event_class.made_3.case_count": {
+          "status": "measured",
+          "unit": "count",
+          "value": 1.0
+        },
+        "slice.event_class.made_3.completed_case_count": {
+          "status": "measured",
+          "unit": "count",
+          "value": 1.0
+        },
+        "slice.event_class.made_3.error_count": {
+          "status": "measured",
+          "unit": "count",
+          "value": 0.0
+        },
+        "slice.event_class.made_3.hard_negative_hit_rate": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.event_class.made_3.mean_boundary_error_seconds": {
+          "status": "measured",
+          "unit": "seconds",
+          "value": 0.0
+        },
+        "slice.event_class.made_3.ndcg_at_10": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 0.5706417189553201
+        },
+        "slice.event_class.made_3.p95_latency_ms": {
+          "status": "measured",
+          "unit": "milliseconds",
+          "value": 20833.97466596216
+        },
+        "slice.event_class.made_3.precision_at_5": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 0.4
+        },
+        "slice.event_class.made_3.recall_at_10": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.event_class.made_3.recall_at_20": {
+          "status": "measured",
+          "unit": "fraction",
+          "value": 1.0
+        },
+        "slice.event_class.miss.candidate_recall_at_50": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.miss.case_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.event_class.miss.completed_case_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.event_class.miss.error_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.event_class.miss.hard_negative_hit_rate": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.miss.mean_boundary_error_seconds": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "seconds"
+        },
+        "slice.event_class.miss.ndcg_at_10": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.miss.p95_latency_ms": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "milliseconds"
+        },
+        "slice.event_class.miss.precision_at_5": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.miss.recall_at_10": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.miss.recall_at_20": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.replay.candidate_recall_at_50": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.replay.case_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.event_class.replay.completed_case_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.event_class.replay.error_count": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "count"
+        },
+        "slice.event_class.replay.hard_negative_hit_rate": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.replay.mean_boundary_error_seconds": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "seconds"
+        },
+        "slice.event_class.replay.ndcg_at_10": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.replay.p95_latency_ms": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "milliseconds"
+        },
+        "slice.event_class.replay.precision_at_5": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.replay.recall_at_10": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        },
+        "slice.event_class.replay.recall_at_20": {
+          "reason_code": "slice_absent_from_frozen_dataset",
+          "status": "not_observed",
+          "unit": "fraction"
+        }
+      },
+      "profile_id": "qwen_verification",
+      "profile_identity": "qwen_verification@2:71f6397db54369742b54792eb8014107742f219a6ea1408d9c9915c45e0acd99",
+      "run_id": "phase0-proof19-7054f13-product-qwen_verification",
+      "run_status": "complete",
+      "search_plan_identity": "evaluation-search-plan@1:2470081fa218169d9f8d8bd6553aa7fb28471644a693ad1b310d95d66e2fbdfc"
+    }
+  ],
+  "promotion_eligible": false,
+  "schema_version": 1,
+  "status": "all_non_smoke_inputs_pass_full_smoke_rejected",
+  "validator_source_sha256": "cbf35a15cbdfe940f42ba3a7a2a6a00a9533dfd2c3e6d534124154cfe7f80b7c"
+}

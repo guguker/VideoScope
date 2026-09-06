@@ -1,8 +1,8 @@
 # Phase 0: serving contract controls
 
 Status: complete diagnostic smoke at `7054f13`; resource gate rejected.
-The five-profile benchmark batch and direct verifier remain at `1b11a54`;
-Phase 0 remains open, with no accepted bundle.
+The five-profile benchmark batch and direct verifier also completed at `7054f13`;
+all non-smoke validators pass. Phase 0 remains open, with no accepted bundle.
 
 The path under test is `index → query → interval → evidence → clip`. These
 controls use only the existing ten prepared `regression_seen` inputs or generated
@@ -254,6 +254,10 @@ unchanged normal full smoke after an owner-provided fresh macOS session; this
 condition does not guarantee a pass. Do not subtract background pressure,
 change the gate, or infer a model-lifecycle fix from temporal association.
 
-No five-profile benchmark batch or direct verifier at `7054f13` is claimed.
-The retained `1b11a54` outputs cannot supply missing same-SHA evidence. No
-accepted baseline bundle, training or later phase is active.
+The five-profile batch and strict direct verifier subsequently completed at
+`7054f13`, with completed cleanup. The direct result is three matches, seven
+model misses and zero infrastructure errors across all ten cases. All non-smoke
+validators pass; the unchanged full collector still returns exit 3 because the
+original smoke recorded 176 swapin pages. The same-SHA receipts and raw
+manifests are retained in the control record; older `1b11a54` outputs were not
+substituted. No accepted baseline bundle, training or later phase is active.

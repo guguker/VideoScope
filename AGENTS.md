@@ -113,10 +113,13 @@ gate. A separate valid 120-second control that started no model inference or wor
 in its controlled tree observed four swapin pages; this does not attribute the smoke's events to a
 process or permit background subtraction. Exact evidence is retained in
 `docs/benchmarks/phase0/negative-controls/7054f13/README.md`.
-The five-profile batch and direct verifier at `1b11a54` remain separate evidence;
-no new batch at `7054f13` or accepted baseline bundle exists. The next bounded
-experiment is an unchanged normal full smoke after an owner-provided fresh
-macOS session, with same-SHA batch/direct inputs prepared independently; a fresh session is not a promise of zero swap.
+The same-SHA five-profile batch and strict ten-case direct verifier are now
+complete (3 matches, 7 model misses, 0 infrastructure errors). All non-smoke
+validators pass. The full collector returned exit 3 and created no bundle
+because the original 176-page smoke still fails the resource gate. Earlier
+`1b11a54` evidence remains separate. The next bounded experiment is an unchanged
+normal full smoke after an owner-provided fresh macOS session; a fresh session
+is not a promise of zero swap.
 No training or later phase is active. The active scope is Phase 0 only;
 a Phase 1 read-only dataset audit requires a separately authorized goal.
 No external or user data may be imported,

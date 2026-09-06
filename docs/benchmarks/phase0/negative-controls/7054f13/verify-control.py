@@ -6,10 +6,20 @@ from pathlib import Path
 
 from videoscope.benchmark.phase0_evidence import (
     Phase0EvidenceError,
+    REQUIRED_EXECUTED_PROFILE_IDS,
     _validate_host_resources,
+    _validate_product_dataset_binding,
+    _validate_video_verifier,
+    dataset_from_dict,
+    frozen_metric_policy_from_dict,
+    run_from_dict,
+    validate_baseline_batch,
+    validate_benchmark_runs,
     validate_full_ml_smoke,
     validate_ml_environment_attestation,
     validate_rollback_proof,
+    video_verifier_dataset_from_json,
+    video_verifier_run_from_dict,
 )
 
 
@@ -29,8 +39,50 @@ for name, binding in record["bindings"].items():
     assert len(raw) == binding["byte_size"]
     assert sha256(raw).hexdigest() == binding["sha256"]
 
-validate_ml_environment_attestation(read("ml-environment.json"))
+environment = validate_ml_environment_attestation(read("ml-environment.json"))
 validate_rollback_proof(read("phase0-rollback-proof.json"), code_sha=CODE_SHA)
+
+# Validate the other inputs independently: the unchanged full collector stops
+# at the rejected smoke before it reaches these checks.
+benchmarks = ROOT.parents[2]
+policy = frozen_metric_policy_from_dict(json.loads(
+    (benchmarks / "policies/phase0-regression-v1.json").read_bytes(),
+))
+dataset = dataset_from_dict(json.loads(
+    (benchmarks / "product-retrieval/seed-v1.json").read_bytes(),
+))
+verifier_dataset = video_verifier_dataset_from_json(
+    (benchmarks / "video-verifier/seed-v1.json").read_text(),
+)
+_validate_product_dataset_binding(policy, dataset)
+runs = {
+    profile_id: run_from_dict(read(f"{profile_id}-manifest.json"))
+    for profile_id in REQUIRED_EXECUTED_PROFILE_IDS
+}
+validate_benchmark_runs(policy, dataset, runs, code_sha=CODE_SHA)
+validate_baseline_batch(
+    read("phase0-baseline-receipt.json"), policy=policy, dataset=dataset,
+    environment=environment, runs=runs, code_sha=CODE_SHA,
+    run_manifest_sha256s={
+        profile_id: record["bindings"][f"{profile_id}-manifest.json"]["sha256"]
+        for profile_id in REQUIRED_EXECUTED_PROFILE_IDS
+    },
+)
+capability = next(
+    item for item in environment["capabilities"]
+    if item["id"] == "qwen_verification"
+)
+direct = _validate_video_verifier(
+    policy, verifier_dataset,
+    video_verifier_run_from_dict(read("video-verifier-run.json")),
+    code_sha=CODE_SHA,
+    expected_model_identities=capability["model_identities"],
+    expected_runtime_identity=capability["runtime_identity"],
+)
+assert direct["summary"] == {
+    "case_count": 10, "match_count": 3, "model_miss_count": 7,
+    "infrastructure_error_count": 0,
+}
 smoke = read("full-ml-smoke-diagnostic.json")
 trace = read("full-ml-timeline.json")
 assert smoke["code_sha_before"] == smoke["code_sha_after"] == CODE_SHA
@@ -111,6 +163,7 @@ print(json.dumps({
     "smoke_gate": "rejected",
     "smoke_swapins_pages": 176,
     "no_ml_swapins_pages": 4,
+    "all_non_smoke_validators": "passed",
     "phase0_complete": False,
     "accepted_bundle_created": False,
 }, sort_keys=True))
