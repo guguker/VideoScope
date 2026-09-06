@@ -1,0 +1,21 @@
+{
+  "code_sha": "7054f137f92c18676461242a18c8fc2619898b68",
+  "control_kind": "no_ml_sampler_control_corrected_driver",
+  "correction": "Use actual HostResourceSampler.finish lifecycle; preserve primary error and always stop both samplers",
+  "declared_at_utc": "2026-09-05T16:41:21.014983+00:00",
+  "declared_before_measurement": true,
+  "driver_sha256": "c2252385f317b15c0f4d28a71c1c9a5fa9bc2a2b154e33de1f9c63d449d409ea",
+  "duration_after_baseline_seconds": 120,
+  "helper_lease": "Root polls existing launcher only; no agent tools or tests during the measurement.",
+  "host_cold_state": "not_established",
+  "host_sample_interval_milliseconds": 250,
+  "hypothesis": "System-wide swap counters may advance while only existing native samplers and their timeline observer run, without any VideoScope model inference. Positive events do not identify their causing process; no counts may be subtracted from a full smoke.",
+  "inference_calls": 0,
+  "managed_workers": 0,
+  "maximum_attempts": 1,
+  "measurement_use": "diagnostic_only_not_gate_evidence",
+  "previous_control_status": "invalid_no_raw_receipt",
+  "process_sample_interval_milliseconds": 50,
+  "promotion_eligible": false,
+  "schema_version": 1
+}

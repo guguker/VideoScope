@@ -1,0 +1,1918 @@
+{
+  "bindings": {
+    "diagnostic-control-plan.json": {
+      "byte_size": 1043,
+      "sha256": "c503f284486e33db6b0776db48260a2870324acfeab055f20f82c53145fa62be"
+    },
+    "diagnostic-launch-result.json": {
+      "byte_size": 996,
+      "sha256": "53120d7468d98951b3dc214580e9263a50169e38a6de0e6ed328d5c9f91589bb"
+    },
+    "full-ml-smoke-diagnostic.json": {
+      "byte_size": 317195,
+      "sha256": "75382419d542c6a809e9c849b5f97f2380a6a860af09073bd545baa5b026c97f"
+    },
+    "full-ml-timeline.json": {
+      "byte_size": 4062563,
+      "sha256": "59d8b9704630f751009fae33d7a6bdea835281befb574f8cc22f9b6b199d0d03"
+    },
+    "ml-environment.json": {
+      "byte_size": 7058,
+      "sha256": "cff1ac988902db39c07846dab88ef03b9e445c9b2979117ccf24e5ae536974f0"
+    },
+    "phase0-rollback-proof.json": {
+      "byte_size": 745,
+      "sha256": "258b06d3b66d2741e1e7051dcccb3ab2c16f6a157aba6929cc07895a1da5a5e8"
+    }
+  },
+  "checks": {
+    "code_identity": "passed",
+    "completed_stage_count": 35,
+    "event_count": 70,
+    "event_nesting_and_completion": "passed",
+    "exclusive_role_sums": "passed",
+    "formal_rss_vector_match": "passed",
+    "host_sample_count": 1086,
+    "ordered_rss_windows": "passed",
+    "rss_sample_count": 4808,
+    "stable_role_identity": "passed",
+    "stdout_binding": "passed"
+  },
+  "code_sha": "7054f137f92c18676461242a18c8fc2619898b68",
+  "decision": "Keep Phase0 open; retain all negative evidence. Run one fixed-duration no-ML sampler control before selecting any lifecycle fix.",
+  "host_elapsed_nanoseconds": 280401613750,
+  "host_epoch_offset_ns": 662722291,
+  "limitations": [
+    "Temporal association does not identify the process causing system-wide swap.",
+    "Host timestamps are recorded after acquisition; boundary associations and uncovered margins remain ambiguous.",
+    "The owner role includes unmanaged descendants; process identity does not prove model or tensor ownership.",
+    "Process RSS and Metal must not be added together.",
+    "The previous 103-second smoke had no stage timings and a different preceding run order; counts and latency are not a causal A/B comparison.",
+    "Snapshot acquisition timing excludes diagnostic callback and scheduling; callback overhead was not separately measured."
+  ],
+  "measurement_use": "diagnostic_only_not_gate_evidence",
+  "peak_rss_observation": {
+    "roles": [
+      {
+        "identity_sha256": "8aaf6539a4e4854a7833a3784c2ae937db84de55eb03b0e80ef5dff480fcdfe6",
+        "process_count": 1,
+        "role": "lighthouse",
+        "rss_bytes": 1602486272
+      },
+      {
+        "identity_sha256": "2f07e0b7b3b9a00e18d6a3c2480540dc6c0f1b21deadda3e7f51663dbc00d1cb",
+        "process_count": 3,
+        "role": "owner",
+        "rss_bytes": 7428308992
+      },
+      {
+        "identity_sha256": "16ba63bd99de2ac3deb7ec83971204eaae275c0aafd7d39094cb7af7a54f3f58",
+        "process_count": 1,
+        "role": "qwen",
+        "rss_bytes": 101695488
+      },
+      {
+        "identity_sha256": "5c65e8b3ce20731b83e873d2444ca2f4be67d029a8655c321fc54b69ecff71bd",
+        "process_count": 2,
+        "role": "vision",
+        "rss_bytes": 1103560704
+      },
+      {
+        "identity_sha256": "67bd2bf78826f4a5d0d6dbe2d9d1a1ed081e5fc850ef6855cc5d93e7e60f1047",
+        "process_count": 2,
+        "role": "whisper",
+        "rss_bytes": 339345408
+      }
+    ],
+    "snapshot_finished_elapsed_ns": 184629009500,
+    "snapshot_started_elapsed_ns": 184628697958,
+    "total_rss_bytes": 10575396864
+  },
+  "promotion_eligible": false,
+  "schema_version": 1,
+  "snapshot_acquisition_median_seconds": 0.00047825,
+  "snapshot_acquisition_seconds_sum": 5.005512218,
+  "stage_intervals": [
+    {
+      "duration_seconds": 0.007976792,
+      "end_elapsed_ns": 662391083,
+      "stage": "workers.start",
+      "start_elapsed_ns": 654414291
+    },
+    {
+      "duration_seconds": 0.000437,
+      "end_elapsed_ns": 663154666,
+      "stage": "monitor.start",
+      "start_elapsed_ns": 662717666
+    },
+    {
+      "duration_seconds": 7.733503292,
+      "end_elapsed_ns": 8396665250,
+      "stage": "workers.wait_ready",
+      "start_elapsed_ns": 663161958
+    },
+    {
+      "duration_seconds": 0.142405375,
+      "end_elapsed_ns": 8540502291,
+      "stage": "fixture",
+      "start_elapsed_ns": 8398096916
+    },
+    {
+      "duration_seconds": 8.47802475,
+      "end_elapsed_ns": 17019288291,
+      "stage": "vision.health",
+      "start_elapsed_ns": 8541263541
+    },
+    {
+      "duration_seconds": 20.77363325,
+      "end_elapsed_ns": 37792933041,
+      "stage": "vision.image_embedding",
+      "start_elapsed_ns": 17019299791
+    },
+    {
+      "duration_seconds": 0.021822958,
+      "end_elapsed_ns": 37814824916,
+      "stage": "vision.text_embedding",
+      "start_elapsed_ns": 37793001958
+    },
+    {
+      "duration_seconds": 20.640063125,
+      "end_elapsed_ns": 58454926208,
+      "stage": "vision.rfdetr",
+      "start_elapsed_ns": 37814863083
+    },
+    {
+      "duration_seconds": 0.088596583,
+      "end_elapsed_ns": 58543537916,
+      "stage": "vision.release_detector",
+      "start_elapsed_ns": 58454941333
+    },
+    {
+      "duration_seconds": 24.718666708,
+      "end_elapsed_ns": 83262212333,
+      "stage": "whisper.health",
+      "start_elapsed_ns": 58543545625
+    },
+    {
+      "duration_seconds": 4.121585875,
+      "end_elapsed_ns": 87383826416,
+      "stage": "whisper.transcribe",
+      "start_elapsed_ns": 83262240541
+    },
+    {
+      "duration_seconds": 0.098874917,
+      "end_elapsed_ns": 87482709625,
+      "stage": "ocr.health",
+      "start_elapsed_ns": 87383834708
+    },
+    {
+      "duration_seconds": 48.076469292,
+      "end_elapsed_ns": 135559189583,
+      "stage": "ocr.read",
+      "start_elapsed_ns": 87482720291
+    },
+    {
+      "duration_seconds": 0.068773166,
+      "end_elapsed_ns": 135627988166,
+      "stage": "ocr.release",
+      "start_elapsed_ns": 135559215000
+    },
+    {
+      "duration_seconds": 0.182698,
+      "end_elapsed_ns": 135810708916,
+      "stage": "lighthouse.health",
+      "start_elapsed_ns": 135628010916
+    },
+    {
+      "duration_seconds": 35.404070833,
+      "end_elapsed_ns": 171214790708,
+      "stage": "lighthouse.generation",
+      "start_elapsed_ns": 135810719875
+    },
+    {
+      "duration_seconds": 0.028878292,
+      "end_elapsed_ns": 171243677750,
+      "stage": "lighthouse.search",
+      "start_elapsed_ns": 171214799458
+    },
+    {
+      "duration_seconds": 77.333099917,
+      "end_elapsed_ns": 248576808083,
+      "stage": "product.integration",
+      "start_elapsed_ns": 171243708166
+    },
+    {
+      "duration_seconds": 12.031433542,
+      "end_elapsed_ns": 190098229708,
+      "stage": "product.index",
+      "start_elapsed_ns": 178066796166
+    },
+    {
+      "duration_seconds": 0.164904167,
+      "end_elapsed_ns": 190264259875,
+      "stage": "product.runtime.close",
+      "start_elapsed_ns": 190099355708
+    },
+    {
+      "duration_seconds": 7.848202792,
+      "end_elapsed_ns": 198112498958,
+      "stage": "product.profile.lexical_qdrant",
+      "start_elapsed_ns": 190264296166
+    },
+    {
+      "duration_seconds": 7.812745,
+      "end_elapsed_ns": 205925255125,
+      "stage": "product.profile.dense_siglip",
+      "start_elapsed_ns": 198112510125
+    },
+    {
+      "duration_seconds": 8.116473709,
+      "end_elapsed_ns": 214041736625,
+      "stage": "product.profile.temporal_refinement",
+      "start_elapsed_ns": 205925262916
+    },
+    {
+      "duration_seconds": 8.357563959,
+      "end_elapsed_ns": 222399309250,
+      "stage": "product.profile.lighthouse",
+      "start_elapsed_ns": 214041745291
+    },
+    {
+      "duration_seconds": 26.068813875,
+      "end_elapsed_ns": 248468134458,
+      "stage": "product.profile.qwen_verification",
+      "start_elapsed_ns": 222399320583
+    },
+    {
+      "duration_seconds": 0.080323583,
+      "end_elapsed_ns": 248548658791,
+      "stage": "product.export",
+      "start_elapsed_ns": 248468335208
+    },
+    {
+      "duration_seconds": 0.004710833,
+      "end_elapsed_ns": 248581872833,
+      "stage": "qwen.health",
+      "start_elapsed_ns": 248577162000
+    },
+    {
+      "duration_seconds": 32.409297209,
+      "end_elapsed_ns": 280991178375,
+      "stage": "qwen.judge",
+      "start_elapsed_ns": 248581881166
+    },
+    {
+      "duration_seconds": 5.625e-06,
+      "end_elapsed_ns": 280991204458,
+      "stage": "cleanup.ocr",
+      "start_elapsed_ns": 280991198833
+    },
+    {
+      "duration_seconds": 0.072576084,
+      "end_elapsed_ns": 281063783500,
+      "stage": "cleanup.toolchain",
+      "start_elapsed_ns": 280991207416
+    },
+    {
+      "duration_seconds": 0.000994417,
+      "end_elapsed_ns": 281064802500,
+      "stage": "monitor.finish",
+      "start_elapsed_ns": 281063808083
+    },
+    {
+      "duration_seconds": 8.041e-06,
+      "end_elapsed_ns": 281066584916,
+      "stage": "monitor.close",
+      "start_elapsed_ns": 281066576875
+    },
+    {
+      "duration_seconds": 0.28812325,
+      "end_elapsed_ns": 281354711500,
+      "stage": "workers.close",
+      "start_elapsed_ns": 281066588250
+    },
+    {
+      "duration_seconds": 0.004410333,
+      "end_elapsed_ns": 281359138541,
+      "stage": "workspace.cleanup",
+      "start_elapsed_ns": 281354728208
+    },
+    {
+      "duration_seconds": 0.034608208,
+      "end_elapsed_ns": 281393752166,
+      "stage": "code.final",
+      "start_elapsed_ns": 281359143958
+    }
+  ],
+  "status": "valid_diagnostic_resource_gate_failed",
+  "swap_observation_windows": [
+    {
+      "leaf_stages": [
+        "vision.rfdetr"
+      ],
+      "nearest_after": {
+        "roles": [
+          {
+            "identity_sha256": "8aaf6539a4e4854a7833a3784c2ae937db84de55eb03b0e80ef5dff480fcdfe6",
+            "process_count": 1,
+            "role": "lighthouse",
+            "rss_bytes": 81231872
+          },
+          {
+            "identity_sha256": "2f07e0b7b3b9a00e18d6a3c2480540dc6c0f1b21deadda3e7f51663dbc00d1cb",
+            "process_count": 1,
+            "role": "owner",
+            "rss_bytes": 175063040
+          },
+          {
+            "identity_sha256": "16ba63bd99de2ac3deb7ec83971204eaae275c0aafd7d39094cb7af7a54f3f58",
+            "process_count": 1,
+            "role": "qwen",
+            "rss_bytes": 99221504
+          },
+          {
+            "identity_sha256": "5c65e8b3ce20731b83e873d2444ca2f4be67d029a8655c321fc54b69ecff71bd",
+            "process_count": 2,
+            "role": "vision",
+            "rss_bytes": 1051541504
+          },
+          {
+            "identity_sha256": "67bd2bf78826f4a5d0d6dbe2d9d1a1ed081e5fc850ef6855cc5d93e7e60f1047",
+            "process_count": 1,
+            "role": "whisper",
+            "rss_bytes": 62652416
+          }
+        ],
+        "snapshot_finished_elapsed_ns": 40862586541,
+        "snapshot_started_elapsed_ns": 40861792375,
+        "total_rss_bytes": 1469710336
+      },
+      "nearest_before": {
+        "roles": [
+          {
+            "identity_sha256": "8aaf6539a4e4854a7833a3784c2ae937db84de55eb03b0e80ef5dff480fcdfe6",
+            "process_count": 1,
+            "role": "lighthouse",
+            "rss_bytes": 81231872
+          },
+          {
+            "identity_sha256": "2f07e0b7b3b9a00e18d6a3c2480540dc6c0f1b21deadda3e7f51663dbc00d1cb",
+            "process_count": 1,
+            "role": "owner",
+            "rss_bytes": 175046656
+          },
+          {
+            "identity_sha256": "16ba63bd99de2ac3deb7ec83971204eaae275c0aafd7d39094cb7af7a54f3f58",
+            "process_count": 1,
+            "role": "qwen",
+            "rss_bytes": 99221504
+          },
+          {
+            "identity_sha256": "5c65e8b3ce20731b83e873d2444ca2f4be67d029a8655c321fc54b69ecff71bd",
+            "process_count": 2,
+            "role": "vision",
+            "rss_bytes": 1051508736
+          },
+          {
+            "identity_sha256": "67bd2bf78826f4a5d0d6dbe2d9d1a1ed081e5fc850ef6855cc5d93e7e60f1047",
+            "process_count": 1,
+            "role": "whisper",
+            "rss_bytes": 62652416
+          }
+        ],
+        "snapshot_finished_elapsed_ns": 40516124416,
+        "snapshot_started_elapsed_ns": 40515295666,
+        "total_rss_bytes": 1469661184
+      },
+      "observation_interval_end_ns": 40829997583,
+      "observation_interval_start_ns": 40572242750,
+      "overlapping_rss_peak_bytes": 1469710336,
+      "overlapping_rss_sample_count": 5,
+      "overlapping_stages": [
+        "vision.rfdetr"
+      ],
+      "swapins_bytes": 65536,
+      "swapins_pages": 4
+    },
+    {
+      "leaf_stages": [
+        "vision.rfdetr"
+      ],
+      "nearest_after": {
+        "roles": [
+          {
+            "identity_sha256": "8aaf6539a4e4854a7833a3784c2ae937db84de55eb03b0e80ef5dff480fcdfe6",
+            "process_count": 1,
+            "role": "lighthouse",
+            "rss_bytes": 81231872
+          },
+          {
+            "identity_sha256": "2f07e0b7b3b9a00e18d6a3c2480540dc6c0f1b21deadda3e7f51663dbc00d1cb",
+            "process_count": 1,
+            "role": "owner",
+            "rss_bytes": 175063040
+          },
+          {
+            "identity_sha256": "16ba63bd99de2ac3deb7ec83971204eaae275c0aafd7d39094cb7af7a54f3f58",
+            "process_count": 1,
+            "role": "qwen",
+            "rss_bytes": 99221504
+          },
+          {
+            "identity_sha256": "5c65e8b3ce20731b83e873d2444ca2f4be67d029a8655c321fc54b69ecff71bd",
+            "process_count": 2,
+            "role": "vision",
+            "rss_bytes": 1051557888
+          },
+          {
+            "identity_sha256": "67bd2bf78826f4a5d0d6dbe2d9d1a1ed081e5fc850ef6855cc5d93e7e60f1047",
+            "process_count": 1,
+            "role": "whisper",
+            "rss_bytes": 62652416
+          }
+        ],
+        "snapshot_finished_elapsed_ns": 41090782375,
+        "snapshot_started_elapsed_ns": 41090309125,
+        "total_rss_bytes": 1469726720
+      },
+      "nearest_before": {
+        "roles": [
+          {
+            "identity_sha256": "8aaf6539a4e4854a7833a3784c2ae937db84de55eb03b0e80ef5dff480fcdfe6",
+            "process_count": 1,
+            "role": "lighthouse",
+            "rss_bytes": 81231872
+          },
+          {
+            "identity_sha256": "2f07e0b7b3b9a00e18d6a3c2480540dc6c0f1b21deadda3e7f51663dbc00d1cb",
+            "process_count": 1,
+            "role": "owner",
+            "rss_bytes": 175063040
+          },
+          {
+            "identity_sha256": "16ba63bd99de2ac3deb7ec83971204eaae275c0aafd7d39094cb7af7a54f3f58",
+            "process_count": 1,
+            "role": "qwen",
+            "rss_bytes": 99221504
+          },
+          {
+            "identity_sha256": "5c65e8b3ce20731b83e873d2444ca2f4be67d029a8655c321fc54b69ecff71bd",
+            "process_count": 2,
+            "role": "vision",
+            "rss_bytes": 1051541504
+          },
+          {
+            "identity_sha256": "67bd2bf78826f4a5d0d6dbe2d9d1a1ed081e5fc850ef6855cc5d93e7e60f1047",
+            "process_count": 1,
+            "role": "whisper",
+            "rss_bytes": 62652416
+          }
+        ],
+        "snapshot_finished_elapsed_ns": 40804879750,
+        "snapshot_started_elapsed_ns": 40804109166,
+        "total_rss_bytes": 1469710336
+      },
+      "observation_interval_end_ns": 41086571875,
+      "observation_interval_start_ns": 40829997583,
+      "overlapping_rss_peak_bytes": 1469726720,
+      "overlapping_rss_sample_count": 4,
+      "overlapping_stages": [
+        "vision.rfdetr"
+      ],
+      "swapins_bytes": 344064,
+      "swapins_pages": 21
+    },
+    {
+      "leaf_stages": [
+        "vision.rfdetr"
+      ],
+      "nearest_after": {
+        "roles": [
+          {
+            "identity_sha256": "8aaf6539a4e4854a7833a3784c2ae937db84de55eb03b0e80ef5dff480fcdfe6",
+            "process_count": 1,
+            "role": "lighthouse",
+            "rss_bytes": 81231872
+          },
+          {
+            "identity_sha256": "2f07e0b7b3b9a00e18d6a3c2480540dc6c0f1b21deadda3e7f51663dbc00d1cb",
+            "process_count": 1,
+            "role": "owner",
+            "rss_bytes": 175325184
+          },
+          {
+            "identity_sha256": "16ba63bd99de2ac3deb7ec83971204eaae275c0aafd7d39094cb7af7a54f3f58",
+            "process_count": 1,
+            "role": "qwen",
+            "rss_bytes": 99221504
+          },
+          {
+            "identity_sha256": "5c65e8b3ce20731b83e873d2444ca2f4be67d029a8655c321fc54b69ecff71bd",
+            "process_count": 2,
+            "role": "vision",
+            "rss_bytes": 1052147712
+          },
+          {
+            "identity_sha256": "67bd2bf78826f4a5d0d6dbe2d9d1a1ed081e5fc850ef6855cc5d93e7e60f1047",
+            "process_count": 1,
+            "role": "whisper",
+            "rss_bytes": 62652416
+          }
+        ],
+        "snapshot_finished_elapsed_ns": 47292119208,
+        "snapshot_started_elapsed_ns": 47291376125,
+        "total_rss_bytes": 1470578688
+      },
+      "nearest_before": {
+        "roles": [
+          {
+            "identity_sha256": "8aaf6539a4e4854a7833a3784c2ae937db84de55eb03b0e80ef5dff480fcdfe6",
+            "process_count": 1,
+            "role": "lighthouse",
+            "rss_bytes": 81231872
+          },
+          {
+            "identity_sha256": "2f07e0b7b3b9a00e18d6a3c2480540dc6c0f1b21deadda3e7f51663dbc00d1cb",
+            "process_count": 1,
+            "role": "owner",
+            "rss_bytes": 175325184
+          },
+          {
+            "identity_sha256": "16ba63bd99de2ac3deb7ec83971204eaae275c0aafd7d39094cb7af7a54f3f58",
+            "process_count": 1,
+            "role": "qwen",
+            "rss_bytes": 99221504
+          },
+          {
+            "identity_sha256": "5c65e8b3ce20731b83e873d2444ca2f4be67d029a8655c321fc54b69ecff71bd",
+            "process_count": 2,
+            "role": "vision",
+            "rss_bytes": 1052114944
+          },
+          {
+            "identity_sha256": "67bd2bf78826f4a5d0d6dbe2d9d1a1ed081e5fc850ef6855cc5d93e7e60f1047",
+            "process_count": 1,
+            "role": "whisper",
+            "rss_bytes": 62652416
+          }
+        ],
+        "snapshot_finished_elapsed_ns": 47009014833,
+        "snapshot_started_elapsed_ns": 47008040291,
+        "total_rss_bytes": 1470545920
+      },
+      "observation_interval_end_ns": 47280878500,
+      "observation_interval_start_ns": 47023915000,
+      "overlapping_rss_peak_bytes": 1470562304,
+      "overlapping_rss_sample_count": 4,
+      "overlapping_stages": [
+        "vision.rfdetr"
+      ],
+      "swapins_bytes": 327680,
+      "swapins_pages": 20
+    },
+    {
+      "leaf_stages": [
+        "ocr.read"
+      ],
+      "nearest_after": {
+        "roles": [
+          {
+            "identity_sha256": "8aaf6539a4e4854a7833a3784c2ae937db84de55eb03b0e80ef5dff480fcdfe6",
+            "process_count": 1,
+            "role": "lighthouse",
+            "rss_bytes": 81231872
+          },
+          {
+            "identity_sha256": "2f07e0b7b3b9a00e18d6a3c2480540dc6c0f1b21deadda3e7f51663dbc00d1cb",
+            "process_count": 2,
+            "role": "owner",
+            "rss_bytes": 866861056
+          },
+          {
+            "identity_sha256": "16ba63bd99de2ac3deb7ec83971204eaae275c0aafd7d39094cb7af7a54f3f58",
+            "process_count": 1,
+            "role": "qwen",
+            "rss_bytes": 99221504
+          },
+          {
+            "identity_sha256": "5c65e8b3ce20731b83e873d2444ca2f4be67d029a8655c321fc54b69ecff71bd",
+            "process_count": 2,
+            "role": "vision",
+            "rss_bytes": 1104150528
+          },
+          {
+            "identity_sha256": "67bd2bf78826f4a5d0d6dbe2d9d1a1ed081e5fc850ef6855cc5d93e7e60f1047",
+            "process_count": 2,
+            "role": "whisper",
+            "rss_bytes": 337756160
+          }
+        ],
+        "snapshot_finished_elapsed_ns": 123135353375,
+        "snapshot_started_elapsed_ns": 123134367250,
+        "total_rss_bytes": 2489221120
+      },
+      "nearest_before": {
+        "roles": [
+          {
+            "identity_sha256": "8aaf6539a4e4854a7833a3784c2ae937db84de55eb03b0e80ef5dff480fcdfe6",
+            "process_count": 1,
+            "role": "lighthouse",
+            "rss_bytes": 81231872
+          },
+          {
+            "identity_sha256": "2f07e0b7b3b9a00e18d6a3c2480540dc6c0f1b21deadda3e7f51663dbc00d1cb",
+            "process_count": 2,
+            "role": "owner",
+            "rss_bytes": 866828288
+          },
+          {
+            "identity_sha256": "16ba63bd99de2ac3deb7ec83971204eaae275c0aafd7d39094cb7af7a54f3f58",
+            "process_count": 1,
+            "role": "qwen",
+            "rss_bytes": 99221504
+          },
+          {
+            "identity_sha256": "5c65e8b3ce20731b83e873d2444ca2f4be67d029a8655c321fc54b69ecff71bd",
+            "process_count": 2,
+            "role": "vision",
+            "rss_bytes": 1104150528
+          },
+          {
+            "identity_sha256": "67bd2bf78826f4a5d0d6dbe2d9d1a1ed081e5fc850ef6855cc5d93e7e60f1047",
+            "process_count": 2,
+            "role": "whisper",
+            "rss_bytes": 337756160
+          }
+        ],
+        "snapshot_finished_elapsed_ns": 122850195708,
+        "snapshot_started_elapsed_ns": 122849588541,
+        "total_rss_bytes": 2489188352
+      },
+      "observation_interval_end_ns": 123104192750,
+      "observation_interval_start_ns": 122853349750,
+      "overlapping_rss_peak_bytes": 2489204736,
+      "overlapping_rss_sample_count": 4,
+      "overlapping_stages": [
+        "ocr.read"
+      ],
+      "swapins_bytes": 65536,
+      "swapins_pages": 4
+    },
+    {
+      "leaf_stages": [
+        "ocr.read"
+      ],
+      "nearest_after": {
+        "roles": [
+          {
+            "identity_sha256": "8aaf6539a4e4854a7833a3784c2ae937db84de55eb03b0e80ef5dff480fcdfe6",
+            "process_count": 1,
+            "role": "lighthouse",
+            "rss_bytes": 81231872
+          },
+          {
+            "identity_sha256": "2f07e0b7b3b9a00e18d6a3c2480540dc6c0f1b21deadda3e7f51663dbc00d1cb",
+            "process_count": 2,
+            "role": "owner",
+            "rss_bytes": 808206336
+          },
+          {
+            "identity_sha256": "16ba63bd99de2ac3deb7ec83971204eaae275c0aafd7d39094cb7af7a54f3f58",
+            "process_count": 1,
+            "role": "qwen",
+            "rss_bytes": 99221504
+          },
+          {
+            "identity_sha256": "5c65e8b3ce20731b83e873d2444ca2f4be67d029a8655c321fc54b69ecff71bd",
+            "process_count": 2,
+            "role": "vision",
+            "rss_bytes": 1104150528
+          },
+          {
+            "identity_sha256": "67bd2bf78826f4a5d0d6dbe2d9d1a1ed081e5fc850ef6855cc5d93e7e60f1047",
+            "process_count": 2,
+            "role": "whisper",
+            "rss_bytes": 337756160
+          }
+        ],
+        "snapshot_finished_elapsed_ns": 124458706583,
+        "snapshot_started_elapsed_ns": 124458309250,
+        "total_rss_bytes": 2430566400
+      },
+      "nearest_before": {
+        "roles": [
+          {
+            "identity_sha256": "8aaf6539a4e4854a7833a3784c2ae937db84de55eb03b0e80ef5dff480fcdfe6",
+            "process_count": 1,
+            "role": "lighthouse",
+            "rss_bytes": 81231872
+          },
+          {
+            "identity_sha256": "2f07e0b7b3b9a00e18d6a3c2480540dc6c0f1b21deadda3e7f51663dbc00d1cb",
+            "process_count": 2,
+            "role": "owner",
+            "rss_bytes": 805978112
+          },
+          {
+            "identity_sha256": "16ba63bd99de2ac3deb7ec83971204eaae275c0aafd7d39094cb7af7a54f3f58",
+            "process_count": 1,
+            "role": "qwen",
+            "rss_bytes": 99221504
+          },
+          {
+            "identity_sha256": "5c65e8b3ce20731b83e873d2444ca2f4be67d029a8655c321fc54b69ecff71bd",
+            "process_count": 2,
+            "role": "vision",
+            "rss_bytes": 1104150528
+          },
+          {
+            "identity_sha256": "67bd2bf78826f4a5d0d6dbe2d9d1a1ed081e5fc850ef6855cc5d93e7e60f1047",
+            "process_count": 2,
+            "role": "whisper",
+            "rss_bytes": 337756160
+          }
+        ],
+        "snapshot_finished_elapsed_ns": 124115081250,
+        "snapshot_started_elapsed_ns": 124114689916,
+        "total_rss_bytes": 2428338176
+      },
+      "observation_interval_end_ns": 124400485541,
+      "observation_interval_start_ns": 124140315500,
+      "overlapping_rss_peak_bytes": 2430566400,
+      "overlapping_rss_sample_count": 5,
+      "overlapping_stages": [
+        "ocr.read"
+      ],
+      "swapins_bytes": 131072,
+      "swapins_pages": 8
+    },
+    {
+      "leaf_stages": [
+        "lighthouse.generation"
+      ],
+      "nearest_after": {
+        "roles": [
+          {
+            "identity_sha256": "8aaf6539a4e4854a7833a3784c2ae937db84de55eb03b0e80ef5dff480fcdfe6",
+            "process_count": 1,
+            "role": "lighthouse",
+            "rss_bytes": 1560494080
+          },
+          {
+            "identity_sha256": "2f07e0b7b3b9a00e18d6a3c2480540dc6c0f1b21deadda3e7f51663dbc00d1cb",
+            "process_count": 1,
+            "role": "owner",
+            "rss_bytes": 297959424
+          },
+          {
+            "identity_sha256": "16ba63bd99de2ac3deb7ec83971204eaae275c0aafd7d39094cb7af7a54f3f58",
+            "process_count": 1,
+            "role": "qwen",
+            "rss_bytes": 99221504
+          },
+          {
+            "identity_sha256": "5c65e8b3ce20731b83e873d2444ca2f4be67d029a8655c321fc54b69ecff71bd",
+            "process_count": 2,
+            "role": "vision",
+            "rss_bytes": 1104150528
+          },
+          {
+            "identity_sha256": "67bd2bf78826f4a5d0d6dbe2d9d1a1ed081e5fc850ef6855cc5d93e7e60f1047",
+            "process_count": 2,
+            "role": "whisper",
+            "rss_bytes": 337756160
+          }
+        ],
+        "snapshot_finished_elapsed_ns": 170437698208,
+        "snapshot_started_elapsed_ns": 170436710666,
+        "total_rss_bytes": 3399581696
+      },
+      "nearest_before": {
+        "roles": [
+          {
+            "identity_sha256": "8aaf6539a4e4854a7833a3784c2ae937db84de55eb03b0e80ef5dff480fcdfe6",
+            "process_count": 1,
+            "role": "lighthouse",
+            "rss_bytes": 1560461312
+          },
+          {
+            "identity_sha256": "2f07e0b7b3b9a00e18d6a3c2480540dc6c0f1b21deadda3e7f51663dbc00d1cb",
+            "process_count": 1,
+            "role": "owner",
+            "rss_bytes": 297943040
+          },
+          {
+            "identity_sha256": "16ba63bd99de2ac3deb7ec83971204eaae275c0aafd7d39094cb7af7a54f3f58",
+            "process_count": 1,
+            "role": "qwen",
+            "rss_bytes": 99221504
+          },
+          {
+            "identity_sha256": "5c65e8b3ce20731b83e873d2444ca2f4be67d029a8655c321fc54b69ecff71bd",
+            "process_count": 2,
+            "role": "vision",
+            "rss_bytes": 1104150528
+          },
+          {
+            "identity_sha256": "67bd2bf78826f4a5d0d6dbe2d9d1a1ed081e5fc850ef6855cc5d93e7e60f1047",
+            "process_count": 2,
+            "role": "whisper",
+            "rss_bytes": 337756160
+          }
+        ],
+        "snapshot_finished_elapsed_ns": 170144085250,
+        "snapshot_started_elapsed_ns": 170143221250,
+        "total_rss_bytes": 3399532544
+      },
+      "observation_interval_end_ns": 170430303791,
+      "observation_interval_start_ns": 170172158333,
+      "overlapping_rss_peak_bytes": 3399565312,
+      "overlapping_rss_sample_count": 4,
+      "overlapping_stages": [
+        "lighthouse.generation"
+      ],
+      "swapins_bytes": 196608,
+      "swapins_pages": 12
+    },
+    {
+      "leaf_stages": [
+        "product.integration"
+      ],
+      "nearest_after": {
+        "roles": [
+          {
+            "identity_sha256": "8aaf6539a4e4854a7833a3784c2ae937db84de55eb03b0e80ef5dff480fcdfe6",
+            "process_count": 1,
+            "role": "lighthouse",
+            "rss_bytes": 1602469888
+          },
+          {
+            "identity_sha256": "2f07e0b7b3b9a00e18d6a3c2480540dc6c0f1b21deadda3e7f51663dbc00d1cb",
+            "process_count": 1,
+            "role": "owner",
+            "rss_bytes": 1908555776
+          },
+          {
+            "identity_sha256": "16ba63bd99de2ac3deb7ec83971204eaae275c0aafd7d39094cb7af7a54f3f58",
+            "process_count": 1,
+            "role": "qwen",
+            "rss_bytes": 99221504
+          },
+          {
+            "identity_sha256": "5c65e8b3ce20731b83e873d2444ca2f4be67d029a8655c321fc54b69ecff71bd",
+            "process_count": 2,
+            "role": "vision",
+            "rss_bytes": 1103855616
+          },
+          {
+            "identity_sha256": "67bd2bf78826f4a5d0d6dbe2d9d1a1ed081e5fc850ef6855cc5d93e7e60f1047",
+            "process_count": 2,
+            "role": "whisper",
+            "rss_bytes": 337756160
+          }
+        ],
+        "snapshot_finished_elapsed_ns": 177863619708,
+        "snapshot_started_elapsed_ns": 177863130541,
+        "total_rss_bytes": 5051858944
+      },
+      "nearest_before": {
+        "roles": [
+          {
+            "identity_sha256": "8aaf6539a4e4854a7833a3784c2ae937db84de55eb03b0e80ef5dff480fcdfe6",
+            "process_count": 1,
+            "role": "lighthouse",
+            "rss_bytes": 1602469888
+          },
+          {
+            "identity_sha256": "2f07e0b7b3b9a00e18d6a3c2480540dc6c0f1b21deadda3e7f51663dbc00d1cb",
+            "process_count": 1,
+            "role": "owner",
+            "rss_bytes": 1801093120
+          },
+          {
+            "identity_sha256": "16ba63bd99de2ac3deb7ec83971204eaae275c0aafd7d39094cb7af7a54f3f58",
+            "process_count": 1,
+            "role": "qwen",
+            "rss_bytes": 99221504
+          },
+          {
+            "identity_sha256": "5c65e8b3ce20731b83e873d2444ca2f4be67d029a8655c321fc54b69ecff71bd",
+            "process_count": 2,
+            "role": "vision",
+            "rss_bytes": 1103855616
+          },
+          {
+            "identity_sha256": "67bd2bf78826f4a5d0d6dbe2d9d1a1ed081e5fc850ef6855cc5d93e7e60f1047",
+            "process_count": 2,
+            "role": "whisper",
+            "rss_bytes": 337756160
+          }
+        ],
+        "snapshot_finished_elapsed_ns": 177519476541,
+        "snapshot_started_elapsed_ns": 177519236333,
+        "total_rss_bytes": 4944396288
+      },
+      "observation_interval_end_ns": 177804994916,
+      "observation_interval_start_ns": 177550793916,
+      "overlapping_rss_peak_bytes": 4944412672,
+      "overlapping_rss_sample_count": 5,
+      "overlapping_stages": [
+        "product.integration"
+      ],
+      "swapins_bytes": 65536,
+      "swapins_pages": 4
+    },
+    {
+      "leaf_stages": [
+        "product.index"
+      ],
+      "nearest_after": {
+        "roles": [
+          {
+            "identity_sha256": "8aaf6539a4e4854a7833a3784c2ae937db84de55eb03b0e80ef5dff480fcdfe6",
+            "process_count": 1,
+            "role": "lighthouse",
+            "rss_bytes": 1602486272
+          },
+          {
+            "identity_sha256": "2f07e0b7b3b9a00e18d6a3c2480540dc6c0f1b21deadda3e7f51663dbc00d1cb",
+            "process_count": 1,
+            "role": "owner",
+            "rss_bytes": 1602273280
+          },
+          {
+            "identity_sha256": "16ba63bd99de2ac3deb7ec83971204eaae275c0aafd7d39094cb7af7a54f3f58",
+            "process_count": 1,
+            "role": "qwen",
+            "rss_bytes": 101695488
+          },
+          {
+            "identity_sha256": "5c65e8b3ce20731b83e873d2444ca2f4be67d029a8655c321fc54b69ecff71bd",
+            "process_count": 2,
+            "role": "vision",
+            "rss_bytes": 1745338368
+          },
+          {
+            "identity_sha256": "67bd2bf78826f4a5d0d6dbe2d9d1a1ed081e5fc850ef6855cc5d93e7e60f1047",
+            "process_count": 2,
+            "role": "whisper",
+            "rss_bytes": 339083264
+          }
+        ],
+        "snapshot_finished_elapsed_ns": 189498793708,
+        "snapshot_started_elapsed_ns": 189498448708,
+        "total_rss_bytes": 5390876672
+      },
+      "nearest_before": {
+        "roles": [
+          {
+            "identity_sha256": "8aaf6539a4e4854a7833a3784c2ae937db84de55eb03b0e80ef5dff480fcdfe6",
+            "process_count": 1,
+            "role": "lighthouse",
+            "rss_bytes": 1602486272
+          },
+          {
+            "identity_sha256": "2f07e0b7b3b9a00e18d6a3c2480540dc6c0f1b21deadda3e7f51663dbc00d1cb",
+            "process_count": 1,
+            "role": "owner",
+            "rss_bytes": 1602256896
+          },
+          {
+            "identity_sha256": "16ba63bd99de2ac3deb7ec83971204eaae275c0aafd7d39094cb7af7a54f3f58",
+            "process_count": 1,
+            "role": "qwen",
+            "rss_bytes": 101695488
+          },
+          {
+            "identity_sha256": "5c65e8b3ce20731b83e873d2444ca2f4be67d029a8655c321fc54b69ecff71bd",
+            "process_count": 2,
+            "role": "vision",
+            "rss_bytes": 1746763776
+          },
+          {
+            "identity_sha256": "67bd2bf78826f4a5d0d6dbe2d9d1a1ed081e5fc850ef6855cc5d93e7e60f1047",
+            "process_count": 2,
+            "role": "whisper",
+            "rss_bytes": 339083264
+          }
+        ],
+        "snapshot_finished_elapsed_ns": 189162716208,
+        "snapshot_started_elapsed_ns": 189162443541,
+        "total_rss_bytes": 5392285696
+      },
+      "observation_interval_end_ns": 189466645125,
+      "observation_interval_start_ns": 189206869375,
+      "overlapping_rss_peak_bytes": 5392285696,
+      "overlapping_rss_sample_count": 5,
+      "overlapping_stages": [
+        "product.integration",
+        "product.index"
+      ],
+      "swapins_bytes": 131072,
+      "swapins_pages": 8
+    },
+    {
+      "leaf_stages": [
+        "product.profile.temporal_refinement"
+      ],
+      "nearest_after": {
+        "roles": [
+          {
+            "identity_sha256": "8aaf6539a4e4854a7833a3784c2ae937db84de55eb03b0e80ef5dff480fcdfe6",
+            "process_count": 1,
+            "role": "lighthouse",
+            "rss_bytes": 1602732032
+          },
+          {
+            "identity_sha256": "2f07e0b7b3b9a00e18d6a3c2480540dc6c0f1b21deadda3e7f51663dbc00d1cb",
+            "process_count": 1,
+            "role": "owner",
+            "rss_bytes": 1014071296
+          },
+          {
+            "identity_sha256": "16ba63bd99de2ac3deb7ec83971204eaae275c0aafd7d39094cb7af7a54f3f58",
+            "process_count": 1,
+            "role": "qwen",
+            "rss_bytes": 101695488
+          },
+          {
+            "identity_sha256": "5c65e8b3ce20731b83e873d2444ca2f4be67d029a8655c321fc54b69ecff71bd",
+            "process_count": 2,
+            "role": "vision",
+            "rss_bytes": 1744240640
+          },
+          {
+            "identity_sha256": "67bd2bf78826f4a5d0d6dbe2d9d1a1ed081e5fc850ef6855cc5d93e7e60f1047",
+            "process_count": 2,
+            "role": "whisper",
+            "rss_bytes": 337526784
+          }
+        ],
+        "snapshot_finished_elapsed_ns": 213315068333,
+        "snapshot_started_elapsed_ns": 213314785666,
+        "total_rss_bytes": 4800266240
+      },
+      "nearest_before": {
+        "roles": [
+          {
+            "identity_sha256": "8aaf6539a4e4854a7833a3784c2ae937db84de55eb03b0e80ef5dff480fcdfe6",
+            "process_count": 1,
+            "role": "lighthouse",
+            "rss_bytes": 1602732032
+          },
+          {
+            "identity_sha256": "2f07e0b7b3b9a00e18d6a3c2480540dc6c0f1b21deadda3e7f51663dbc00d1cb",
+            "process_count": 1,
+            "role": "owner",
+            "rss_bytes": 3381526528
+          },
+          {
+            "identity_sha256": "16ba63bd99de2ac3deb7ec83971204eaae275c0aafd7d39094cb7af7a54f3f58",
+            "process_count": 1,
+            "role": "qwen",
+            "rss_bytes": 101695488
+          },
+          {
+            "identity_sha256": "5c65e8b3ce20731b83e873d2444ca2f4be67d029a8655c321fc54b69ecff71bd",
+            "process_count": 2,
+            "role": "vision",
+            "rss_bytes": 1744240640
+          },
+          {
+            "identity_sha256": "67bd2bf78826f4a5d0d6dbe2d9d1a1ed081e5fc850ef6855cc5d93e7e60f1047",
+            "process_count": 2,
+            "role": "whisper",
+            "rss_bytes": 337526784
+          }
+        ],
+        "snapshot_finished_elapsed_ns": 212882065708,
+        "snapshot_started_elapsed_ns": 212881796875,
+        "total_rss_bytes": 7167721472
+      },
+      "observation_interval_end_ns": 213254929250,
+      "observation_interval_start_ns": 212892129625,
+      "overlapping_rss_peak_bytes": 7167721472,
+      "overlapping_rss_sample_count": 5,
+      "overlapping_stages": [
+        "product.integration",
+        "product.profile.temporal_refinement"
+      ],
+      "swapins_bytes": 65536,
+      "swapins_pages": 4
+    },
+    {
+      "leaf_stages": [
+        "product.profile.qwen_verification"
+      ],
+      "nearest_after": {
+        "roles": [
+          {
+            "identity_sha256": "8aaf6539a4e4854a7833a3784c2ae937db84de55eb03b0e80ef5dff480fcdfe6",
+            "process_count": 1,
+            "role": "lighthouse",
+            "rss_bytes": 690651136
+          },
+          {
+            "identity_sha256": "2f07e0b7b3b9a00e18d6a3c2480540dc6c0f1b21deadda3e7f51663dbc00d1cb",
+            "process_count": 1,
+            "role": "owner",
+            "rss_bytes": 742998016
+          },
+          {
+            "identity_sha256": "16ba63bd99de2ac3deb7ec83971204eaae275c0aafd7d39094cb7af7a54f3f58",
+            "process_count": 1,
+            "role": "qwen",
+            "rss_bytes": 1723482112
+          },
+          {
+            "identity_sha256": "5c65e8b3ce20731b83e873d2444ca2f4be67d029a8655c321fc54b69ecff71bd",
+            "process_count": 2,
+            "role": "vision",
+            "rss_bytes": 295583744
+          },
+          {
+            "identity_sha256": "67bd2bf78826f4a5d0d6dbe2d9d1a1ed081e5fc850ef6855cc5d93e7e60f1047",
+            "process_count": 2,
+            "role": "whisper",
+            "rss_bytes": 94519296
+          }
+        ],
+        "snapshot_finished_elapsed_ns": 238976136083,
+        "snapshot_started_elapsed_ns": 238975892041,
+        "total_rss_bytes": 3547234304
+      },
+      "nearest_before": {
+        "roles": [
+          {
+            "identity_sha256": "8aaf6539a4e4854a7833a3784c2ae937db84de55eb03b0e80ef5dff480fcdfe6",
+            "process_count": 1,
+            "role": "lighthouse",
+            "rss_bytes": 690651136
+          },
+          {
+            "identity_sha256": "2f07e0b7b3b9a00e18d6a3c2480540dc6c0f1b21deadda3e7f51663dbc00d1cb",
+            "process_count": 1,
+            "role": "owner",
+            "rss_bytes": 742850560
+          },
+          {
+            "identity_sha256": "16ba63bd99de2ac3deb7ec83971204eaae275c0aafd7d39094cb7af7a54f3f58",
+            "process_count": 1,
+            "role": "qwen",
+            "rss_bytes": 1791164416
+          },
+          {
+            "identity_sha256": "5c65e8b3ce20731b83e873d2444ca2f4be67d029a8655c321fc54b69ecff71bd",
+            "process_count": 2,
+            "role": "vision",
+            "rss_bytes": 295583744
+          },
+          {
+            "identity_sha256": "67bd2bf78826f4a5d0d6dbe2d9d1a1ed081e5fc850ef6855cc5d93e7e60f1047",
+            "process_count": 2,
+            "role": "whisper",
+            "rss_bytes": 94519296
+          }
+        ],
+        "snapshot_finished_elapsed_ns": 238692582291,
+        "snapshot_started_elapsed_ns": 238692076083,
+        "total_rss_bytes": 3614769152
+      },
+      "observation_interval_end_ns": 238961510416,
+      "observation_interval_start_ns": 238704442041,
+      "overlapping_rss_peak_bytes": 3620519936,
+      "overlapping_rss_sample_count": 4,
+      "overlapping_stages": [
+        "product.integration",
+        "product.profile.qwen_verification"
+      ],
+      "swapins_bytes": 65536,
+      "swapins_pages": 4
+    },
+    {
+      "leaf_stages": [
+        "product.profile.qwen_verification"
+      ],
+      "nearest_after": {
+        "roles": [
+          {
+            "identity_sha256": "8aaf6539a4e4854a7833a3784c2ae937db84de55eb03b0e80ef5dff480fcdfe6",
+            "process_count": 1,
+            "role": "lighthouse",
+            "rss_bytes": 690667520
+          },
+          {
+            "identity_sha256": "2f07e0b7b3b9a00e18d6a3c2480540dc6c0f1b21deadda3e7f51663dbc00d1cb",
+            "process_count": 1,
+            "role": "owner",
+            "rss_bytes": 743194624
+          },
+          {
+            "identity_sha256": "16ba63bd99de2ac3deb7ec83971204eaae275c0aafd7d39094cb7af7a54f3f58",
+            "process_count": 1,
+            "role": "qwen",
+            "rss_bytes": 1632452608
+          },
+          {
+            "identity_sha256": "5c65e8b3ce20731b83e873d2444ca2f4be67d029a8655c321fc54b69ecff71bd",
+            "process_count": 2,
+            "role": "vision",
+            "rss_bytes": 295763968
+          },
+          {
+            "identity_sha256": "67bd2bf78826f4a5d0d6dbe2d9d1a1ed081e5fc850ef6855cc5d93e7e60f1047",
+            "process_count": 2,
+            "role": "whisper",
+            "rss_bytes": 94519296
+          }
+        ],
+        "snapshot_finished_elapsed_ns": 240014851916,
+        "snapshot_started_elapsed_ns": 240013076916,
+        "total_rss_bytes": 3456598016
+      },
+      "nearest_before": {
+        "roles": [
+          {
+            "identity_sha256": "8aaf6539a4e4854a7833a3784c2ae937db84de55eb03b0e80ef5dff480fcdfe6",
+            "process_count": 1,
+            "role": "lighthouse",
+            "rss_bytes": 690667520
+          },
+          {
+            "identity_sha256": "2f07e0b7b3b9a00e18d6a3c2480540dc6c0f1b21deadda3e7f51663dbc00d1cb",
+            "process_count": 1,
+            "role": "owner",
+            "rss_bytes": 742998016
+          },
+          {
+            "identity_sha256": "16ba63bd99de2ac3deb7ec83971204eaae275c0aafd7d39094cb7af7a54f3f58",
+            "process_count": 1,
+            "role": "qwen",
+            "rss_bytes": 1644822528
+          },
+          {
+            "identity_sha256": "5c65e8b3ce20731b83e873d2444ca2f4be67d029a8655c321fc54b69ecff71bd",
+            "process_count": 2,
+            "role": "vision",
+            "rss_bytes": 295763968
+          },
+          {
+            "identity_sha256": "67bd2bf78826f4a5d0d6dbe2d9d1a1ed081e5fc850ef6855cc5d93e7e60f1047",
+            "process_count": 2,
+            "role": "whisper",
+            "rss_bytes": 94519296
+          }
+        ],
+        "snapshot_finished_elapsed_ns": 239723979541,
+        "snapshot_started_elapsed_ns": 239723569708,
+        "total_rss_bytes": 3468771328
+      },
+      "observation_interval_end_ns": 239990436750,
+      "observation_interval_start_ns": 239729902791,
+      "overlapping_rss_peak_bytes": 3468869632,
+      "overlapping_rss_sample_count": 4,
+      "overlapping_stages": [
+        "product.integration",
+        "product.profile.qwen_verification"
+      ],
+      "swapins_bytes": 65536,
+      "swapins_pages": 4
+    },
+    {
+      "leaf_stages": [
+        "product.profile.qwen_verification"
+      ],
+      "nearest_after": {
+        "roles": [
+          {
+            "identity_sha256": "8aaf6539a4e4854a7833a3784c2ae937db84de55eb03b0e80ef5dff480fcdfe6",
+            "process_count": 1,
+            "role": "lighthouse",
+            "rss_bytes": 690667520
+          },
+          {
+            "identity_sha256": "2f07e0b7b3b9a00e18d6a3c2480540dc6c0f1b21deadda3e7f51663dbc00d1cb",
+            "process_count": 1,
+            "role": "owner",
+            "rss_bytes": 718438400
+          },
+          {
+            "identity_sha256": "16ba63bd99de2ac3deb7ec83971204eaae275c0aafd7d39094cb7af7a54f3f58",
+            "process_count": 1,
+            "role": "qwen",
+            "rss_bytes": 1972043776
+          },
+          {
+            "identity_sha256": "5c65e8b3ce20731b83e873d2444ca2f4be67d029a8655c321fc54b69ecff71bd",
+            "process_count": 2,
+            "role": "vision",
+            "rss_bytes": 293224448
+          },
+          {
+            "identity_sha256": "67bd2bf78826f4a5d0d6dbe2d9d1a1ed081e5fc850ef6855cc5d93e7e60f1047",
+            "process_count": 2,
+            "role": "whisper",
+            "rss_bytes": 94519296
+          }
+        ],
+        "snapshot_finished_elapsed_ns": 241034830583,
+        "snapshot_started_elapsed_ns": 241034556041,
+        "total_rss_bytes": 3768893440
+      },
+      "nearest_before": {
+        "roles": [
+          {
+            "identity_sha256": "8aaf6539a4e4854a7833a3784c2ae937db84de55eb03b0e80ef5dff480fcdfe6",
+            "process_count": 1,
+            "role": "lighthouse",
+            "rss_bytes": 690667520
+          },
+          {
+            "identity_sha256": "2f07e0b7b3b9a00e18d6a3c2480540dc6c0f1b21deadda3e7f51663dbc00d1cb",
+            "process_count": 1,
+            "role": "owner",
+            "rss_bytes": 718389248
+          },
+          {
+            "identity_sha256": "16ba63bd99de2ac3deb7ec83971204eaae275c0aafd7d39094cb7af7a54f3f58",
+            "process_count": 1,
+            "role": "qwen",
+            "rss_bytes": 1911111680
+          },
+          {
+            "identity_sha256": "5c65e8b3ce20731b83e873d2444ca2f4be67d029a8655c321fc54b69ecff71bd",
+            "process_count": 2,
+            "role": "vision",
+            "rss_bytes": 293224448
+          },
+          {
+            "identity_sha256": "67bd2bf78826f4a5d0d6dbe2d9d1a1ed081e5fc850ef6855cc5d93e7e60f1047",
+            "process_count": 2,
+            "role": "whisper",
+            "rss_bytes": 94519296
+          }
+        ],
+        "snapshot_finished_elapsed_ns": 240754970333,
+        "snapshot_started_elapsed_ns": 240754679416,
+        "total_rss_bytes": 3707912192
+      },
+      "observation_interval_end_ns": 241021535083,
+      "observation_interval_start_ns": 240761544125,
+      "overlapping_rss_peak_bytes": 3757490176,
+      "overlapping_rss_sample_count": 4,
+      "overlapping_stages": [
+        "product.integration",
+        "product.profile.qwen_verification"
+      ],
+      "swapins_bytes": 65536,
+      "swapins_pages": 4
+    },
+    {
+      "leaf_stages": [
+        "product.profile.qwen_verification"
+      ],
+      "nearest_after": {
+        "roles": [
+          {
+            "identity_sha256": "8aaf6539a4e4854a7833a3784c2ae937db84de55eb03b0e80ef5dff480fcdfe6",
+            "process_count": 1,
+            "role": "lighthouse",
+            "rss_bytes": 690667520
+          },
+          {
+            "identity_sha256": "2f07e0b7b3b9a00e18d6a3c2480540dc6c0f1b21deadda3e7f51663dbc00d1cb",
+            "process_count": 1,
+            "role": "owner",
+            "rss_bytes": 710230016
+          },
+          {
+            "identity_sha256": "16ba63bd99de2ac3deb7ec83971204eaae275c0aafd7d39094cb7af7a54f3f58",
+            "process_count": 1,
+            "role": "qwen",
+            "rss_bytes": 1717780480
+          },
+          {
+            "identity_sha256": "5c65e8b3ce20731b83e873d2444ca2f4be67d029a8655c321fc54b69ecff71bd",
+            "process_count": 2,
+            "role": "vision",
+            "rss_bytes": 287817728
+          },
+          {
+            "identity_sha256": "67bd2bf78826f4a5d0d6dbe2d9d1a1ed081e5fc850ef6855cc5d93e7e60f1047",
+            "process_count": 2,
+            "role": "whisper",
+            "rss_bytes": 92258304
+          }
+        ],
+        "snapshot_finished_elapsed_ns": 244154960291,
+        "snapshot_started_elapsed_ns": 244154665541,
+        "total_rss_bytes": 3498754048
+      },
+      "nearest_before": {
+        "roles": [
+          {
+            "identity_sha256": "8aaf6539a4e4854a7833a3784c2ae937db84de55eb03b0e80ef5dff480fcdfe6",
+            "process_count": 1,
+            "role": "lighthouse",
+            "rss_bytes": 690667520
+          },
+          {
+            "identity_sha256": "2f07e0b7b3b9a00e18d6a3c2480540dc6c0f1b21deadda3e7f51663dbc00d1cb",
+            "process_count": 1,
+            "role": "owner",
+            "rss_bytes": 710197248
+          },
+          {
+            "identity_sha256": "16ba63bd99de2ac3deb7ec83971204eaae275c0aafd7d39094cb7af7a54f3f58",
+            "process_count": 1,
+            "role": "qwen",
+            "rss_bytes": 1720991744
+          },
+          {
+            "identity_sha256": "5c65e8b3ce20731b83e873d2444ca2f4be67d029a8655c321fc54b69ecff71bd",
+            "process_count": 2,
+            "role": "vision",
+            "rss_bytes": 287850496
+          },
+          {
+            "identity_sha256": "67bd2bf78826f4a5d0d6dbe2d9d1a1ed081e5fc850ef6855cc5d93e7e60f1047",
+            "process_count": 2,
+            "role": "whisper",
+            "rss_bytes": 92258304
+          }
+        ],
+        "snapshot_finished_elapsed_ns": 243804956458,
+        "snapshot_started_elapsed_ns": 243804675833,
+        "total_rss_bytes": 3501965312
+      },
+      "observation_interval_end_ns": 244111594333,
+      "observation_interval_start_ns": 243856691708,
+      "overlapping_rss_peak_bytes": 3501965312,
+      "overlapping_rss_sample_count": 5,
+      "overlapping_stages": [
+        "product.integration",
+        "product.profile.qwen_verification"
+      ],
+      "swapins_bytes": 65536,
+      "swapins_pages": 4
+    },
+    {
+      "leaf_stages": [
+        "product.profile.qwen_verification"
+      ],
+      "nearest_after": {
+        "roles": [
+          {
+            "identity_sha256": "8aaf6539a4e4854a7833a3784c2ae937db84de55eb03b0e80ef5dff480fcdfe6",
+            "process_count": 1,
+            "role": "lighthouse",
+            "rss_bytes": 690667520
+          },
+          {
+            "identity_sha256": "2f07e0b7b3b9a00e18d6a3c2480540dc6c0f1b21deadda3e7f51663dbc00d1cb",
+            "process_count": 1,
+            "role": "owner",
+            "rss_bytes": 709410816
+          },
+          {
+            "identity_sha256": "16ba63bd99de2ac3deb7ec83971204eaae275c0aafd7d39094cb7af7a54f3f58",
+            "process_count": 1,
+            "role": "qwen",
+            "rss_bytes": 1708720128
+          },
+          {
+            "identity_sha256": "5c65e8b3ce20731b83e873d2444ca2f4be67d029a8655c321fc54b69ecff71bd",
+            "process_count": 2,
+            "role": "vision",
+            "rss_bytes": 287850496
+          },
+          {
+            "identity_sha256": "67bd2bf78826f4a5d0d6dbe2d9d1a1ed081e5fc850ef6855cc5d93e7e60f1047",
+            "process_count": 2,
+            "role": "whisper",
+            "rss_bytes": 93847552
+          }
+        ],
+        "snapshot_finished_elapsed_ns": 245173563625,
+        "snapshot_started_elapsed_ns": 245173239708,
+        "total_rss_bytes": 3490496512
+      },
+      "nearest_before": {
+        "roles": [
+          {
+            "identity_sha256": "8aaf6539a4e4854a7833a3784c2ae937db84de55eb03b0e80ef5dff480fcdfe6",
+            "process_count": 1,
+            "role": "lighthouse",
+            "rss_bytes": 690667520
+          },
+          {
+            "identity_sha256": "2f07e0b7b3b9a00e18d6a3c2480540dc6c0f1b21deadda3e7f51663dbc00d1cb",
+            "process_count": 1,
+            "role": "owner",
+            "rss_bytes": 709312512
+          },
+          {
+            "identity_sha256": "16ba63bd99de2ac3deb7ec83971204eaae275c0aafd7d39094cb7af7a54f3f58",
+            "process_count": 1,
+            "role": "qwen",
+            "rss_bytes": 1706950656
+          },
+          {
+            "identity_sha256": "5c65e8b3ce20731b83e873d2444ca2f4be67d029a8655c321fc54b69ecff71bd",
+            "process_count": 2,
+            "role": "vision",
+            "rss_bytes": 287834112
+          },
+          {
+            "identity_sha256": "67bd2bf78826f4a5d0d6dbe2d9d1a1ed081e5fc850ef6855cc5d93e7e60f1047",
+            "process_count": 2,
+            "role": "whisper",
+            "rss_bytes": 92258304
+          }
+        ],
+        "snapshot_finished_elapsed_ns": 244842365125,
+        "snapshot_started_elapsed_ns": 244842058500,
+        "total_rss_bytes": 3487023104
+      },
+      "observation_interval_end_ns": 245146795416,
+      "observation_interval_start_ns": 244887559000,
+      "overlapping_rss_peak_bytes": 3490332672,
+      "overlapping_rss_sample_count": 5,
+      "overlapping_stages": [
+        "product.integration",
+        "product.profile.qwen_verification"
+      ],
+      "swapins_bytes": 65536,
+      "swapins_pages": 4
+    },
+    {
+      "leaf_stages": [
+        "qwen.judge"
+      ],
+      "nearest_after": {
+        "roles": [
+          {
+            "identity_sha256": "8aaf6539a4e4854a7833a3784c2ae937db84de55eb03b0e80ef5dff480fcdfe6",
+            "process_count": 1,
+            "role": "lighthouse",
+            "rss_bytes": 690667520
+          },
+          {
+            "identity_sha256": "2f07e0b7b3b9a00e18d6a3c2480540dc6c0f1b21deadda3e7f51663dbc00d1cb",
+            "process_count": 1,
+            "role": "owner",
+            "rss_bytes": 679919616
+          },
+          {
+            "identity_sha256": "16ba63bd99de2ac3deb7ec83971204eaae275c0aafd7d39094cb7af7a54f3f58",
+            "process_count": 1,
+            "role": "qwen",
+            "rss_bytes": 1732935680
+          },
+          {
+            "identity_sha256": "5c65e8b3ce20731b83e873d2444ca2f4be67d029a8655c321fc54b69ecff71bd",
+            "process_count": 2,
+            "role": "vision",
+            "rss_bytes": 289652736
+          },
+          {
+            "identity_sha256": "67bd2bf78826f4a5d0d6dbe2d9d1a1ed081e5fc850ef6855cc5d93e7e60f1047",
+            "process_count": 2,
+            "role": "whisper",
+            "rss_bytes": 93847552
+          }
+        ],
+        "snapshot_finished_elapsed_ns": 252141092833,
+        "snapshot_started_elapsed_ns": 252140251625,
+        "total_rss_bytes": 3487023104
+      },
+      "nearest_before": {
+        "roles": [
+          {
+            "identity_sha256": "8aaf6539a4e4854a7833a3784c2ae937db84de55eb03b0e80ef5dff480fcdfe6",
+            "process_count": 1,
+            "role": "lighthouse",
+            "rss_bytes": 690667520
+          },
+          {
+            "identity_sha256": "2f07e0b7b3b9a00e18d6a3c2480540dc6c0f1b21deadda3e7f51663dbc00d1cb",
+            "process_count": 1,
+            "role": "owner",
+            "rss_bytes": 679903232
+          },
+          {
+            "identity_sha256": "16ba63bd99de2ac3deb7ec83971204eaae275c0aafd7d39094cb7af7a54f3f58",
+            "process_count": 1,
+            "role": "qwen",
+            "rss_bytes": 1732952064
+          },
+          {
+            "identity_sha256": "5c65e8b3ce20731b83e873d2444ca2f4be67d029a8655c321fc54b69ecff71bd",
+            "process_count": 2,
+            "role": "vision",
+            "rss_bytes": 289652736
+          },
+          {
+            "identity_sha256": "67bd2bf78826f4a5d0d6dbe2d9d1a1ed081e5fc850ef6855cc5d93e7e60f1047",
+            "process_count": 2,
+            "role": "whisper",
+            "rss_bytes": 93847552
+          }
+        ],
+        "snapshot_finished_elapsed_ns": 251850017041,
+        "snapshot_started_elapsed_ns": 251849379000,
+        "total_rss_bytes": 3487023104
+      },
+      "observation_interval_end_ns": 252115380666,
+      "observation_interval_start_ns": 251854750250,
+      "overlapping_rss_peak_bytes": 3487023104,
+      "overlapping_rss_sample_count": 4,
+      "overlapping_stages": [
+        "qwen.judge"
+      ],
+      "swapins_bytes": 589824,
+      "swapins_pages": 36
+    },
+    {
+      "leaf_stages": [
+        "qwen.judge"
+      ],
+      "nearest_after": {
+        "roles": [
+          {
+            "identity_sha256": "8aaf6539a4e4854a7833a3784c2ae937db84de55eb03b0e80ef5dff480fcdfe6",
+            "process_count": 1,
+            "role": "lighthouse",
+            "rss_bytes": 690667520
+          },
+          {
+            "identity_sha256": "2f07e0b7b3b9a00e18d6a3c2480540dc6c0f1b21deadda3e7f51663dbc00d1cb",
+            "process_count": 1,
+            "role": "owner",
+            "rss_bytes": 679919616
+          },
+          {
+            "identity_sha256": "16ba63bd99de2ac3deb7ec83971204eaae275c0aafd7d39094cb7af7a54f3f58",
+            "process_count": 1,
+            "role": "qwen",
+            "rss_bytes": 1732952064
+          },
+          {
+            "identity_sha256": "5c65e8b3ce20731b83e873d2444ca2f4be67d029a8655c321fc54b69ecff71bd",
+            "process_count": 2,
+            "role": "vision",
+            "rss_bytes": 289652736
+          },
+          {
+            "identity_sha256": "67bd2bf78826f4a5d0d6dbe2d9d1a1ed081e5fc850ef6855cc5d93e7e60f1047",
+            "process_count": 2,
+            "role": "whisper",
+            "rss_bytes": 93847552
+          }
+        ],
+        "snapshot_finished_elapsed_ns": 252376032666,
+        "snapshot_started_elapsed_ns": 252375351875,
+        "total_rss_bytes": 3487039488
+      },
+      "nearest_before": {
+        "roles": [
+          {
+            "identity_sha256": "8aaf6539a4e4854a7833a3784c2ae937db84de55eb03b0e80ef5dff480fcdfe6",
+            "process_count": 1,
+            "role": "lighthouse",
+            "rss_bytes": 690667520
+          },
+          {
+            "identity_sha256": "2f07e0b7b3b9a00e18d6a3c2480540dc6c0f1b21deadda3e7f51663dbc00d1cb",
+            "process_count": 1,
+            "role": "owner",
+            "rss_bytes": 679919616
+          },
+          {
+            "identity_sha256": "16ba63bd99de2ac3deb7ec83971204eaae275c0aafd7d39094cb7af7a54f3f58",
+            "process_count": 1,
+            "role": "qwen",
+            "rss_bytes": 1732935680
+          },
+          {
+            "identity_sha256": "5c65e8b3ce20731b83e873d2444ca2f4be67d029a8655c321fc54b69ecff71bd",
+            "process_count": 2,
+            "role": "vision",
+            "rss_bytes": 289652736
+          },
+          {
+            "identity_sha256": "67bd2bf78826f4a5d0d6dbe2d9d1a1ed081e5fc850ef6855cc5d93e7e60f1047",
+            "process_count": 2,
+            "role": "whisper",
+            "rss_bytes": 93847552
+          }
+        ],
+        "snapshot_finished_elapsed_ns": 252081244000,
+        "snapshot_started_elapsed_ns": 252079057875,
+        "total_rss_bytes": 3487023104
+      },
+      "observation_interval_end_ns": 252369215875,
+      "observation_interval_start_ns": 252115380666,
+      "overlapping_rss_peak_bytes": 3487039488,
+      "overlapping_rss_sample_count": 4,
+      "overlapping_stages": [
+        "qwen.judge"
+      ],
+      "swapins_bytes": 196608,
+      "swapins_pages": 12
+    },
+    {
+      "leaf_stages": [
+        "qwen.judge"
+      ],
+      "nearest_after": {
+        "roles": [
+          {
+            "identity_sha256": "8aaf6539a4e4854a7833a3784c2ae937db84de55eb03b0e80ef5dff480fcdfe6",
+            "process_count": 1,
+            "role": "lighthouse",
+            "rss_bytes": 690667520
+          },
+          {
+            "identity_sha256": "2f07e0b7b3b9a00e18d6a3c2480540dc6c0f1b21deadda3e7f51663dbc00d1cb",
+            "process_count": 1,
+            "role": "owner",
+            "rss_bytes": 679919616
+          },
+          {
+            "identity_sha256": "16ba63bd99de2ac3deb7ec83971204eaae275c0aafd7d39094cb7af7a54f3f58",
+            "process_count": 1,
+            "role": "qwen",
+            "rss_bytes": 1733312512
+          },
+          {
+            "identity_sha256": "5c65e8b3ce20731b83e873d2444ca2f4be67d029a8655c321fc54b69ecff71bd",
+            "process_count": 2,
+            "role": "vision",
+            "rss_bytes": 289734656
+          },
+          {
+            "identity_sha256": "67bd2bf78826f4a5d0d6dbe2d9d1a1ed081e5fc850ef6855cc5d93e7e60f1047",
+            "process_count": 2,
+            "role": "whisper",
+            "rss_bytes": 93847552
+          }
+        ],
+        "snapshot_finished_elapsed_ns": 257847404375,
+        "snapshot_started_elapsed_ns": 257845468000,
+        "total_rss_bytes": 3487481856
+      },
+      "nearest_before": {
+        "roles": [
+          {
+            "identity_sha256": "8aaf6539a4e4854a7833a3784c2ae937db84de55eb03b0e80ef5dff480fcdfe6",
+            "process_count": 1,
+            "role": "lighthouse",
+            "rss_bytes": 690667520
+          },
+          {
+            "identity_sha256": "2f07e0b7b3b9a00e18d6a3c2480540dc6c0f1b21deadda3e7f51663dbc00d1cb",
+            "process_count": 1,
+            "role": "owner",
+            "rss_bytes": 679919616
+          },
+          {
+            "identity_sha256": "16ba63bd99de2ac3deb7ec83971204eaae275c0aafd7d39094cb7af7a54f3f58",
+            "process_count": 1,
+            "role": "qwen",
+            "rss_bytes": 1733296128
+          },
+          {
+            "identity_sha256": "5c65e8b3ce20731b83e873d2444ca2f4be67d029a8655c321fc54b69ecff71bd",
+            "process_count": 2,
+            "role": "vision",
+            "rss_bytes": 289701888
+          },
+          {
+            "identity_sha256": "67bd2bf78826f4a5d0d6dbe2d9d1a1ed081e5fc850ef6855cc5d93e7e60f1047",
+            "process_count": 2,
+            "role": "whisper",
+            "rss_bytes": 93847552
+          }
+        ],
+        "snapshot_finished_elapsed_ns": 257495475083,
+        "snapshot_started_elapsed_ns": 257494758291,
+        "total_rss_bytes": 3487432704
+      },
+      "observation_interval_end_ns": 257790665375,
+      "observation_interval_start_ns": 257530235916,
+      "overlapping_rss_peak_bytes": 3487449088,
+      "overlapping_rss_sample_count": 5,
+      "overlapping_stages": [
+        "qwen.judge"
+      ],
+      "swapins_bytes": 245760,
+      "swapins_pages": 15
+    },
+    {
+      "leaf_stages": [
+        "qwen.judge"
+      ],
+      "nearest_after": {
+        "roles": [
+          {
+            "identity_sha256": "8aaf6539a4e4854a7833a3784c2ae937db84de55eb03b0e80ef5dff480fcdfe6",
+            "process_count": 1,
+            "role": "lighthouse",
+            "rss_bytes": 690667520
+          },
+          {
+            "identity_sha256": "2f07e0b7b3b9a00e18d6a3c2480540dc6c0f1b21deadda3e7f51663dbc00d1cb",
+            "process_count": 1,
+            "role": "owner",
+            "rss_bytes": 679919616
+          },
+          {
+            "identity_sha256": "16ba63bd99de2ac3deb7ec83971204eaae275c0aafd7d39094cb7af7a54f3f58",
+            "process_count": 1,
+            "role": "qwen",
+            "rss_bytes": 1733476352
+          },
+          {
+            "identity_sha256": "5c65e8b3ce20731b83e873d2444ca2f4be67d029a8655c321fc54b69ecff71bd",
+            "process_count": 2,
+            "role": "vision",
+            "rss_bytes": 289751040
+          },
+          {
+            "identity_sha256": "67bd2bf78826f4a5d0d6dbe2d9d1a1ed081e5fc850ef6855cc5d93e7e60f1047",
+            "process_count": 2,
+            "role": "whisper",
+            "rss_bytes": 93847552
+          }
+        ],
+        "snapshot_finished_elapsed_ns": 260398030625,
+        "snapshot_started_elapsed_ns": 260396361875,
+        "total_rss_bytes": 3487662080
+      },
+      "nearest_before": {
+        "roles": [
+          {
+            "identity_sha256": "8aaf6539a4e4854a7833a3784c2ae937db84de55eb03b0e80ef5dff480fcdfe6",
+            "process_count": 1,
+            "role": "lighthouse",
+            "rss_bytes": 690667520
+          },
+          {
+            "identity_sha256": "2f07e0b7b3b9a00e18d6a3c2480540dc6c0f1b21deadda3e7f51663dbc00d1cb",
+            "process_count": 1,
+            "role": "owner",
+            "rss_bytes": 679919616
+          },
+          {
+            "identity_sha256": "16ba63bd99de2ac3deb7ec83971204eaae275c0aafd7d39094cb7af7a54f3f58",
+            "process_count": 1,
+            "role": "qwen",
+            "rss_bytes": 1733443584
+          },
+          {
+            "identity_sha256": "5c65e8b3ce20731b83e873d2444ca2f4be67d029a8655c321fc54b69ecff71bd",
+            "process_count": 2,
+            "role": "vision",
+            "rss_bytes": 289751040
+          },
+          {
+            "identity_sha256": "67bd2bf78826f4a5d0d6dbe2d9d1a1ed081e5fc850ef6855cc5d93e7e60f1047",
+            "process_count": 2,
+            "role": "whisper",
+            "rss_bytes": 93847552
+          }
+        ],
+        "snapshot_finished_elapsed_ns": 260054496958,
+        "snapshot_started_elapsed_ns": 260053966708,
+        "total_rss_bytes": 3487629312
+      },
+      "observation_interval_end_ns": 260353300791,
+      "observation_interval_start_ns": 260095244500,
+      "overlapping_rss_peak_bytes": 3487645696,
+      "overlapping_rss_sample_count": 5,
+      "overlapping_stages": [
+        "qwen.judge"
+      ],
+      "swapins_bytes": 131072,
+      "swapins_pages": 8
+    }
+  ],
+  "swapins_by_leaf_stage_pages": {
+    "lighthouse.generation": 12,
+    "ocr.read": 12,
+    "product.index": 8,
+    "product.integration": 4,
+    "product.profile.qwen_verification": 20,
+    "product.profile.temporal_refinement": 4,
+    "qwen.judge": 71,
+    "vision.rfdetr": 45
+  },
+  "system_wide_pressure_deltas": {
+    "metal_recovery_count": 0,
+    "swapins_bytes": 2883584,
+    "swapins_pages": 176,
+    "swapouts_bytes": 0,
+    "swapouts_pages": 0
+  }
+}

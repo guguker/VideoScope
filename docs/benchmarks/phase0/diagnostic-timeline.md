@@ -92,5 +92,42 @@ confirmed that trace wrappers preserve the product operations.
 
 From the repository root, `./.venv/bin/pytest backend/tests` passed **2,527 tests**
 with two existing deprecation warnings in 38.38 seconds. `git diff --check` passed.
-The real target-host diagnostic control remains pending; these tests alone do
-not establish model residency, eliminate swap or satisfy the Phase-0 exit gate.
+
+## Measured control at 7054f13
+
+The [clean target-host control](negative-controls/7054f13/README.md) installed
+and attested all six environments, passed 2,527 backend tests in 86.61 seconds
+with two deprecation warnings, and passed forced generation rollback. The
+diagnostic wrapper and native smoke completed successfully: eight steps, five
+profiles, export and cleanup, with InternVideo `not_configured`. The complete
+sidecar binds the exact native receipt; its 4,808 process observations match the
+formal RSS sample count and totals one for one. All 70 stage events form
+35 completed pairs, with no diagnostic failure.
+
+The formal host window lasted 280.402 seconds and recorded **176 swapin pages
+(2,883,584 bytes)**, zero swapout and zero Metal recovery; OOM was not observed.
+The enclosing launcher took 281.92 seconds. The longer duration than the previous
+103.191-second normal smoke prevents treating fewer swapin pages as an
+improvement. Serialization after cleanup cannot explain the added duration,
+but callback overhead and host effects are not separately established by these
+receipts. Temporal alignment remains diagnostic evidence, not causal attribution
+or a replacement for the unchanged zero-swap gate.
+
+A separate fixed 120-second control used the same 250 ms host and 50 ms RSS
+cadences, an owner-only timeline and no ML inference or VideoScope workers. It
+recorded **four swapin pages (65,536 bytes)**, 69,533,696 bytes peak process RSS
+and 2,088 matching native/timeline process samples. The first private driver
+attempt produced an empty raw file after calling nonexistent `host.close()`;
+it is retained as invalid. The corrected driver uses `host.finish()` and passed
+three fake-provider tests, including failure after RSS startup and preservation
+of the primary error while both samplers stop.
+
+The valid control demonstrates that swapin increments can occur in a window
+without VideoScope workers or model inference; it does not assign the smoke's
+events to background processes. No counts are subtracted. On September 6 the
+host still reported its August 18 boot (`1787056703`) and 1,798.75 MiB used swap.
+The next bounded experiment is an unchanged normal full smoke after an
+owner-provided fresh macOS session. That condition is a control, not a promise
+of zero swap or evidence for a speculative model-lifecycle fix. No accepted
+baseline bundle exists, and no new five-profile benchmark batch at this SHA
+has been claimed.

@@ -1,0 +1,19 @@
+{
+  "code_sha": "7054f137f92c18676461242a18c8fc2619898b68",
+  "control_kind": "no_ml_sampler_control",
+  "declared_at_utc": "2026-09-05T16:30:27.260113+00:00",
+  "declared_before_measurement": true,
+  "driver_sha256": "0be45fa16d64afe09bea99a67e3b22633c9d91fde84ba2a7a9a8db7ece495922",
+  "duration_after_baseline_seconds": 120,
+  "helper_lease": "Root polls existing launcher only; no agent tools or tests during the measurement.",
+  "host_cold_state": "not_established",
+  "host_sample_interval_milliseconds": 250,
+  "hypothesis": "System-wide swap counters may advance while only existing native samplers and their timeline observer run, without any VideoScope model inference. Positive events do not identify their causing process; no counts may be subtracted from a full smoke.",
+  "inference_calls": 0,
+  "managed_workers": 0,
+  "maximum_attempts": 1,
+  "measurement_use": "diagnostic_only_not_gate_evidence",
+  "process_sample_interval_milliseconds": 50,
+  "promotion_eligible": false,
+  "schema_version": 1
+}

@@ -1,0 +1,141 @@
+{
+  "bindings": {
+    "diagnostic-analysis.json": {
+      "byte_size": 64618,
+      "sha256": "fc39143ecbe8bbec90ff05ffaa3af8fda46b7ea98373da5456b3f81e78067952"
+    },
+    "diagnostic-control-plan.json": {
+      "byte_size": 1043,
+      "sha256": "c503f284486e33db6b0776db48260a2870324acfeab055f20f82c53145fa62be"
+    },
+    "diagnostic-launch-result.json": {
+      "byte_size": 996,
+      "sha256": "53120d7468d98951b3dc214580e9263a50169e38a6de0e6ed328d5c9f91589bb"
+    },
+    "full-ml-smoke-diagnostic.json": {
+      "byte_size": 317195,
+      "sha256": "75382419d542c6a809e9c849b5f97f2380a6a860af09073bd545baa5b026c97f"
+    },
+    "full-ml-timeline.json": {
+      "byte_size": 4062563,
+      "sha256": "59d8b9704630f751009fae33d7a6bdea835281befb574f8cc22f9b6b199d0d03"
+    },
+    "host-state-after-resumption.json": {
+      "byte_size": 882,
+      "sha256": "2563a9d31251333ed047f51b7e16c23a5e91567ad0dab412687553b5619bb745"
+    },
+    "ml-environment.json": {
+      "byte_size": 7058,
+      "sha256": "cff1ac988902db39c07846dab88ef03b9e445c9b2979117ccf24e5ae536974f0"
+    },
+    "no-ml-control-invalid-driver.py": {
+      "byte_size": 4399,
+      "sha256": "0be45fa16d64afe09bea99a67e3b22633c9d91fde84ba2a7a9a8db7ece495922"
+    },
+    "no-ml-control-invalid-plan.json": {
+      "byte_size": 1016,
+      "sha256": "882c387ac90bdc34a78a55acb536a96c2e7c4abaad8541b3f4b4a23d034cf668"
+    },
+    "no-ml-control-invalid.json": {
+      "byte_size": 1001,
+      "sha256": "eb7c5a4708d8f0bd1308db71ff8e7fff425eb1645c37a8f02419ff3279206d66"
+    },
+    "no-ml-control-launch-result.json": {
+      "byte_size": 438,
+      "sha256": "4a6655ebcbf26c612ccee9dbe3075dd49013fcc3f3fa562f439a9938388cb3ca"
+    },
+    "no-ml-control-plan.json": {
+      "byte_size": 1209,
+      "sha256": "681eed2e8ed40ec35acc55cc444009ee0aa77aa61c8773e2272b466638829a7f"
+    },
+    "no-ml-control.json": {
+      "byte_size": 684602,
+      "sha256": "d15eed34b24179f68e31f9344861591388850e023c499e7f29c54ccd3725d6c6"
+    },
+    "phase0-rollback-proof.json": {
+      "byte_size": 745,
+      "sha256": "258b06d3b66d2741e1e7051dcccb3ab2c16f6a157aba6929cc07895a1da5a5e8"
+    },
+    "run-no-ml-control-v2.py": {
+      "byte_size": 4947,
+      "sha256": "c2252385f317b15c0f4d28a71c1c9a5fa9bc2a2b154e33de1f9c63d449d409ea"
+    },
+    "test_no_ml_driver.py": {
+      "byte_size": 1671,
+      "sha256": "16953baa850dc99de905e3eaee3f916adec6e3119dbcac35c1636720df4cd46d"
+    },
+    "test_no_ml_driver_lifecycle.py": {
+      "byte_size": 3051,
+      "sha256": "87809d08b84fcd8caf3351c45dc78437ffaf00b6aa3718d05b44735bfa217a19"
+    },
+    "verify-control.py": {
+      "byte_size": 4627,
+      "sha256": "c22138f12421b01ffc76be31dff32b0db1cf4adb270d8b7fb1c4a9920e78c62f"
+    }
+  },
+  "clean_backend_suite": {
+    "command": "./.venv/bin/pytest backend/tests",
+    "elapsed_seconds": 86.61,
+    "log_sha256": "2a6a783edb99d28a084370635bf795345efd65475f87277e6e209dc886d3962c",
+    "passed": 2527,
+    "warnings": 2
+  },
+  "code_sha": "7054f137f92c18676461242a18c8fc2619898b68",
+  "decision": "Preserve the zero-swap gate and all negative evidence. Do not change model lifecycle on temporal association alone. Next control requires a fresh macOS session and the unchanged full-ML smoke; a reboot is an environmental experiment, not a promised fix.",
+  "diagnostic_driver_tests": {
+    "corrected_driver_green_log_sha256": "05f7f7d7e74af6e23fe4984046332ed347e22cf50f99a33856b9d2f589167249",
+    "elapsed_seconds": 0.2,
+    "original_driver_red": "AttributeError: HostResourceSampler has no close method",
+    "passed": 3,
+    "providers": "synthetic",
+    "warnings": 0
+  },
+  "error_ledger": [
+    {
+      "classification": "infrastructure.resource_gate",
+      "metal_recovery_count": 0,
+      "native_functional_status": "ready",
+      "oom": "not_observed",
+      "source": "full-ml-smoke-diagnostic.json",
+      "swapins_bytes": 2883584,
+      "swapins_pages": 176,
+      "swapouts_pages": 0
+    },
+    {
+      "classification": "infrastructure.diagnostic_driver",
+      "counts": "unavailable_not_zero",
+      "raw_measurements_available": false,
+      "source": "no-ml-control-invalid.json"
+    },
+    {
+      "classification": "diagnostic.host_counter_observation",
+      "inference_calls": 0,
+      "managed_workers": 0,
+      "source": "no-ml-control.json",
+      "subtract_from_smoke": false,
+      "swapins_bytes": 65536,
+      "swapins_pages": 4
+    }
+  ],
+  "external_data_import_or_upload": false,
+  "gate_check": {
+    "code": "full_ml_smoke_invalid",
+    "five_profile_batch_and_direct_verifier_at_this_sha": "not_run",
+    "four_file_collector_bundle": "not_created",
+    "frozen_policy_sha256": "4bc80d09337e7f8cdb2148d8e522586316aea9c7c15386ef96e407e41b721b73",
+    "memory_limit_bytes": 17179869184,
+    "older_profile_runs": "retained_separately_at_1b11a54_not_mixed",
+    "status": "rejected",
+    "validator": "videoscope.benchmark.phase0_evidence.validate_full_ml_smoke",
+    "validator_source_sha256": "cbf35a15cbdfe940f42ba3a7a2a6a00a9533dfd2c3e6d534124154cfe7f80b7c"
+  },
+  "later_phases_started": false,
+  "measurement_use": "diagnostic_only_not_gate_evidence",
+  "owner_applications_modified": false,
+  "phase": 0,
+  "phase_status": "open",
+  "promotion_eligible": false,
+  "schema_version": 1,
+  "status": "rejected_resource_gate",
+  "training": false
+}

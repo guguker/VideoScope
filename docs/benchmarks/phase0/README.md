@@ -6,15 +6,28 @@ product profiles, direct verifier, full-ML smoke, target-host attestation and
 generated rollback proof have all been captured at one clean Git revision and
 accepted by the unchanged collector.
 
-The latest [clean `1b11a54` control](negative-controls/1b11a54/README.md) retains
-all five completed profiles, the ten-case verifier, six-environment attestation
-and rollback proof. Its first functionally ready smoke was rejected for 446
-swapin pages. One unchanged smoke after the owner confirmed a quiet Mac window
-was also [rejected](negative-controls/1b11a54/host-ready-rejection.json), for 116
-swapin pages. Both failures are retained; no accepted four-file evidence bundle
-has been published. An opt-in [diagnostic stage/RSS timeline](diagnostic-timeline.md)
-is implemented without changing model lifecycle, smoke coverage or the gate. Its
-next control must run from a new clean checkout.
+The latest [clean `7054f13` control](negative-controls/7054f13/README.md) passed
+2,527 backend tests, six-environment attestation and forced rollback. Its full
+diagnostic smoke completed all eight steps, five profiles and export, with a
+complete [stage/RSS timeline](diagnostic-timeline.md), but observed 176 swapin
+pages. Swapout and Metal recovery were zero; OOM was not observed. The unchanged
+resource gate remains unsatisfied.
+
+A separate valid 120-second control that started no model inference or workers
+in its controlled tree observed
+four swapin pages (65,536 bytes). Its earlier invalid driver attempt and the
+three fake-provider tests of the cleanup correction are retained in the same
+control record. This observation does not identify the cause of smoke swapins
+or permit background subtraction. The next bounded experiment is an unchanged
+normal full smoke after an owner-provided fresh macOS session; that condition
+does not guarantee a pass.
+
+The [earlier `1b11a54` control](negative-controls/1b11a54/README.md) retains all
+five benchmark manifests and the ten-case direct verifier, plus its rejected
+446- and 116-page smokes. These artifacts cannot be combined with `7054f13` to
+satisfy the same-SHA gate. No new benchmark batch at `7054f13` or accepted
+four-file evidence bundle has been published; training and later phases remain
+inactive.
 
 The collector never starts a model. It validates already produced JSON and
 publishes one create-once directory containing:

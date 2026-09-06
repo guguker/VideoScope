@@ -1,0 +1,17 @@
+{
+  "classification": "infrastructure.diagnostic_driver",
+  "code": "sampler_lifecycle_method_invalid",
+  "control_plan_sha256": "882c387ac90bdc34a78a55acb536a96c2e7c4abaad8541b3f4b4a23d034cf668",
+  "correction": "Use the existing finish lifecycle and preserve the original error while independently finalizing both samplers. A synthetic provider regression reproduces the failure and passes with corrected driver.",
+  "driver_sha256": "0be45fa16d64afe09bea99a67e3b22633c9d91fde84ba2a7a9a8db7ece495922",
+  "inference_calls": 0,
+  "model_quality_inference": "not_applicable",
+  "previous_smoke_affected": false,
+  "promotion_eligible": false,
+  "raw_measurements_available": false,
+  "raw_receipt_byte_size": 0,
+  "reason": "The ad hoc driver called a nonexistent HostResourceSampler.close after successful finish; publication was skipped. No swap value can be inferred from the empty output.",
+  "replacement_control": "one_fixed_120s_corrected_driver",
+  "schema_version": 1,
+  "status": "invalid"
+}

@@ -1,0 +1,33 @@
+{
+  "code_sha": "7054f137f92c18676461242a18c8fc2619898b68",
+  "elapsed_seconds": 281.92,
+  "launcher_exit_code": 0,
+  "measurement_use": "diagnostic_only_not_gate_evidence",
+  "oom": {
+    "status": "not_observed"
+  },
+  "peak_metal_bytes": {
+    "baseline_bytes": 1161773056,
+    "increment_bytes": 9979527168,
+    "scope": "system_wide",
+    "status": "measured",
+    "value": 11141300224
+  },
+  "peak_process_tree_rss_bytes": 10575396864,
+  "pressure_deltas": {
+    "metal_recovery_count": 0,
+    "swapins_bytes": 2883584,
+    "swapins_pages": 176,
+    "swapouts_bytes": 0,
+    "swapouts_pages": 0
+  },
+  "raw_receipt_byte_size": 317195,
+  "raw_receipt_sha256": "75382419d542c6a809e9c849b5f97f2380a6a860af09073bd545baa5b026c97f",
+  "schema_version": 1,
+  "smoke_root_empty": true,
+  "status": "ready",
+  "timeline_byte_size": 4062563,
+  "timeline_sha256": "59d8b9704630f751009fae33d7a6bdea835281befb574f8cc22f9b6b199d0d03",
+  "timeline_status": "complete",
+  "workspace_cleanup": "complete"
+}
