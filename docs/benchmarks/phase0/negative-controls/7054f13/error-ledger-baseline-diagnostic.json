@@ -1,0 +1,1086 @@
+{
+  "code_sha": "7054f137f92c18676461242a18c8fc2619898b68",
+  "critical_slice_support": [
+    {
+      "case_count": 1,
+      "case_ids": [
+        "sports-made-three-point"
+      ],
+      "coverage_status": "measured",
+      "dimension": "event_class",
+      "gold_case_count": 1,
+      "minimum_gold_cases": 20,
+      "minimum_source_groups": 2,
+      "slice_id": "made_3",
+      "source_group_count": 1,
+      "uncertainty_status": "insufficient_evidence",
+      "value": "made_3"
+    },
+    {
+      "case_count": 0,
+      "case_ids": [],
+      "coverage_status": "not_represented_in_frozen_regression_dataset",
+      "dimension": "event_class",
+      "gold_case_count": 0,
+      "minimum_gold_cases": 20,
+      "minimum_source_groups": 2,
+      "slice_id": "made_2",
+      "source_group_count": 0,
+      "uncertainty_status": "insufficient_evidence",
+      "value": "made_2"
+    },
+    {
+      "case_count": 1,
+      "case_ids": [
+        "sports-made-free-throw-query"
+      ],
+      "coverage_status": "measured",
+      "dimension": "event_class",
+      "gold_case_count": 1,
+      "minimum_gold_cases": 20,
+      "minimum_source_groups": 2,
+      "slice_id": "free_throw",
+      "source_group_count": 1,
+      "uncertainty_status": "insufficient_evidence",
+      "value": "free_throw"
+    },
+    {
+      "case_count": 0,
+      "case_ids": [],
+      "coverage_status": "not_represented_in_frozen_regression_dataset",
+      "dimension": "event_class",
+      "gold_case_count": 0,
+      "minimum_gold_cases": 20,
+      "minimum_source_groups": 2,
+      "slice_id": "miss",
+      "source_group_count": 0,
+      "uncertainty_status": "insufficient_evidence",
+      "value": "miss"
+    },
+    {
+      "case_count": 0,
+      "case_ids": [],
+      "coverage_status": "not_represented_in_frozen_regression_dataset",
+      "dimension": "event_class",
+      "gold_case_count": 0,
+      "minimum_gold_cases": 20,
+      "minimum_source_groups": 2,
+      "slice_id": "replay",
+      "source_group_count": 0,
+      "uncertainty_status": "insufficient_evidence",
+      "value": "replay"
+    },
+    {
+      "case_count": 1,
+      "case_ids": [
+        "sports-full-screen-commercial"
+      ],
+      "coverage_status": "measured",
+      "dimension": "event_class",
+      "gold_case_count": 1,
+      "minimum_gold_cases": 20,
+      "minimum_source_groups": 2,
+      "slice_id": "advertisement_non_game",
+      "source_group_count": 1,
+      "uncertainty_status": "insufficient_evidence",
+      "value": "advertisement_non_game"
+    },
+    {
+      "case_count": 0,
+      "case_ids": [],
+      "coverage_status": "not_represented_in_frozen_regression_dataset",
+      "dimension": "capture_condition",
+      "gold_case_count": 0,
+      "minimum_gold_cases": 20,
+      "minimum_source_groups": 2,
+      "slice_id": "scoreboard_hidden",
+      "source_group_count": 0,
+      "uncertainty_status": "insufficient_evidence",
+      "value": "scoreboard_hidden"
+    },
+    {
+      "case_count": 0,
+      "case_ids": [],
+      "coverage_status": "not_represented_in_frozen_regression_dataset",
+      "dimension": "capture_condition",
+      "gold_case_count": 0,
+      "minimum_gold_cases": 20,
+      "minimum_source_groups": 2,
+      "slice_id": "low_resolution",
+      "source_group_count": 0,
+      "uncertainty_status": "insufficient_evidence",
+      "value": "low_resolution"
+    },
+    {
+      "case_count": 0,
+      "case_ids": [],
+      "coverage_status": "not_represented_in_frozen_regression_dataset",
+      "dimension": "distribution_shift",
+      "gold_case_count": 0,
+      "minimum_gold_cases": 20,
+      "minimum_source_groups": 2,
+      "slice_id": "different_camera_or_league",
+      "source_group_count": 0,
+      "uncertainty_status": "insufficient_evidence",
+      "value": "different_camera_or_league"
+    },
+    {
+      "case_count": 0,
+      "case_ids": [],
+      "coverage_status": "not_represented_in_frozen_regression_dataset",
+      "dimension": "domain",
+      "gold_case_count": 0,
+      "minimum_gold_cases": 20,
+      "minimum_source_groups": 2,
+      "slice_id": "ood_non_basketball",
+      "source_group_count": 0,
+      "uncertainty_status": "insufficient_evidence",
+      "value": "ood_non_basketball"
+    },
+    {
+      "case_count": 2,
+      "case_ids": [
+        "panel-light-top-gesture",
+        "panel-roundtable-discussion"
+      ],
+      "coverage_status": "measured",
+      "dimension": "domain",
+      "gold_case_count": 2,
+      "minimum_gold_cases": 20,
+      "minimum_source_groups": 2,
+      "slice_id": "universal_non_sports",
+      "source_group_count": 1,
+      "uncertainty_status": "insufficient_evidence",
+      "value": "universal_non_sports"
+    }
+  ],
+  "direct_verifier_case_outcomes": [
+    {
+      "case_id": "panel-light-top-gesture-negative",
+      "error_code": null,
+      "status": "model_miss"
+    },
+    {
+      "case_id": "panel-light-top-gesture-positive",
+      "error_code": null,
+      "status": "match"
+    },
+    {
+      "case_id": "panel-roundtable-negative",
+      "error_code": null,
+      "status": "model_miss"
+    },
+    {
+      "case_id": "panel-roundtable-positive",
+      "error_code": null,
+      "status": "match"
+    },
+    {
+      "case_id": "sports-abstain",
+      "error_code": null,
+      "status": "model_miss"
+    },
+    {
+      "case_id": "sports-commercial-positive",
+      "error_code": null,
+      "status": "model_miss"
+    },
+    {
+      "case_id": "sports-commercial-slate-negative",
+      "error_code": null,
+      "status": "match"
+    },
+    {
+      "case_id": "sports-made-free-throw",
+      "error_code": null,
+      "status": "model_miss"
+    },
+    {
+      "case_id": "sports-made-three-blue-15",
+      "error_code": null,
+      "status": "model_miss"
+    },
+    {
+      "case_id": "sports-made-three-white-9",
+      "error_code": null,
+      "status": "model_miss"
+    }
+  ],
+  "direct_verifier_infrastructure_failure_count": 0,
+  "direct_verifier_summary": {
+    "case_count": 10,
+    "infrastructure_error_count": 0,
+    "match_count": 3,
+    "model_miss_count": 7
+  },
+  "evidence_kind": "baseline_error_ledger_diagnostic",
+  "frozen_absolute_guardrail_observations": [
+    {
+      "actual": 1.0,
+      "direction": "higher_is_better",
+      "guardrail_id": "candidate_recall_floor",
+      "metric_name": "candidate_recall_at_50",
+      "profile_id": "lexical_qdrant",
+      "scope": "overall",
+      "source": "product_benchmark",
+      "status": "pass",
+      "threshold": 0.95
+    },
+    {
+      "actual": 0.24000000000000002,
+      "direction": "higher_is_better",
+      "guardrail_id": "precision_at_5_floor",
+      "metric_name": "precision_at_5",
+      "profile_id": "lexical_qdrant",
+      "scope": "overall",
+      "source": "product_benchmark",
+      "status": "fail",
+      "threshold": 0.6
+    },
+    {
+      "actual": 1.0,
+      "direction": "higher_is_better",
+      "guardrail_id": "recall_at_20_floor",
+      "metric_name": "recall_at_20",
+      "profile_id": "lexical_qdrant",
+      "scope": "overall",
+      "source": "product_benchmark",
+      "status": "pass",
+      "threshold": 0.8
+    },
+    {
+      "actual": 1.6333575658137394,
+      "direction": "lower_is_better",
+      "guardrail_id": "mean_boundary_error_ceiling",
+      "metric_name": "mean_boundary_error_seconds",
+      "profile_id": "lexical_qdrant",
+      "scope": "overall",
+      "source": "product_benchmark",
+      "status": "fail",
+      "threshold": 1.0
+    },
+    {
+      "actual": 1.0,
+      "direction": "lower_is_better",
+      "guardrail_id": "hard_negative_false_positive_ceiling",
+      "metric_name": "hard_negative_hit_rate",
+      "profile_id": "lexical_qdrant",
+      "scope": "overall",
+      "source": "product_benchmark",
+      "status": "fail",
+      "threshold": 0.0
+    },
+    {
+      "actual": 0.0,
+      "direction": "lower_is_better",
+      "guardrail_id": "infrastructure_error_ceiling",
+      "metric_name": "error_count",
+      "profile_id": "lexical_qdrant",
+      "scope": "overall",
+      "source": "product_benchmark",
+      "status": "pass",
+      "threshold": 0.0
+    },
+    {
+      "actual": 4315332608.0,
+      "direction": "lower_is_better",
+      "guardrail_id": "peak_process_tree_rss_ceiling",
+      "metric_name": "sampled_peak_process_tree_rss_bytes",
+      "profile_id": "lexical_qdrant",
+      "scope": "overall",
+      "source": "product_benchmark",
+      "status": "pass",
+      "threshold": 17179869184
+    },
+    {
+      "actual": 1.0,
+      "direction": "higher_is_better",
+      "guardrail_id": "candidate_recall_floor",
+      "metric_name": "candidate_recall_at_50",
+      "profile_id": "dense_siglip",
+      "scope": "overall",
+      "source": "product_benchmark",
+      "status": "pass",
+      "threshold": 0.95
+    },
+    {
+      "actual": 0.24000000000000002,
+      "direction": "higher_is_better",
+      "guardrail_id": "precision_at_5_floor",
+      "metric_name": "precision_at_5",
+      "profile_id": "dense_siglip",
+      "scope": "overall",
+      "source": "product_benchmark",
+      "status": "fail",
+      "threshold": 0.6
+    },
+    {
+      "actual": 1.0,
+      "direction": "higher_is_better",
+      "guardrail_id": "recall_at_20_floor",
+      "metric_name": "recall_at_20",
+      "profile_id": "dense_siglip",
+      "scope": "overall",
+      "source": "product_benchmark",
+      "status": "pass",
+      "threshold": 0.8
+    },
+    {
+      "actual": 1.5644444444444443,
+      "direction": "lower_is_better",
+      "guardrail_id": "mean_boundary_error_ceiling",
+      "metric_name": "mean_boundary_error_seconds",
+      "profile_id": "dense_siglip",
+      "scope": "overall",
+      "source": "product_benchmark",
+      "status": "fail",
+      "threshold": 1.0
+    },
+    {
+      "actual": 1.0,
+      "direction": "lower_is_better",
+      "guardrail_id": "hard_negative_false_positive_ceiling",
+      "metric_name": "hard_negative_hit_rate",
+      "profile_id": "dense_siglip",
+      "scope": "overall",
+      "source": "product_benchmark",
+      "status": "fail",
+      "threshold": 0.0
+    },
+    {
+      "actual": 0.0,
+      "direction": "lower_is_better",
+      "guardrail_id": "infrastructure_error_ceiling",
+      "metric_name": "error_count",
+      "profile_id": "dense_siglip",
+      "scope": "overall",
+      "source": "product_benchmark",
+      "status": "pass",
+      "threshold": 0.0
+    },
+    {
+      "actual": 5296930816.0,
+      "direction": "lower_is_better",
+      "guardrail_id": "peak_process_tree_rss_ceiling",
+      "metric_name": "sampled_peak_process_tree_rss_bytes",
+      "profile_id": "dense_siglip",
+      "scope": "overall",
+      "source": "product_benchmark",
+      "status": "pass",
+      "threshold": 17179869184
+    },
+    {
+      "actual": 1.0,
+      "direction": "higher_is_better",
+      "guardrail_id": "candidate_recall_floor",
+      "metric_name": "candidate_recall_at_50",
+      "profile_id": "temporal_refinement",
+      "scope": "overall",
+      "source": "product_benchmark",
+      "status": "pass",
+      "threshold": 0.95
+    },
+    {
+      "actual": 0.24000000000000002,
+      "direction": "higher_is_better",
+      "guardrail_id": "precision_at_5_floor",
+      "metric_name": "precision_at_5",
+      "profile_id": "temporal_refinement",
+      "scope": "overall",
+      "source": "product_benchmark",
+      "status": "fail",
+      "threshold": 0.6
+    },
+    {
+      "actual": 1.0,
+      "direction": "higher_is_better",
+      "guardrail_id": "recall_at_20_floor",
+      "metric_name": "recall_at_20",
+      "profile_id": "temporal_refinement",
+      "scope": "overall",
+      "source": "product_benchmark",
+      "status": "pass",
+      "threshold": 0.8
+    },
+    {
+      "actual": 1.5644444444444443,
+      "direction": "lower_is_better",
+      "guardrail_id": "mean_boundary_error_ceiling",
+      "metric_name": "mean_boundary_error_seconds",
+      "profile_id": "temporal_refinement",
+      "scope": "overall",
+      "source": "product_benchmark",
+      "status": "fail",
+      "threshold": 1.0
+    },
+    {
+      "actual": 1.0,
+      "direction": "lower_is_better",
+      "guardrail_id": "hard_negative_false_positive_ceiling",
+      "metric_name": "hard_negative_hit_rate",
+      "profile_id": "temporal_refinement",
+      "scope": "overall",
+      "source": "product_benchmark",
+      "status": "fail",
+      "threshold": 0.0
+    },
+    {
+      "actual": 0.0,
+      "direction": "lower_is_better",
+      "guardrail_id": "infrastructure_error_ceiling",
+      "metric_name": "error_count",
+      "profile_id": "temporal_refinement",
+      "scope": "overall",
+      "source": "product_benchmark",
+      "status": "pass",
+      "threshold": 0.0
+    },
+    {
+      "actual": 5293391872.0,
+      "direction": "lower_is_better",
+      "guardrail_id": "peak_process_tree_rss_ceiling",
+      "metric_name": "sampled_peak_process_tree_rss_bytes",
+      "profile_id": "temporal_refinement",
+      "scope": "overall",
+      "source": "product_benchmark",
+      "status": "pass",
+      "threshold": 17179869184
+    },
+    {
+      "actual": 1.0,
+      "direction": "higher_is_better",
+      "guardrail_id": "candidate_recall_floor",
+      "metric_name": "candidate_recall_at_50",
+      "profile_id": "lighthouse",
+      "scope": "overall",
+      "source": "product_benchmark",
+      "status": "pass",
+      "threshold": 0.95
+    },
+    {
+      "actual": 0.24000000000000002,
+      "direction": "higher_is_better",
+      "guardrail_id": "precision_at_5_floor",
+      "metric_name": "precision_at_5",
+      "profile_id": "lighthouse",
+      "scope": "overall",
+      "source": "product_benchmark",
+      "status": "fail",
+      "threshold": 0.6
+    },
+    {
+      "actual": 1.0,
+      "direction": "higher_is_better",
+      "guardrail_id": "recall_at_20_floor",
+      "metric_name": "recall_at_20",
+      "profile_id": "lighthouse",
+      "scope": "overall",
+      "source": "product_benchmark",
+      "status": "pass",
+      "threshold": 0.8
+    },
+    {
+      "actual": 1.5616666666666665,
+      "direction": "lower_is_better",
+      "guardrail_id": "mean_boundary_error_ceiling",
+      "metric_name": "mean_boundary_error_seconds",
+      "profile_id": "lighthouse",
+      "scope": "overall",
+      "source": "product_benchmark",
+      "status": "fail",
+      "threshold": 1.0
+    },
+    {
+      "actual": 1.0,
+      "direction": "lower_is_better",
+      "guardrail_id": "hard_negative_false_positive_ceiling",
+      "metric_name": "hard_negative_hit_rate",
+      "profile_id": "lighthouse",
+      "scope": "overall",
+      "source": "product_benchmark",
+      "status": "fail",
+      "threshold": 0.0
+    },
+    {
+      "actual": 0.0,
+      "direction": "lower_is_better",
+      "guardrail_id": "infrastructure_error_ceiling",
+      "metric_name": "error_count",
+      "profile_id": "lighthouse",
+      "scope": "overall",
+      "source": "product_benchmark",
+      "status": "pass",
+      "threshold": 0.0
+    },
+    {
+      "actual": 5316034560.0,
+      "direction": "lower_is_better",
+      "guardrail_id": "peak_process_tree_rss_ceiling",
+      "metric_name": "sampled_peak_process_tree_rss_bytes",
+      "profile_id": "lighthouse",
+      "scope": "overall",
+      "source": "product_benchmark",
+      "status": "pass",
+      "threshold": 17179869184
+    },
+    {
+      "actual": 0.8333333333333334,
+      "direction": "higher_is_better",
+      "guardrail_id": "candidate_recall_floor",
+      "metric_name": "candidate_recall_at_50",
+      "profile_id": "qwen_verification",
+      "scope": "overall",
+      "source": "product_benchmark",
+      "status": "fail",
+      "threshold": 0.95
+    },
+    {
+      "actual": 0.2,
+      "direction": "higher_is_better",
+      "guardrail_id": "precision_at_5_floor",
+      "metric_name": "precision_at_5",
+      "profile_id": "qwen_verification",
+      "scope": "overall",
+      "source": "product_benchmark",
+      "status": "fail",
+      "threshold": 0.6
+    },
+    {
+      "actual": 0.8333333333333334,
+      "direction": "higher_is_better",
+      "guardrail_id": "recall_at_20_floor",
+      "metric_name": "recall_at_20",
+      "profile_id": "qwen_verification",
+      "scope": "overall",
+      "source": "product_benchmark",
+      "status": "pass",
+      "threshold": 0.8
+    },
+    {
+      "actual": 0.13000000000000006,
+      "direction": "lower_is_better",
+      "guardrail_id": "mean_boundary_error_ceiling",
+      "metric_name": "mean_boundary_error_seconds",
+      "profile_id": "qwen_verification",
+      "scope": "overall",
+      "source": "product_benchmark",
+      "status": "pass",
+      "threshold": 1.0
+    },
+    {
+      "actual": 0.8,
+      "direction": "lower_is_better",
+      "guardrail_id": "hard_negative_false_positive_ceiling",
+      "metric_name": "hard_negative_hit_rate",
+      "profile_id": "qwen_verification",
+      "scope": "overall",
+      "source": "product_benchmark",
+      "status": "fail",
+      "threshold": 0.0
+    },
+    {
+      "actual": 0.0,
+      "direction": "lower_is_better",
+      "guardrail_id": "infrastructure_error_ceiling",
+      "metric_name": "error_count",
+      "profile_id": "qwen_verification",
+      "scope": "overall",
+      "source": "product_benchmark",
+      "status": "pass",
+      "threshold": 0.0
+    },
+    {
+      "actual": 8876081152.0,
+      "direction": "lower_is_better",
+      "guardrail_id": "peak_process_tree_rss_ceiling",
+      "metric_name": "sampled_peak_process_tree_rss_bytes",
+      "profile_id": "qwen_verification",
+      "scope": "overall",
+      "source": "product_benchmark",
+      "status": "pass",
+      "threshold": 17179869184
+    },
+    {
+      "actual": 0,
+      "direction": "lower_is_better",
+      "guardrail_id": "verifier_infrastructure_error_ceiling",
+      "metric_name": "infrastructure_error_count",
+      "scope": "overall",
+      "source": "direct_verifier",
+      "status": "pass",
+      "threshold": 0.0
+    }
+  ],
+  "frozen_policy_revision": "e387059314c5c7372520f971c815d03f3cfd181f92135e08e8fdea0bd5340eef",
+  "infrastructure_scope": "Only these five measured product runs and this direct ten-case run. Existing full-smoke/resource and private-driver failures remain separately retained; no zero-global-infrastructure claim.",
+  "interpretation": "Model misses and hard-negative/precision/boundary failures remain separate from execution failures. Missing slices and insufficient source-group support are not passes. No policy, label, threshold or model tuning.",
+  "measurement_use": "diagnostic_only_not_gate_evidence",
+  "phase0_complete": false,
+  "phase0_resource_gate": "not_evaluated_by_this_ledger",
+  "product_case_outcomes": [
+    {
+      "case_id": "panel-light-top-gesture",
+      "execution_status": "complete",
+      "hard_negative_hit": 1.0,
+      "infrastructure_error_code": null,
+      "model_miss": false,
+      "model_miss_rule": "completed_positive_case_without_any_relevant_rank",
+      "ndcg_at_10": 0.6309297535714575,
+      "precision_at_5": 0.2,
+      "profile_id": "lexical_qdrant",
+      "recall_at_10": 1.0,
+      "recall_at_20": 1.0
+    },
+    {
+      "case_id": "panel-roundtable-discussion",
+      "execution_status": "complete",
+      "hard_negative_hit": 1.0,
+      "infrastructure_error_code": null,
+      "model_miss": false,
+      "model_miss_rule": "completed_positive_case_without_any_relevant_rank",
+      "ndcg_at_10": 1.0,
+      "precision_at_5": 0.2,
+      "profile_id": "lexical_qdrant",
+      "recall_at_10": 1.0,
+      "recall_at_20": 1.0
+    },
+    {
+      "case_id": "sports-full-screen-commercial",
+      "execution_status": "complete",
+      "hard_negative_hit": 1.0,
+      "infrastructure_error_code": null,
+      "model_miss": false,
+      "model_miss_rule": "completed_positive_case_without_any_relevant_rank",
+      "ndcg_at_10": 1.0,
+      "precision_at_5": 0.2,
+      "profile_id": "lexical_qdrant",
+      "recall_at_10": 1.0,
+      "recall_at_20": 1.0
+    },
+    {
+      "case_id": "sports-made-free-throw-query",
+      "execution_status": "complete",
+      "hard_negative_hit": 1.0,
+      "infrastructure_error_code": null,
+      "model_miss": false,
+      "model_miss_rule": "completed_positive_case_without_any_relevant_rank",
+      "ndcg_at_10": 1.0,
+      "precision_at_5": 0.2,
+      "profile_id": "lexical_qdrant",
+      "recall_at_10": 1.0,
+      "recall_at_20": 1.0
+    },
+    {
+      "case_id": "sports-made-three-point",
+      "execution_status": "complete",
+      "hard_negative_hit": 1.0,
+      "infrastructure_error_code": null,
+      "model_miss": false,
+      "model_miss_rule": "completed_positive_case_without_any_relevant_rank",
+      "ndcg_at_10": 0.5706417189553201,
+      "precision_at_5": 0.4,
+      "profile_id": "lexical_qdrant",
+      "recall_at_10": 1.0,
+      "recall_at_20": 1.0
+    },
+    {
+      "case_id": "panel-light-top-gesture",
+      "execution_status": "complete",
+      "hard_negative_hit": 1.0,
+      "infrastructure_error_code": null,
+      "model_miss": false,
+      "model_miss_rule": "completed_positive_case_without_any_relevant_rank",
+      "ndcg_at_10": 1.0,
+      "precision_at_5": 0.2,
+      "profile_id": "dense_siglip",
+      "recall_at_10": 1.0,
+      "recall_at_20": 1.0
+    },
+    {
+      "case_id": "panel-roundtable-discussion",
+      "execution_status": "complete",
+      "hard_negative_hit": 1.0,
+      "infrastructure_error_code": null,
+      "model_miss": false,
+      "model_miss_rule": "completed_positive_case_without_any_relevant_rank",
+      "ndcg_at_10": 1.0,
+      "precision_at_5": 0.2,
+      "profile_id": "dense_siglip",
+      "recall_at_10": 1.0,
+      "recall_at_20": 1.0
+    },
+    {
+      "case_id": "sports-full-screen-commercial",
+      "execution_status": "complete",
+      "hard_negative_hit": 1.0,
+      "infrastructure_error_code": null,
+      "model_miss": false,
+      "model_miss_rule": "completed_positive_case_without_any_relevant_rank",
+      "ndcg_at_10": 1.0,
+      "precision_at_5": 0.2,
+      "profile_id": "dense_siglip",
+      "recall_at_10": 1.0,
+      "recall_at_20": 1.0
+    },
+    {
+      "case_id": "sports-made-free-throw-query",
+      "execution_status": "complete",
+      "hard_negative_hit": 1.0,
+      "infrastructure_error_code": null,
+      "model_miss": false,
+      "model_miss_rule": "completed_positive_case_without_any_relevant_rank",
+      "ndcg_at_10": 1.0,
+      "precision_at_5": 0.2,
+      "profile_id": "dense_siglip",
+      "recall_at_10": 1.0,
+      "recall_at_20": 1.0
+    },
+    {
+      "case_id": "sports-made-three-point",
+      "execution_status": "complete",
+      "hard_negative_hit": 1.0,
+      "infrastructure_error_code": null,
+      "model_miss": false,
+      "model_miss_rule": "completed_positive_case_without_any_relevant_rank",
+      "ndcg_at_10": 0.8772153153380493,
+      "precision_at_5": 0.4,
+      "profile_id": "dense_siglip",
+      "recall_at_10": 1.0,
+      "recall_at_20": 1.0
+    },
+    {
+      "case_id": "panel-light-top-gesture",
+      "execution_status": "complete",
+      "hard_negative_hit": 1.0,
+      "infrastructure_error_code": null,
+      "model_miss": false,
+      "model_miss_rule": "completed_positive_case_without_any_relevant_rank",
+      "ndcg_at_10": 1.0,
+      "precision_at_5": 0.2,
+      "profile_id": "temporal_refinement",
+      "recall_at_10": 1.0,
+      "recall_at_20": 1.0
+    },
+    {
+      "case_id": "panel-roundtable-discussion",
+      "execution_status": "complete",
+      "hard_negative_hit": 1.0,
+      "infrastructure_error_code": null,
+      "model_miss": false,
+      "model_miss_rule": "completed_positive_case_without_any_relevant_rank",
+      "ndcg_at_10": 1.0,
+      "precision_at_5": 0.2,
+      "profile_id": "temporal_refinement",
+      "recall_at_10": 1.0,
+      "recall_at_20": 1.0
+    },
+    {
+      "case_id": "sports-full-screen-commercial",
+      "execution_status": "complete",
+      "hard_negative_hit": 1.0,
+      "infrastructure_error_code": null,
+      "model_miss": false,
+      "model_miss_rule": "completed_positive_case_without_any_relevant_rank",
+      "ndcg_at_10": 1.0,
+      "precision_at_5": 0.2,
+      "profile_id": "temporal_refinement",
+      "recall_at_10": 1.0,
+      "recall_at_20": 1.0
+    },
+    {
+      "case_id": "sports-made-free-throw-query",
+      "execution_status": "complete",
+      "hard_negative_hit": 1.0,
+      "infrastructure_error_code": null,
+      "model_miss": false,
+      "model_miss_rule": "completed_positive_case_without_any_relevant_rank",
+      "ndcg_at_10": 1.0,
+      "precision_at_5": 0.2,
+      "profile_id": "temporal_refinement",
+      "recall_at_10": 1.0,
+      "recall_at_20": 1.0
+    },
+    {
+      "case_id": "sports-made-three-point",
+      "execution_status": "complete",
+      "hard_negative_hit": 1.0,
+      "infrastructure_error_code": null,
+      "model_miss": false,
+      "model_miss_rule": "completed_positive_case_without_any_relevant_rank",
+      "ndcg_at_10": 0.8772153153380493,
+      "precision_at_5": 0.4,
+      "profile_id": "temporal_refinement",
+      "recall_at_10": 1.0,
+      "recall_at_20": 1.0
+    },
+    {
+      "case_id": "panel-light-top-gesture",
+      "execution_status": "complete",
+      "hard_negative_hit": 1.0,
+      "infrastructure_error_code": null,
+      "model_miss": false,
+      "model_miss_rule": "completed_positive_case_without_any_relevant_rank",
+      "ndcg_at_10": 1.0,
+      "precision_at_5": 0.2,
+      "profile_id": "lighthouse",
+      "recall_at_10": 1.0,
+      "recall_at_20": 1.0
+    },
+    {
+      "case_id": "panel-roundtable-discussion",
+      "execution_status": "complete",
+      "hard_negative_hit": 1.0,
+      "infrastructure_error_code": null,
+      "model_miss": false,
+      "model_miss_rule": "completed_positive_case_without_any_relevant_rank",
+      "ndcg_at_10": 1.0,
+      "precision_at_5": 0.2,
+      "profile_id": "lighthouse",
+      "recall_at_10": 1.0,
+      "recall_at_20": 1.0
+    },
+    {
+      "case_id": "sports-full-screen-commercial",
+      "execution_status": "complete",
+      "hard_negative_hit": 1.0,
+      "infrastructure_error_code": null,
+      "model_miss": false,
+      "model_miss_rule": "completed_positive_case_without_any_relevant_rank",
+      "ndcg_at_10": 1.0,
+      "precision_at_5": 0.2,
+      "profile_id": "lighthouse",
+      "recall_at_10": 1.0,
+      "recall_at_20": 1.0
+    },
+    {
+      "case_id": "sports-made-free-throw-query",
+      "execution_status": "complete",
+      "hard_negative_hit": 1.0,
+      "infrastructure_error_code": null,
+      "model_miss": false,
+      "model_miss_rule": "completed_positive_case_without_any_relevant_rank",
+      "ndcg_at_10": 1.0,
+      "precision_at_5": 0.2,
+      "profile_id": "lighthouse",
+      "recall_at_10": 1.0,
+      "recall_at_20": 1.0
+    },
+    {
+      "case_id": "sports-made-three-point",
+      "execution_status": "complete",
+      "hard_negative_hit": 1.0,
+      "infrastructure_error_code": null,
+      "model_miss": false,
+      "model_miss_rule": "completed_positive_case_without_any_relevant_rank",
+      "ndcg_at_10": 0.8772153153380493,
+      "precision_at_5": 0.4,
+      "profile_id": "lighthouse",
+      "recall_at_10": 1.0,
+      "recall_at_20": 1.0
+    },
+    {
+      "case_id": "panel-light-top-gesture",
+      "execution_status": "complete",
+      "hard_negative_hit": 0.0,
+      "infrastructure_error_code": null,
+      "model_miss": false,
+      "model_miss_rule": "completed_positive_case_without_any_relevant_rank",
+      "ndcg_at_10": 1.0,
+      "precision_at_5": 0.2,
+      "profile_id": "qwen_verification",
+      "recall_at_10": 1.0,
+      "recall_at_20": 1.0
+    },
+    {
+      "case_id": "panel-roundtable-discussion",
+      "execution_status": "complete",
+      "hard_negative_hit": 1.0,
+      "infrastructure_error_code": null,
+      "model_miss": true,
+      "model_miss_rule": "completed_positive_case_without_any_relevant_rank",
+      "ndcg_at_10": 0.0,
+      "precision_at_5": 0.0,
+      "profile_id": "qwen_verification",
+      "recall_at_10": 0.0,
+      "recall_at_20": 0.0
+    },
+    {
+      "case_id": "sports-full-screen-commercial",
+      "execution_status": "complete",
+      "hard_negative_hit": 1.0,
+      "infrastructure_error_code": null,
+      "model_miss": false,
+      "model_miss_rule": "completed_positive_case_without_any_relevant_rank",
+      "ndcg_at_10": 1.0,
+      "precision_at_5": 0.2,
+      "profile_id": "qwen_verification",
+      "recall_at_10": 1.0,
+      "recall_at_20": 1.0
+    },
+    {
+      "case_id": "sports-made-free-throw-query",
+      "execution_status": "complete",
+      "hard_negative_hit": 1.0,
+      "infrastructure_error_code": null,
+      "model_miss": false,
+      "model_miss_rule": "completed_positive_case_without_any_relevant_rank",
+      "ndcg_at_10": 1.0,
+      "precision_at_5": 0.2,
+      "profile_id": "qwen_verification",
+      "recall_at_10": 1.0,
+      "recall_at_20": 1.0
+    },
+    {
+      "case_id": "sports-made-three-point",
+      "execution_status": "complete",
+      "hard_negative_hit": 1.0,
+      "infrastructure_error_code": null,
+      "model_miss": false,
+      "model_miss_rule": "completed_positive_case_without_any_relevant_rank",
+      "ndcg_at_10": 0.5706417189553201,
+      "precision_at_5": 0.4,
+      "profile_id": "qwen_verification",
+      "recall_at_10": 1.0,
+      "recall_at_20": 1.0
+    }
+  ],
+  "product_dataset_revision": "8cda261148ce3f459e08c3762017cec86970ab7c85d36eaa77ef9f832a2ae6a1",
+  "product_model_misses": [
+    {
+      "case_ids": [],
+      "category": "model_miss",
+      "count": 0,
+      "diagnostic_code": "relevant_interval_not_retrieved",
+      "profile_id": "lexical_qdrant",
+      "source": "product_benchmark"
+    },
+    {
+      "case_ids": [],
+      "category": "model_miss",
+      "count": 0,
+      "diagnostic_code": "relevant_interval_not_retrieved",
+      "profile_id": "dense_siglip",
+      "source": "product_benchmark"
+    },
+    {
+      "case_ids": [],
+      "category": "model_miss",
+      "count": 0,
+      "diagnostic_code": "relevant_interval_not_retrieved",
+      "profile_id": "temporal_refinement",
+      "source": "product_benchmark"
+    },
+    {
+      "case_ids": [],
+      "category": "model_miss",
+      "count": 0,
+      "diagnostic_code": "relevant_interval_not_retrieved",
+      "profile_id": "lighthouse",
+      "source": "product_benchmark"
+    },
+    {
+      "case_ids": [
+        "panel-roundtable-discussion"
+      ],
+      "category": "model_miss",
+      "count": 1,
+      "diagnostic_code": "relevant_interval_not_retrieved",
+      "profile_id": "qwen_verification",
+      "source": "product_benchmark"
+    }
+  ],
+  "product_query_infrastructure_failure_count": 0,
+  "promotion_eligible": false,
+  "relative_guardrails": [
+    {
+      "guardrail_id": "interactive_latency_regression",
+      "metric_name": "p95_latency_ms",
+      "reason": "descriptive_regression_seen_comparison_is_not_an_eligible_promotion_control",
+      "scope": "overall",
+      "status": "not_evaluated_for_promotion"
+    },
+    {
+      "guardrail_id": "critical_ndcg_regression",
+      "metric_name": "ndcg_at_10",
+      "reason": "descriptive_regression_seen_comparison_is_not_an_eligible_promotion_control",
+      "scope": "critical_slices",
+      "status": "not_evaluated_for_promotion"
+    },
+    {
+      "guardrail_id": "critical_recall_regression",
+      "metric_name": "recall_at_10",
+      "reason": "descriptive_regression_seen_comparison_is_not_an_eligible_promotion_control",
+      "scope": "critical_slices",
+      "status": "not_evaluated_for_promotion"
+    },
+    {
+      "guardrail_id": "universal_ndcg_regression",
+      "metric_name": "ndcg_at_10",
+      "reason": "descriptive_regression_seen_comparison_is_not_an_eligible_promotion_control",
+      "scope": "universal_non_sports",
+      "status": "not_evaluated_for_promotion"
+    },
+    {
+      "guardrail_id": "universal_recall_regression",
+      "metric_name": "recall_at_10",
+      "reason": "descriptive_regression_seen_comparison_is_not_an_eligible_promotion_control",
+      "scope": "universal_non_sports",
+      "status": "not_evaluated_for_promotion"
+    }
+  ],
+  "schema_version": 1,
+  "source_receipts": [
+    {
+      "byte_size": 1844,
+      "kind": "baseline_batch",
+      "sha256": "db8ea6f22ecbc757d01daa19bf386742e4700888a96ca0e89a55aeebaef9e5b1"
+    },
+    {
+      "byte_size": 8993,
+      "kind": "direct_verifier",
+      "run_id": "phase0-proof19-7054f13-qwen",
+      "sha256": "10134e10ea99025e13056a0a5bb2d21659683f03d3335274bcc88b67c00514b0"
+    },
+    {
+      "byte_size": 620,
+      "kind": "direct_verifier_launch",
+      "sha256": "b948eb4cbaee05ed42659e2985010767f9e30ad846284541127f405cb79f1c0a"
+    },
+    {
+      "byte_size": 64829,
+      "kind": "product_run",
+      "profile_id": "lexical_qdrant",
+      "run_id": "phase0-proof19-7054f13-product-lexical_qdrant",
+      "sha256": "b9ab1f3a3d50c628608c8447ee048c3c2d06ea9d4e9d1c8fd1e98592febb1f9f"
+    },
+    {
+      "byte_size": 66322,
+      "kind": "product_run",
+      "profile_id": "dense_siglip",
+      "run_id": "phase0-proof19-7054f13-product-dense_siglip",
+      "sha256": "40ce0f69f6836b3b5679ab0d24f30c0303890193e509d5e11281a3fce57cf7d0"
+    },
+    {
+      "byte_size": 66381,
+      "kind": "product_run",
+      "profile_id": "temporal_refinement",
+      "run_id": "phase0-proof19-7054f13-product-temporal_refinement",
+      "sha256": "db6c066960951d342846a32a3c8811da097b1fec8c971c8c489e0545614d4f82"
+    },
+    {
+      "byte_size": 66618,
+      "kind": "product_run",
+      "profile_id": "lighthouse",
+      "run_id": "phase0-proof19-7054f13-product-lighthouse",
+      "sha256": "17604e56d0d773b13f5ee67a7dced2a1146738817eaadd617173f3d35f6510d8"
+    },
+    {
+      "byte_size": 127288,
+      "kind": "product_run",
+      "profile_id": "qwen_verification",
+      "run_id": "phase0-proof19-7054f13-product-qwen_verification",
+      "sha256": "02d7f81e59e4ff8b17251107e3d335b41e19def80e7d19840a3b7fd1de9eb6da"
+    }
+  ],
+  "verifier_dataset_revision": "2758ce6fd86c4ad921ae29bff83126a31a5ddbfabdca79748c58fa3d42f1763b"
+}

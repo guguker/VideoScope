@@ -1,0 +1,26 @@
+{
+  "background_counts_subtracted": false,
+  "code_sha": "7054f137f92c18676461242a18c8fc2619898b68",
+  "control_command": "make full-ml-smoke",
+  "coverage_changed": false,
+  "existing_non_smoke_inputs": "all_validated_at_same_sha",
+  "limitation": "A changed boot ID tests an environmental condition; it does not guarantee a passing resource gate. Revalidate checkout, environments, reviewed models and stopped workers before inference.",
+  "maximum_smoke_attempts": 1,
+  "model_runtime_changed": false,
+  "normal_smoke_not_diagnostic": true,
+  "outputs": "new_create_once_files",
+  "owned_root": "prepared_empty_mode_0700_disposable",
+  "preflight_exit_code": 2,
+  "preflight_result": {
+    "boot_unix_seconds": 1787056703,
+    "inference_started": false,
+    "previous_boot_unix_seconds": 1787056703,
+    "smoke_attempt_started": false,
+    "status": "awaiting_new_boot"
+  },
+  "previous_boot_unix_seconds": 1787056703,
+  "private_launcher_sha256": "57810c6785d13f03bddc32034019b1e49ddc94b9ae3672634d329234ab38148e",
+  "schema_version": 1,
+  "status": "prepared_awaiting_owner_new_boot",
+  "zero_swap_gate_changed": false
+}

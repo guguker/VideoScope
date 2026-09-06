@@ -1,0 +1,57 @@
+{
+  "candidate_set_revision": "afecb0793cd37471ccc6791fcbcec1346f18517e2024154fc378ae334a171f40",
+  "code_sha": "7054f137f92c18676461242a18c8fc2619898b68",
+  "direct_fps": 2,
+  "direct_max_tokens": 320,
+  "external_data_import": false,
+  "inference_logic": "committed regression_fixture batch and video_verifier_runner CLIs",
+  "last_required_control": "separately declared unchanged normal full smoke after new host-state condition; do not infer readiness or claim Phase 0 complete from this preparation",
+  "later_phases": false,
+  "maximum_attempts_per_invocation": 1,
+  "measurement_lease": "Root starts one invocation at a time after all helpers freeze; no parallel readers/tests/scans. Verify cleanup before subsequent invocation.",
+  "ordered_invocations": [
+    {
+      "name": "five_profile_product_batch",
+      "run_id_prefix": "phase0-proof19-7054f13-product"
+    },
+    {
+      "name": "ten_case_direct_verifier",
+      "run_id": "phase0-proof19-7054f13-qwen"
+    }
+  ],
+  "policy_revision": "e387059314c5c7372520f971c815d03f3cfd181f92135e08e8fdea0bd5340eef",
+  "prepared_at_utc": "2026-09-06T09:27:26.482533+00:00",
+  "prepared_files": {
+    "phase0-worker-launch.json": {
+      "byte_size": 744,
+      "sha256": "03b72ec80028149267bff2424eba57a4289d1e6a7e11af76ad954eb542935c53"
+    },
+    "product-regression-bindings.json": {
+      "byte_size": 2005,
+      "sha256": "31e17e4f6053ec74d3cad430c447ef3dcf90b5d584263e9ebdffa7032591de1a"
+    },
+    "run-direct-verifier.py": {
+      "byte_size": 12788,
+      "sha256": "f74d28337505642b922cf2d80a6c4ff9ec8cdf32e1a039118738a3ad697cd4e6"
+    },
+    "run-product-batch.py": {
+      "byte_size": 3179,
+      "sha256": "b07c5e96b4af5d7c462dc03439aa6674ad0732a442447b21b2b8415243937663"
+    },
+    "video-verifier-candidates.json": {
+      "byte_size": 3308,
+      "sha256": "31ba48f9b31fed7ed02449d4dc9f013730fa66c66907fed52584d0fc40b03543"
+    }
+  },
+  "private_plan_sha256": "fab59ef7601e05b5b0bd2db7354ac34204431bad1830b5998fd263c7f13e9e32",
+  "product_dataset_revision": "8cda261148ce3f459e08c3762017cec86970ab7c85d36eaa77ef9f832a2ae6a1",
+  "promotion_eligible": false,
+  "qwen_model_identity": "mlx-community/Qwen3.5-9B-MLX-4bit@938d8919941c6e7efd3c7150eff7fe9d12afa631",
+  "qwen_prompt_protocol_sha256": "0519f326e5fbd47784d8cfa3d0fe67b8e6893fbca227b0bdb1a84f5782045d54",
+  "schema_version": 1,
+  "scope": "Phase 0 frozen regression_seen baseline only",
+  "source_input_use": "previously authorized ten prepared clips, benchmark only; original byte bindings retained read-only",
+  "status": "both_invocations_completed_at_declared_sha",
+  "training": false,
+  "verifier_dataset_revision": "2758ce6fd86c4ad921ae29bff83126a31a5ddbfabdca79748c58fa3d42f1763b"
+}

@@ -1,0 +1,1439 @@
+{
+  "batch_worker_lifecycle": {
+    "cleanup_status": "complete",
+    "retirement_status": "complete"
+  },
+  "code_sha": "7054f137f92c18676461242a18c8fc2619898b68",
+  "comparison_to_first_1b11a54": {
+    "direct_case_classifications_identical": true,
+    "interpretation": "descriptive regression_seen repeat only; no tuning, holdout claim, causal performance attribution or promotion decision",
+    "previous_direct_receipt_sha256": "d86acd1e0d98bf13ffe73fa99d651df9c7c233462a5a7ea0272605546461e5eb",
+    "profiles": [
+      {
+        "all_non_latency_quality_metrics_identical": true,
+        "main_quality_deltas": {
+          "candidate_recall_at_50": 0.0,
+          "error_count": 0.0,
+          "hard_negative_hit_rate": 0.0,
+          "infrastructure_failure_count": 0.0,
+          "mean_boundary_error_seconds": 0.0,
+          "model_miss_count": 0.0,
+          "ndcg_at_10": 0.0,
+          "precision_at_5": 0.0,
+          "recall_at_10": 0.0,
+          "recall_at_20": 0.0
+        },
+        "non_latency_quality_metric_count": 293,
+        "previous_code_sha": "1b11a5420e2fc66417f314c03192c1a853f8c843",
+        "previous_manifest_sha256": "f794e73bb5fe6c044cbff53a2ab0cb573983bc7248e07bc02443203a6bef1180",
+        "profile_id": "lexical_qdrant"
+      },
+      {
+        "all_non_latency_quality_metrics_identical": true,
+        "main_quality_deltas": {
+          "candidate_recall_at_50": 0.0,
+          "error_count": 0.0,
+          "hard_negative_hit_rate": 0.0,
+          "infrastructure_failure_count": 0.0,
+          "mean_boundary_error_seconds": 0.0,
+          "model_miss_count": 0.0,
+          "ndcg_at_10": 0.0,
+          "precision_at_5": 0.0,
+          "recall_at_10": 0.0,
+          "recall_at_20": 0.0
+        },
+        "non_latency_quality_metric_count": 293,
+        "previous_code_sha": "1b11a5420e2fc66417f314c03192c1a853f8c843",
+        "previous_manifest_sha256": "8755e7387aae5ac6e8a90bdab708a72c651b144813343e27635cad3d27935752",
+        "profile_id": "dense_siglip"
+      },
+      {
+        "all_non_latency_quality_metrics_identical": true,
+        "main_quality_deltas": {
+          "candidate_recall_at_50": 0.0,
+          "error_count": 0.0,
+          "hard_negative_hit_rate": 0.0,
+          "infrastructure_failure_count": 0.0,
+          "mean_boundary_error_seconds": 0.0,
+          "model_miss_count": 0.0,
+          "ndcg_at_10": 0.0,
+          "precision_at_5": 0.0,
+          "recall_at_10": 0.0,
+          "recall_at_20": 0.0
+        },
+        "non_latency_quality_metric_count": 293,
+        "previous_code_sha": "1b11a5420e2fc66417f314c03192c1a853f8c843",
+        "previous_manifest_sha256": "3e997ed109d1cee265d2063d308dd7adb958597e561184c15a40e627e7f1681b",
+        "profile_id": "temporal_refinement"
+      },
+      {
+        "all_non_latency_quality_metrics_identical": true,
+        "main_quality_deltas": {
+          "candidate_recall_at_50": 0.0,
+          "error_count": 0.0,
+          "hard_negative_hit_rate": 0.0,
+          "infrastructure_failure_count": 0.0,
+          "mean_boundary_error_seconds": 0.0,
+          "model_miss_count": 0.0,
+          "ndcg_at_10": 0.0,
+          "precision_at_5": 0.0,
+          "recall_at_10": 0.0,
+          "recall_at_20": 0.0
+        },
+        "non_latency_quality_metric_count": 293,
+        "previous_code_sha": "1b11a5420e2fc66417f314c03192c1a853f8c843",
+        "previous_manifest_sha256": "de0ca20cffdcf227031c280671a4a678b86edcafb01048c5e31ca5982250b23e",
+        "profile_id": "lighthouse"
+      },
+      {
+        "all_non_latency_quality_metrics_identical": true,
+        "main_quality_deltas": {
+          "candidate_recall_at_50": 0.0,
+          "error_count": 0.0,
+          "hard_negative_hit_rate": 0.0,
+          "infrastructure_failure_count": 0.0,
+          "mean_boundary_error_seconds": 0.0,
+          "model_miss_count": 0.0,
+          "ndcg_at_10": 0.0,
+          "precision_at_5": 0.0,
+          "recall_at_10": 0.0,
+          "recall_at_20": 0.0
+        },
+        "non_latency_quality_metric_count": 290,
+        "previous_code_sha": "1b11a5420e2fc66417f314c03192c1a853f8c843",
+        "previous_manifest_sha256": "a71b51dff0acb7cfe4503b035552140595a75c97f98baa275d44f39ee3e33a6d",
+        "profile_id": "qwen_verification"
+      }
+    ]
+  },
+  "critical_slice_support": [
+    {
+      "case_count": 1,
+      "case_ids": [
+        "sports-made-three-point"
+      ],
+      "coverage_status": "measured",
+      "dimension": "event_class",
+      "gold_case_count": 1,
+      "minimum_gold_cases": 20,
+      "minimum_source_groups": 2,
+      "slice_id": "made_3",
+      "source_group_count": 1,
+      "uncertainty_status": "insufficient_evidence",
+      "value": "made_3"
+    },
+    {
+      "case_count": 0,
+      "case_ids": [],
+      "coverage_status": "not_represented_in_frozen_regression_dataset",
+      "dimension": "event_class",
+      "gold_case_count": 0,
+      "minimum_gold_cases": 20,
+      "minimum_source_groups": 2,
+      "slice_id": "made_2",
+      "source_group_count": 0,
+      "uncertainty_status": "insufficient_evidence",
+      "value": "made_2"
+    },
+    {
+      "case_count": 1,
+      "case_ids": [
+        "sports-made-free-throw-query"
+      ],
+      "coverage_status": "measured",
+      "dimension": "event_class",
+      "gold_case_count": 1,
+      "minimum_gold_cases": 20,
+      "minimum_source_groups": 2,
+      "slice_id": "free_throw",
+      "source_group_count": 1,
+      "uncertainty_status": "insufficient_evidence",
+      "value": "free_throw"
+    },
+    {
+      "case_count": 0,
+      "case_ids": [],
+      "coverage_status": "not_represented_in_frozen_regression_dataset",
+      "dimension": "event_class",
+      "gold_case_count": 0,
+      "minimum_gold_cases": 20,
+      "minimum_source_groups": 2,
+      "slice_id": "miss",
+      "source_group_count": 0,
+      "uncertainty_status": "insufficient_evidence",
+      "value": "miss"
+    },
+    {
+      "case_count": 0,
+      "case_ids": [],
+      "coverage_status": "not_represented_in_frozen_regression_dataset",
+      "dimension": "event_class",
+      "gold_case_count": 0,
+      "minimum_gold_cases": 20,
+      "minimum_source_groups": 2,
+      "slice_id": "replay",
+      "source_group_count": 0,
+      "uncertainty_status": "insufficient_evidence",
+      "value": "replay"
+    },
+    {
+      "case_count": 1,
+      "case_ids": [
+        "sports-full-screen-commercial"
+      ],
+      "coverage_status": "measured",
+      "dimension": "event_class",
+      "gold_case_count": 1,
+      "minimum_gold_cases": 20,
+      "minimum_source_groups": 2,
+      "slice_id": "advertisement_non_game",
+      "source_group_count": 1,
+      "uncertainty_status": "insufficient_evidence",
+      "value": "advertisement_non_game"
+    },
+    {
+      "case_count": 0,
+      "case_ids": [],
+      "coverage_status": "not_represented_in_frozen_regression_dataset",
+      "dimension": "capture_condition",
+      "gold_case_count": 0,
+      "minimum_gold_cases": 20,
+      "minimum_source_groups": 2,
+      "slice_id": "scoreboard_hidden",
+      "source_group_count": 0,
+      "uncertainty_status": "insufficient_evidence",
+      "value": "scoreboard_hidden"
+    },
+    {
+      "case_count": 0,
+      "case_ids": [],
+      "coverage_status": "not_represented_in_frozen_regression_dataset",
+      "dimension": "capture_condition",
+      "gold_case_count": 0,
+      "minimum_gold_cases": 20,
+      "minimum_source_groups": 2,
+      "slice_id": "low_resolution",
+      "source_group_count": 0,
+      "uncertainty_status": "insufficient_evidence",
+      "value": "low_resolution"
+    },
+    {
+      "case_count": 0,
+      "case_ids": [],
+      "coverage_status": "not_represented_in_frozen_regression_dataset",
+      "dimension": "distribution_shift",
+      "gold_case_count": 0,
+      "minimum_gold_cases": 20,
+      "minimum_source_groups": 2,
+      "slice_id": "different_camera_or_league",
+      "source_group_count": 0,
+      "uncertainty_status": "insufficient_evidence",
+      "value": "different_camera_or_league"
+    },
+    {
+      "case_count": 0,
+      "case_ids": [],
+      "coverage_status": "not_represented_in_frozen_regression_dataset",
+      "dimension": "domain",
+      "gold_case_count": 0,
+      "minimum_gold_cases": 20,
+      "minimum_source_groups": 2,
+      "slice_id": "ood_non_basketball",
+      "source_group_count": 0,
+      "uncertainty_status": "insufficient_evidence",
+      "value": "ood_non_basketball"
+    },
+    {
+      "case_count": 2,
+      "case_ids": [
+        "panel-light-top-gesture",
+        "panel-roundtable-discussion"
+      ],
+      "coverage_status": "measured",
+      "dimension": "domain",
+      "gold_case_count": 2,
+      "minimum_gold_cases": 20,
+      "minimum_source_groups": 2,
+      "slice_id": "universal_non_sports",
+      "source_group_count": 1,
+      "uncertainty_status": "insufficient_evidence",
+      "value": "universal_non_sports"
+    }
+  ],
+  "direct_verifier_cleanup": {
+    "runner": "complete",
+    "worker": "complete"
+  },
+  "direct_verifier_summary": {
+    "case_count": 10,
+    "infrastructure_error_count": 0,
+    "match_count": 3,
+    "model_miss_count": 7
+  },
+  "evidence_kind": "frozen_baseline_quality_diagnostic",
+  "frozen_policy_revision": "e387059314c5c7372520f971c815d03f3cfd181f92135e08e8fdea0bd5340eef",
+  "interpretation": [
+    "All non-latency quality metrics and direct case classifications reproduce the first 1b11a54 control. Latency and RSS are new raw observations.",
+    "Qwen retains the roundtable product model miss and lower recall; zero product/direct infrastructure errors does not erase quality failures.",
+    "All profiles fail overall precision and hard-negative guardrails; first four also fail boundary, Qwen also fails candidate recall.",
+    "Seven critical slices are absent. The four represented slices each have fewer than 20 gold cases and fewer than 2 source groups: uncertainty remains insufficient_evidence.",
+    "This is not the accepted four-file Phase 0 bundle. The required normal full-ML resource gate remains separate."
+  ],
+  "measurement_use": "diagnostic_only_not_gate_evidence",
+  "phase0_complete": false,
+  "product_dataset_revision": "8cda261148ce3f459e08c3762017cec86970ab7c85d36eaa77ef9f832a2ae6a1",
+  "product_profiles": [
+    {
+      "critical_slices": [
+        {
+          "metrics": {
+            "candidate_recall_at_50": 1.0,
+            "case_count": 1.0,
+            "completed_case_count": 1.0,
+            "error_count": 0.0,
+            "false_positive_rate": 0.5,
+            "hard_negative_hit_rate": 1.0,
+            "mean_boundary_error_seconds": 0.008333333333333304,
+            "mean_end_boundary_error_seconds": 0.016666666666666607,
+            "mean_latency_ms": 1596.5729590971023,
+            "mean_start_boundary_error_seconds": 0.0,
+            "mean_temporal_iou": 1.0,
+            "mrr": 0.3333333333333333,
+            "ndcg_at_10": 0.5706417189553201,
+            "p50_latency_ms": 1596.5729590971023,
+            "p95_latency_ms": 1596.5729590971023,
+            "precision_at_5": 0.4,
+            "recall_at_1": 0.0,
+            "recall_at_10": 1.0,
+            "recall_at_20": 1.0,
+            "recall_at_3": 1.0,
+            "recall_at_5": 1.0
+          },
+          "slice_id": "made_3",
+          "status": "measured"
+        },
+        {
+          "metrics": {},
+          "slice_id": "made_2",
+          "status": "not_represented_in_frozen_regression_dataset"
+        },
+        {
+          "metrics": {
+            "candidate_recall_at_50": 1.0,
+            "case_count": 1.0,
+            "completed_case_count": 1.0,
+            "error_count": 0.0,
+            "false_positive_rate": 0.6666666666666666,
+            "hard_negative_hit_rate": 1.0,
+            "mean_boundary_error_seconds": 0.0,
+            "mean_end_boundary_error_seconds": 0.0,
+            "mean_latency_ms": 1575.3024169243872,
+            "mean_start_boundary_error_seconds": 0.0,
+            "mean_temporal_iou": 1.0,
+            "mrr": 1.0,
+            "ndcg_at_10": 1.0,
+            "p50_latency_ms": 1575.3024169243872,
+            "p95_latency_ms": 1575.3024169243872,
+            "precision_at_5": 0.2,
+            "recall_at_1": 1.0,
+            "recall_at_10": 1.0,
+            "recall_at_20": 1.0,
+            "recall_at_3": 1.0,
+            "recall_at_5": 1.0
+          },
+          "slice_id": "free_throw",
+          "status": "measured"
+        },
+        {
+          "metrics": {},
+          "slice_id": "miss",
+          "status": "not_represented_in_frozen_regression_dataset"
+        },
+        {
+          "metrics": {},
+          "slice_id": "replay",
+          "status": "not_represented_in_frozen_regression_dataset"
+        },
+        {
+          "metrics": {
+            "candidate_recall_at_50": 1.0,
+            "case_count": 1.0,
+            "completed_case_count": 1.0,
+            "error_count": 0.0,
+            "false_positive_rate": 0.5,
+            "hard_negative_hit_rate": 1.0,
+            "mean_boundary_error_seconds": 0.0,
+            "mean_end_boundary_error_seconds": 0.0,
+            "mean_latency_ms": 1583.701000083238,
+            "mean_start_boundary_error_seconds": 0.0,
+            "mean_temporal_iou": 1.0,
+            "mrr": 1.0,
+            "ndcg_at_10": 1.0,
+            "p50_latency_ms": 1583.701000083238,
+            "p95_latency_ms": 1583.701000083238,
+            "precision_at_5": 0.2,
+            "recall_at_1": 1.0,
+            "recall_at_10": 1.0,
+            "recall_at_20": 1.0,
+            "recall_at_3": 1.0,
+            "recall_at_5": 1.0
+          },
+          "slice_id": "advertisement_non_game",
+          "status": "measured"
+        },
+        {
+          "metrics": {},
+          "slice_id": "scoreboard_hidden",
+          "status": "not_represented_in_frozen_regression_dataset"
+        },
+        {
+          "metrics": {},
+          "slice_id": "low_resolution",
+          "status": "not_represented_in_frozen_regression_dataset"
+        },
+        {
+          "metrics": {},
+          "slice_id": "different_camera_or_league",
+          "status": "not_represented_in_frozen_regression_dataset"
+        },
+        {
+          "metrics": {},
+          "slice_id": "ood_non_basketball",
+          "status": "not_represented_in_frozen_regression_dataset"
+        },
+        {
+          "metrics": {
+            "candidate_recall_at_50": 1.0,
+            "case_count": 2.0,
+            "completed_case_count": 2.0,
+            "error_count": 0.0,
+            "false_positive_rate": 0.6,
+            "hard_negative_hit_rate": 1.0,
+            "mean_boundary_error_seconds": 4.891739364107885,
+            "mean_end_boundary_error_seconds": 9.78347872821577,
+            "mean_latency_ms": 1609.939582995139,
+            "mean_start_boundary_error_seconds": 0.0,
+            "mean_temporal_iou": 0.755044081615868,
+            "mrr": 0.75,
+            "ndcg_at_10": 0.8154648767857288,
+            "p50_latency_ms": 1591.6497909929603,
+            "p95_latency_ms": 1628.2293749973178,
+            "precision_at_5": 0.2,
+            "recall_at_1": 0.5,
+            "recall_at_10": 1.0,
+            "recall_at_20": 1.0,
+            "recall_at_3": 1.0,
+            "recall_at_5": 1.0
+          },
+          "slice_id": "universal_non_sports",
+          "status": "measured"
+        }
+      ],
+      "hard_negative_hit_case_ids": [
+        "panel-light-top-gesture",
+        "panel-roundtable-discussion",
+        "sports-full-screen-commercial",
+        "sports-made-free-throw-query",
+        "sports-made-three-point"
+      ],
+      "metrics": [
+        {
+          "name": "candidate_recall_at_50",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "error_count",
+          "unit": "count",
+          "value": 0.0
+        },
+        {
+          "name": "hard_negative_hit_rate",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "infrastructure_failure_count",
+          "unit": "count",
+          "value": 0.0
+        },
+        {
+          "name": "mean_boundary_error_seconds",
+          "unit": "seconds",
+          "value": 1.6333575658137394
+        },
+        {
+          "name": "model_miss_count",
+          "unit": "count",
+          "value": 0.0
+        },
+        {
+          "name": "ndcg_at_10",
+          "unit": "ratio",
+          "value": 0.8403142945053556
+        },
+        {
+          "name": "p95_latency_ms",
+          "unit": "milliseconds",
+          "value": 1628.2293749973178
+        },
+        {
+          "name": "precision_at_5",
+          "unit": "ratio",
+          "value": 0.24000000000000002
+        },
+        {
+          "name": "recall_at_10",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "recall_at_20",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "sampled_peak_process_tree_rss_bytes",
+          "unit": "bytes",
+          "value": 4315332608.0
+        }
+      ],
+      "model_miss_case_ids": [],
+      "profile_id": "lexical_qdrant",
+      "run_id": "phase0-proof19-7054f13-product-lexical_qdrant"
+    },
+    {
+      "critical_slices": [
+        {
+          "metrics": {
+            "candidate_recall_at_50": 1.0,
+            "case_count": 1.0,
+            "completed_case_count": 1.0,
+            "error_count": 0.0,
+            "false_positive_rate": 0.5,
+            "hard_negative_hit_rate": 1.0,
+            "mean_boundary_error_seconds": 0.008333333333333304,
+            "mean_end_boundary_error_seconds": 0.016666666666666607,
+            "mean_latency_ms": 1798.0590830557048,
+            "mean_start_boundary_error_seconds": 0.0,
+            "mean_temporal_iou": 1.0,
+            "mrr": 1.0,
+            "ndcg_at_10": 0.8772153153380493,
+            "p50_latency_ms": 1798.0590830557048,
+            "p95_latency_ms": 1798.0590830557048,
+            "precision_at_5": 0.4,
+            "recall_at_1": 1.0,
+            "recall_at_10": 1.0,
+            "recall_at_20": 1.0,
+            "recall_at_3": 1.0,
+            "recall_at_5": 1.0
+          },
+          "slice_id": "made_3",
+          "status": "measured"
+        },
+        {
+          "metrics": {},
+          "slice_id": "made_2",
+          "status": "not_represented_in_frozen_regression_dataset"
+        },
+        {
+          "metrics": {
+            "candidate_recall_at_50": 1.0,
+            "case_count": 1.0,
+            "completed_case_count": 1.0,
+            "error_count": 0.0,
+            "false_positive_rate": 0.6666666666666666,
+            "hard_negative_hit_rate": 1.0,
+            "mean_boundary_error_seconds": 0.0,
+            "mean_end_boundary_error_seconds": 0.0,
+            "mean_latency_ms": 1809.8429581150413,
+            "mean_start_boundary_error_seconds": 0.0,
+            "mean_temporal_iou": 1.0,
+            "mrr": 1.0,
+            "ndcg_at_10": 1.0,
+            "p50_latency_ms": 1809.8429581150413,
+            "p95_latency_ms": 1809.8429581150413,
+            "precision_at_5": 0.2,
+            "recall_at_1": 1.0,
+            "recall_at_10": 1.0,
+            "recall_at_20": 1.0,
+            "recall_at_3": 1.0,
+            "recall_at_5": 1.0
+          },
+          "slice_id": "free_throw",
+          "status": "measured"
+        },
+        {
+          "metrics": {},
+          "slice_id": "miss",
+          "status": "not_represented_in_frozen_regression_dataset"
+        },
+        {
+          "metrics": {},
+          "slice_id": "replay",
+          "status": "not_represented_in_frozen_regression_dataset"
+        },
+        {
+          "metrics": {
+            "candidate_recall_at_50": 1.0,
+            "case_count": 1.0,
+            "completed_case_count": 1.0,
+            "error_count": 0.0,
+            "false_positive_rate": 0.5,
+            "hard_negative_hit_rate": 1.0,
+            "mean_boundary_error_seconds": 0.0,
+            "mean_end_boundary_error_seconds": 0.0,
+            "mean_latency_ms": 1593.485875055194,
+            "mean_start_boundary_error_seconds": 0.0,
+            "mean_temporal_iou": 1.0,
+            "mrr": 1.0,
+            "ndcg_at_10": 1.0,
+            "p50_latency_ms": 1593.485875055194,
+            "p95_latency_ms": 1593.485875055194,
+            "precision_at_5": 0.2,
+            "recall_at_1": 1.0,
+            "recall_at_10": 1.0,
+            "recall_at_20": 1.0,
+            "recall_at_3": 1.0,
+            "recall_at_5": 1.0
+          },
+          "slice_id": "advertisement_non_game",
+          "status": "measured"
+        },
+        {
+          "metrics": {},
+          "slice_id": "scoreboard_hidden",
+          "status": "not_represented_in_frozen_regression_dataset"
+        },
+        {
+          "metrics": {},
+          "slice_id": "low_resolution",
+          "status": "not_represented_in_frozen_regression_dataset"
+        },
+        {
+          "metrics": {},
+          "slice_id": "different_camera_or_league",
+          "status": "not_represented_in_frozen_regression_dataset"
+        },
+        {
+          "metrics": {},
+          "slice_id": "ood_non_basketball",
+          "status": "not_represented_in_frozen_regression_dataset"
+        },
+        {
+          "metrics": {
+            "candidate_recall_at_50": 1.0,
+            "case_count": 2.0,
+            "completed_case_count": 2.0,
+            "error_count": 0.0,
+            "false_positive_rate": 0.6,
+            "hard_negative_hit_rate": 1.0,
+            "mean_boundary_error_seconds": 4.685,
+            "mean_end_boundary_error_seconds": 0.0,
+            "mean_latency_ms": 3916.364833479747,
+            "mean_start_boundary_error_seconds": 9.37,
+            "mean_temporal_iou": 0.7570440816158679,
+            "mrr": 1.0,
+            "ndcg_at_10": 1.0,
+            "p50_latency_ms": 1631.5956248436123,
+            "p95_latency_ms": 6201.134042115882,
+            "precision_at_5": 0.2,
+            "recall_at_1": 1.0,
+            "recall_at_10": 1.0,
+            "recall_at_20": 1.0,
+            "recall_at_3": 1.0,
+            "recall_at_5": 1.0
+          },
+          "slice_id": "universal_non_sports",
+          "status": "measured"
+        }
+      ],
+      "hard_negative_hit_case_ids": [
+        "panel-light-top-gesture",
+        "panel-roundtable-discussion",
+        "sports-full-screen-commercial",
+        "sports-made-free-throw-query",
+        "sports-made-three-point"
+      ],
+      "metrics": [
+        {
+          "name": "candidate_recall_at_50",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "error_count",
+          "unit": "count",
+          "value": 0.0
+        },
+        {
+          "name": "hard_negative_hit_rate",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "infrastructure_failure_count",
+          "unit": "count",
+          "value": 0.0
+        },
+        {
+          "name": "mean_boundary_error_seconds",
+          "unit": "seconds",
+          "value": 1.5644444444444443
+        },
+        {
+          "name": "model_miss_count",
+          "unit": "count",
+          "value": 0.0
+        },
+        {
+          "name": "ndcg_at_10",
+          "unit": "ratio",
+          "value": 0.9754430630676099
+        },
+        {
+          "name": "p95_latency_ms",
+          "unit": "milliseconds",
+          "value": 6201.134042115882
+        },
+        {
+          "name": "precision_at_5",
+          "unit": "ratio",
+          "value": 0.24000000000000002
+        },
+        {
+          "name": "recall_at_10",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "recall_at_20",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "sampled_peak_process_tree_rss_bytes",
+          "unit": "bytes",
+          "value": 5296930816.0
+        }
+      ],
+      "model_miss_case_ids": [],
+      "profile_id": "dense_siglip",
+      "run_id": "phase0-proof19-7054f13-product-dense_siglip"
+    },
+    {
+      "critical_slices": [
+        {
+          "metrics": {
+            "candidate_recall_at_50": 1.0,
+            "case_count": 1.0,
+            "completed_case_count": 1.0,
+            "error_count": 0.0,
+            "false_positive_rate": 0.5,
+            "hard_negative_hit_rate": 1.0,
+            "mean_boundary_error_seconds": 0.008333333333333304,
+            "mean_end_boundary_error_seconds": 0.016666666666666607,
+            "mean_latency_ms": 1981.0774167999625,
+            "mean_start_boundary_error_seconds": 0.0,
+            "mean_temporal_iou": 1.0,
+            "mrr": 1.0,
+            "ndcg_at_10": 0.8772153153380493,
+            "p50_latency_ms": 1981.0774167999625,
+            "p95_latency_ms": 1981.0774167999625,
+            "precision_at_5": 0.4,
+            "recall_at_1": 1.0,
+            "recall_at_10": 1.0,
+            "recall_at_20": 1.0,
+            "recall_at_3": 1.0,
+            "recall_at_5": 1.0
+          },
+          "slice_id": "made_3",
+          "status": "measured"
+        },
+        {
+          "metrics": {},
+          "slice_id": "made_2",
+          "status": "not_represented_in_frozen_regression_dataset"
+        },
+        {
+          "metrics": {
+            "candidate_recall_at_50": 1.0,
+            "case_count": 1.0,
+            "completed_case_count": 1.0,
+            "error_count": 0.0,
+            "false_positive_rate": 0.6666666666666666,
+            "hard_negative_hit_rate": 1.0,
+            "mean_boundary_error_seconds": 0.0,
+            "mean_end_boundary_error_seconds": 0.0,
+            "mean_latency_ms": 2349.18991709128,
+            "mean_start_boundary_error_seconds": 0.0,
+            "mean_temporal_iou": 1.0,
+            "mrr": 1.0,
+            "ndcg_at_10": 1.0,
+            "p50_latency_ms": 2349.18991709128,
+            "p95_latency_ms": 2349.18991709128,
+            "precision_at_5": 0.2,
+            "recall_at_1": 1.0,
+            "recall_at_10": 1.0,
+            "recall_at_20": 1.0,
+            "recall_at_3": 1.0,
+            "recall_at_5": 1.0
+          },
+          "slice_id": "free_throw",
+          "status": "measured"
+        },
+        {
+          "metrics": {},
+          "slice_id": "miss",
+          "status": "not_represented_in_frozen_regression_dataset"
+        },
+        {
+          "metrics": {},
+          "slice_id": "replay",
+          "status": "not_represented_in_frozen_regression_dataset"
+        },
+        {
+          "metrics": {
+            "candidate_recall_at_50": 1.0,
+            "case_count": 1.0,
+            "completed_case_count": 1.0,
+            "error_count": 0.0,
+            "false_positive_rate": 0.5,
+            "hard_negative_hit_rate": 1.0,
+            "mean_boundary_error_seconds": 0.0,
+            "mean_end_boundary_error_seconds": 0.0,
+            "mean_latency_ms": 3111.4867909345776,
+            "mean_start_boundary_error_seconds": 0.0,
+            "mean_temporal_iou": 1.0,
+            "mrr": 1.0,
+            "ndcg_at_10": 1.0,
+            "p50_latency_ms": 3111.4867909345776,
+            "p95_latency_ms": 3111.4867909345776,
+            "precision_at_5": 0.2,
+            "recall_at_1": 1.0,
+            "recall_at_10": 1.0,
+            "recall_at_20": 1.0,
+            "recall_at_3": 1.0,
+            "recall_at_5": 1.0
+          },
+          "slice_id": "advertisement_non_game",
+          "status": "measured"
+        },
+        {
+          "metrics": {},
+          "slice_id": "scoreboard_hidden",
+          "status": "not_represented_in_frozen_regression_dataset"
+        },
+        {
+          "metrics": {},
+          "slice_id": "low_resolution",
+          "status": "not_represented_in_frozen_regression_dataset"
+        },
+        {
+          "metrics": {},
+          "slice_id": "different_camera_or_league",
+          "status": "not_represented_in_frozen_regression_dataset"
+        },
+        {
+          "metrics": {},
+          "slice_id": "ood_non_basketball",
+          "status": "not_represented_in_frozen_regression_dataset"
+        },
+        {
+          "metrics": {
+            "candidate_recall_at_50": 1.0,
+            "case_count": 2.0,
+            "completed_case_count": 2.0,
+            "error_count": 0.0,
+            "false_positive_rate": 0.6,
+            "hard_negative_hit_rate": 1.0,
+            "mean_boundary_error_seconds": 4.685,
+            "mean_end_boundary_error_seconds": 0.0,
+            "mean_latency_ms": 2868.097333353944,
+            "mean_start_boundary_error_seconds": 9.37,
+            "mean_temporal_iou": 0.7570440816158679,
+            "mrr": 1.0,
+            "ndcg_at_10": 1.0,
+            "p50_latency_ms": 2594.333249842748,
+            "p95_latency_ms": 3141.86141686514,
+            "precision_at_5": 0.2,
+            "recall_at_1": 1.0,
+            "recall_at_10": 1.0,
+            "recall_at_20": 1.0,
+            "recall_at_3": 1.0,
+            "recall_at_5": 1.0
+          },
+          "slice_id": "universal_non_sports",
+          "status": "measured"
+        }
+      ],
+      "hard_negative_hit_case_ids": [
+        "panel-light-top-gesture",
+        "panel-roundtable-discussion",
+        "sports-full-screen-commercial",
+        "sports-made-free-throw-query",
+        "sports-made-three-point"
+      ],
+      "metrics": [
+        {
+          "name": "candidate_recall_at_50",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "error_count",
+          "unit": "count",
+          "value": 0.0
+        },
+        {
+          "name": "hard_negative_hit_rate",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "infrastructure_failure_count",
+          "unit": "count",
+          "value": 0.0
+        },
+        {
+          "name": "mean_boundary_error_seconds",
+          "unit": "seconds",
+          "value": 1.5644444444444443
+        },
+        {
+          "name": "model_miss_count",
+          "unit": "count",
+          "value": 0.0
+        },
+        {
+          "name": "ndcg_at_10",
+          "unit": "ratio",
+          "value": 0.9754430630676099
+        },
+        {
+          "name": "p95_latency_ms",
+          "unit": "milliseconds",
+          "value": 3141.86141686514
+        },
+        {
+          "name": "precision_at_5",
+          "unit": "ratio",
+          "value": 0.24000000000000002
+        },
+        {
+          "name": "recall_at_10",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "recall_at_20",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "sampled_peak_process_tree_rss_bytes",
+          "unit": "bytes",
+          "value": 5293391872.0
+        }
+      ],
+      "model_miss_case_ids": [],
+      "profile_id": "temporal_refinement",
+      "run_id": "phase0-proof19-7054f13-product-temporal_refinement"
+    },
+    {
+      "critical_slices": [
+        {
+          "metrics": {
+            "candidate_recall_at_50": 1.0,
+            "case_count": 1.0,
+            "completed_case_count": 1.0,
+            "error_count": 0.0,
+            "false_positive_rate": 0.5,
+            "hard_negative_hit_rate": 1.0,
+            "mean_boundary_error_seconds": 0.0,
+            "mean_end_boundary_error_seconds": 0.0,
+            "mean_latency_ms": 2091.6655419860035,
+            "mean_start_boundary_error_seconds": 0.0,
+            "mean_temporal_iou": 1.0,
+            "mrr": 1.0,
+            "ndcg_at_10": 0.8772153153380493,
+            "p50_latency_ms": 2091.6655419860035,
+            "p95_latency_ms": 2091.6655419860035,
+            "precision_at_5": 0.4,
+            "recall_at_1": 1.0,
+            "recall_at_10": 1.0,
+            "recall_at_20": 1.0,
+            "recall_at_3": 1.0,
+            "recall_at_5": 1.0
+          },
+          "slice_id": "made_3",
+          "status": "measured"
+        },
+        {
+          "metrics": {},
+          "slice_id": "made_2",
+          "status": "not_represented_in_frozen_regression_dataset"
+        },
+        {
+          "metrics": {
+            "candidate_recall_at_50": 1.0,
+            "case_count": 1.0,
+            "completed_case_count": 1.0,
+            "error_count": 0.0,
+            "false_positive_rate": 0.6666666666666666,
+            "hard_negative_hit_rate": 1.0,
+            "mean_boundary_error_seconds": 0.0,
+            "mean_end_boundary_error_seconds": 0.0,
+            "mean_latency_ms": 2390.197457978502,
+            "mean_start_boundary_error_seconds": 0.0,
+            "mean_temporal_iou": 1.0,
+            "mrr": 1.0,
+            "ndcg_at_10": 1.0,
+            "p50_latency_ms": 2390.197457978502,
+            "p95_latency_ms": 2390.197457978502,
+            "precision_at_5": 0.2,
+            "recall_at_1": 1.0,
+            "recall_at_10": 1.0,
+            "recall_at_20": 1.0,
+            "recall_at_3": 1.0,
+            "recall_at_5": 1.0
+          },
+          "slice_id": "free_throw",
+          "status": "measured"
+        },
+        {
+          "metrics": {},
+          "slice_id": "miss",
+          "status": "not_represented_in_frozen_regression_dataset"
+        },
+        {
+          "metrics": {},
+          "slice_id": "replay",
+          "status": "not_represented_in_frozen_regression_dataset"
+        },
+        {
+          "metrics": {
+            "candidate_recall_at_50": 1.0,
+            "case_count": 1.0,
+            "completed_case_count": 1.0,
+            "error_count": 0.0,
+            "false_positive_rate": 0.5,
+            "hard_negative_hit_rate": 1.0,
+            "mean_boundary_error_seconds": 0.0,
+            "mean_end_boundary_error_seconds": 0.0,
+            "mean_latency_ms": 3216.092208167538,
+            "mean_start_boundary_error_seconds": 0.0,
+            "mean_temporal_iou": 1.0,
+            "mrr": 1.0,
+            "ndcg_at_10": 1.0,
+            "p50_latency_ms": 3216.092208167538,
+            "p95_latency_ms": 3216.092208167538,
+            "precision_at_5": 0.2,
+            "recall_at_1": 1.0,
+            "recall_at_10": 1.0,
+            "recall_at_20": 1.0,
+            "recall_at_3": 1.0,
+            "recall_at_5": 1.0
+          },
+          "slice_id": "advertisement_non_game",
+          "status": "measured"
+        },
+        {
+          "metrics": {},
+          "slice_id": "scoreboard_hidden",
+          "status": "not_represented_in_frozen_regression_dataset"
+        },
+        {
+          "metrics": {},
+          "slice_id": "low_resolution",
+          "status": "not_represented_in_frozen_regression_dataset"
+        },
+        {
+          "metrics": {},
+          "slice_id": "different_camera_or_league",
+          "status": "not_represented_in_frozen_regression_dataset"
+        },
+        {
+          "metrics": {},
+          "slice_id": "ood_non_basketball",
+          "status": "not_represented_in_frozen_regression_dataset"
+        },
+        {
+          "metrics": {
+            "candidate_recall_at_50": 1.0,
+            "case_count": 2.0,
+            "completed_case_count": 2.0,
+            "error_count": 0.0,
+            "false_positive_rate": 0.6,
+            "hard_negative_hit_rate": 1.0,
+            "mean_boundary_error_seconds": 4.685,
+            "mean_end_boundary_error_seconds": 0.0,
+            "mean_latency_ms": 2916.5384165244177,
+            "mean_start_boundary_error_seconds": 9.37,
+            "mean_temporal_iou": 0.8789853035524173,
+            "mrr": 1.0,
+            "ndcg_at_10": 1.0,
+            "p50_latency_ms": 2631.5906250383705,
+            "p95_latency_ms": 3201.486208010465,
+            "precision_at_5": 0.2,
+            "recall_at_1": 1.0,
+            "recall_at_10": 1.0,
+            "recall_at_20": 1.0,
+            "recall_at_3": 1.0,
+            "recall_at_5": 1.0
+          },
+          "slice_id": "universal_non_sports",
+          "status": "measured"
+        }
+      ],
+      "hard_negative_hit_case_ids": [
+        "panel-light-top-gesture",
+        "panel-roundtable-discussion",
+        "sports-full-screen-commercial",
+        "sports-made-free-throw-query",
+        "sports-made-three-point"
+      ],
+      "metrics": [
+        {
+          "name": "candidate_recall_at_50",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "error_count",
+          "unit": "count",
+          "value": 0.0
+        },
+        {
+          "name": "hard_negative_hit_rate",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "infrastructure_failure_count",
+          "unit": "count",
+          "value": 0.0
+        },
+        {
+          "name": "mean_boundary_error_seconds",
+          "unit": "seconds",
+          "value": 1.5616666666666665
+        },
+        {
+          "name": "model_miss_count",
+          "unit": "count",
+          "value": 0.0
+        },
+        {
+          "name": "ndcg_at_10",
+          "unit": "ratio",
+          "value": 0.9754430630676099
+        },
+        {
+          "name": "p95_latency_ms",
+          "unit": "milliseconds",
+          "value": 3216.092208167538
+        },
+        {
+          "name": "precision_at_5",
+          "unit": "ratio",
+          "value": 0.24000000000000002
+        },
+        {
+          "name": "recall_at_10",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "recall_at_20",
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "name": "sampled_peak_process_tree_rss_bytes",
+          "unit": "bytes",
+          "value": 5316034560.0
+        }
+      ],
+      "model_miss_case_ids": [],
+      "profile_id": "lighthouse",
+      "run_id": "phase0-proof19-7054f13-product-lighthouse"
+    },
+    {
+      "critical_slices": [
+        {
+          "metrics": {
+            "candidate_recall_at_50": 1.0,
+            "case_count": 1.0,
+            "completed_case_count": 1.0,
+            "error_count": 0.0,
+            "false_positive_rate": 0.5,
+            "hard_negative_hit_rate": 1.0,
+            "mean_boundary_error_seconds": 0.0,
+            "mean_end_boundary_error_seconds": 0.0,
+            "mean_latency_ms": 20833.97466596216,
+            "mean_start_boundary_error_seconds": 0.0,
+            "mean_temporal_iou": 1.0,
+            "mrr": 0.3333333333333333,
+            "ndcg_at_10": 0.5706417189553201,
+            "p50_latency_ms": 20833.97466596216,
+            "p95_latency_ms": 20833.97466596216,
+            "precision_at_5": 0.4,
+            "recall_at_1": 0.0,
+            "recall_at_10": 1.0,
+            "recall_at_20": 1.0,
+            "recall_at_3": 1.0,
+            "recall_at_5": 1.0
+          },
+          "slice_id": "made_3",
+          "status": "measured"
+        },
+        {
+          "metrics": {},
+          "slice_id": "made_2",
+          "status": "not_represented_in_frozen_regression_dataset"
+        },
+        {
+          "metrics": {
+            "candidate_recall_at_50": 1.0,
+            "case_count": 1.0,
+            "completed_case_count": 1.0,
+            "error_count": 0.0,
+            "false_positive_rate": 0.6666666666666666,
+            "hard_negative_hit_rate": 1.0,
+            "mean_boundary_error_seconds": 0.0,
+            "mean_end_boundary_error_seconds": 0.0,
+            "mean_latency_ms": 128248.75433300622,
+            "mean_start_boundary_error_seconds": 0.0,
+            "mean_temporal_iou": 1.0,
+            "mrr": 1.0,
+            "ndcg_at_10": 1.0,
+            "p50_latency_ms": 128248.75433300622,
+            "p95_latency_ms": 128248.75433300622,
+            "precision_at_5": 0.2,
+            "recall_at_1": 1.0,
+            "recall_at_10": 1.0,
+            "recall_at_20": 1.0,
+            "recall_at_3": 1.0,
+            "recall_at_5": 1.0
+          },
+          "slice_id": "free_throw",
+          "status": "measured"
+        },
+        {
+          "metrics": {},
+          "slice_id": "miss",
+          "status": "not_represented_in_frozen_regression_dataset"
+        },
+        {
+          "metrics": {},
+          "slice_id": "replay",
+          "status": "not_represented_in_frozen_regression_dataset"
+        },
+        {
+          "metrics": {
+            "candidate_recall_at_50": 1.0,
+            "case_count": 1.0,
+            "completed_case_count": 1.0,
+            "error_count": 0.0,
+            "false_positive_rate": 0.5,
+            "hard_negative_hit_rate": 1.0,
+            "mean_boundary_error_seconds": 0.4500000000000002,
+            "mean_end_boundary_error_seconds": 0.9000000000000004,
+            "mean_latency_ms": 15352.02412493527,
+            "mean_start_boundary_error_seconds": 0.0,
+            "mean_temporal_iou": 0.9181818181818181,
+            "mrr": 1.0,
+            "ndcg_at_10": 1.0,
+            "p50_latency_ms": 15352.02412493527,
+            "p95_latency_ms": 15352.02412493527,
+            "precision_at_5": 0.2,
+            "recall_at_1": 1.0,
+            "recall_at_10": 1.0,
+            "recall_at_20": 1.0,
+            "recall_at_3": 1.0,
+            "recall_at_5": 1.0
+          },
+          "slice_id": "advertisement_non_game",
+          "status": "measured"
+        },
+        {
+          "metrics": {},
+          "slice_id": "scoreboard_hidden",
+          "status": "not_represented_in_frozen_regression_dataset"
+        },
+        {
+          "metrics": {},
+          "slice_id": "low_resolution",
+          "status": "not_represented_in_frozen_regression_dataset"
+        },
+        {
+          "metrics": {},
+          "slice_id": "different_camera_or_league",
+          "status": "not_represented_in_frozen_regression_dataset"
+        },
+        {
+          "metrics": {},
+          "slice_id": "ood_non_basketball",
+          "status": "not_represented_in_frozen_regression_dataset"
+        },
+        {
+          "metrics": {
+            "candidate_recall_at_50": 0.5,
+            "case_count": 2.0,
+            "completed_case_count": 2.0,
+            "error_count": 0.0,
+            "false_positive_rate": 0.8,
+            "hard_negative_hit_rate": 0.5,
+            "mean_boundary_error_seconds": 0.20000000000000018,
+            "mean_end_boundary_error_seconds": 0.40000000000000036,
+            "mean_latency_ms": 20922.250833013095,
+            "mean_start_boundary_error_seconds": 0.0,
+            "mean_temporal_iou": 0.6026101975573881,
+            "mrr": 0.5,
+            "ndcg_at_10": 0.5,
+            "p50_latency_ms": 20113.875583047047,
+            "p95_latency_ms": 21730.626082979143,
+            "precision_at_5": 0.1,
+            "recall_at_1": 0.5,
+            "recall_at_10": 0.5,
+            "recall_at_20": 0.5,
+            "recall_at_3": 0.5,
+            "recall_at_5": 0.5
+          },
+          "slice_id": "universal_non_sports",
+          "status": "measured"
+        }
+      ],
+      "hard_negative_hit_case_ids": [
+        "panel-roundtable-discussion",
+        "sports-full-screen-commercial",
+        "sports-made-free-throw-query",
+        "sports-made-three-point"
+      ],
+      "metrics": [
+        {
+          "name": "candidate_recall_at_50",
+          "unit": "ratio",
+          "value": 0.8333333333333334
+        },
+        {
+          "name": "error_count",
+          "unit": "count",
+          "value": 0.0
+        },
+        {
+          "name": "hard_negative_hit_rate",
+          "unit": "ratio",
+          "value": 0.8
+        },
+        {
+          "name": "infrastructure_failure_count",
+          "unit": "count",
+          "value": 0.0
+        },
+        {
+          "name": "mean_boundary_error_seconds",
+          "unit": "seconds",
+          "value": 0.13000000000000006
+        },
+        {
+          "name": "model_miss_count",
+          "unit": "count",
+          "value": 1.0
+        },
+        {
+          "name": "ndcg_at_10",
+          "unit": "ratio",
+          "value": 0.714128343791064
+        },
+        {
+          "name": "p95_latency_ms",
+          "unit": "milliseconds",
+          "value": 128248.75433300622
+        },
+        {
+          "name": "precision_at_5",
+          "unit": "ratio",
+          "value": 0.2
+        },
+        {
+          "name": "recall_at_10",
+          "unit": "ratio",
+          "value": 0.8333333333333334
+        },
+        {
+          "name": "recall_at_20",
+          "unit": "ratio",
+          "value": 0.8333333333333334
+        },
+        {
+          "name": "sampled_peak_process_tree_rss_bytes",
+          "unit": "bytes",
+          "value": 8876081152.0
+        }
+      ],
+      "model_miss_case_ids": [
+        "panel-roundtable-discussion"
+      ],
+      "profile_id": "qwen_verification",
+      "run_id": "phase0-proof19-7054f13-product-qwen_verification"
+    }
+  ],
+  "promotion_eligible": false,
+  "schema_version": 1,
+  "source_receipts": [
+    {
+      "byte_size": 1844,
+      "kind": "baseline_batch",
+      "sha256": "db8ea6f22ecbc757d01daa19bf386742e4700888a96ca0e89a55aeebaef9e5b1"
+    },
+    {
+      "byte_size": 8993,
+      "kind": "direct_verifier",
+      "run_id": "phase0-proof19-7054f13-qwen",
+      "sha256": "10134e10ea99025e13056a0a5bb2d21659683f03d3335274bcc88b67c00514b0"
+    },
+    {
+      "byte_size": 620,
+      "kind": "direct_verifier_launch",
+      "sha256": "b948eb4cbaee05ed42659e2985010767f9e30ad846284541127f405cb79f1c0a"
+    },
+    {
+      "byte_size": 64829,
+      "kind": "product_run",
+      "profile_id": "lexical_qdrant",
+      "run_id": "phase0-proof19-7054f13-product-lexical_qdrant",
+      "sha256": "b9ab1f3a3d50c628608c8447ee048c3c2d06ea9d4e9d1c8fd1e98592febb1f9f"
+    },
+    {
+      "byte_size": 66322,
+      "kind": "product_run",
+      "profile_id": "dense_siglip",
+      "run_id": "phase0-proof19-7054f13-product-dense_siglip",
+      "sha256": "40ce0f69f6836b3b5679ab0d24f30c0303890193e509d5e11281a3fce57cf7d0"
+    },
+    {
+      "byte_size": 66381,
+      "kind": "product_run",
+      "profile_id": "temporal_refinement",
+      "run_id": "phase0-proof19-7054f13-product-temporal_refinement",
+      "sha256": "db6c066960951d342846a32a3c8811da097b1fec8c971c8c489e0545614d4f82"
+    },
+    {
+      "byte_size": 66618,
+      "kind": "product_run",
+      "profile_id": "lighthouse",
+      "run_id": "phase0-proof19-7054f13-product-lighthouse",
+      "sha256": "17604e56d0d773b13f5ee67a7dced2a1146738817eaadd617173f3d35f6510d8"
+    },
+    {
+      "byte_size": 127288,
+      "kind": "product_run",
+      "profile_id": "qwen_verification",
+      "run_id": "phase0-proof19-7054f13-product-qwen_verification",
+      "sha256": "02d7f81e59e4ff8b17251107e3d335b41e19def80e7d19840a3b7fd1de9eb6da"
+    }
+  ],
+  "verifier_dataset_revision": "2758ce6fd86c4ad921ae29bff83126a31a5ddbfabdca79748c58fa3d42f1763b"
+}

@@ -22,11 +22,13 @@ or permit background subtraction. The next bounded experiment is an unchanged
 normal full smoke after an owner-provided fresh macOS session; that condition
 does not guarantee a pass.
 
-The [earlier `1b11a54` control](negative-controls/1b11a54/README.md) retains all
-five benchmark manifests and the ten-case direct verifier, plus its rejected
-446- and 116-page smokes. These artifacts cannot be combined with `7054f13` to
-satisfy the same-SHA gate. No new benchmark batch at `7054f13` or accepted
-four-file evidence bundle has been published; training and later phases remain
+The same `7054f13` now has five complete benchmark manifests and a complete
+strict ten-case direct verifier (three matches, seven model misses, zero
+infrastructure errors), with completed worker retirement and cleanup. Every
+non-smoke validator passes. The full collector returned exit 3 and created no
+bundle because the unchanged diagnostic smoke still fails the resource gate.
+The [earlier `1b11a54` control](negative-controls/1b11a54/README.md) remains
+separate; no older artifact was substituted. Training and later phases remain
 inactive.
 
 The collector never starts a model. It validates already produced JSON and
