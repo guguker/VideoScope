@@ -120,16 +120,24 @@ zero swap for every future workload or attribute earlier swap events.
 
 The accepted baseline remains `regression_seen`, with failed model-quality
 guardrails and a direct verifier result of 3 matches, 7 model misses and
-0 infrastructure errors. It is not promotion evidence. No training or later
-phase is active. The next proposed bounded goal is a Phase 1 read-only
-data/provenance audit of the eight owner-reported UBA files in `Данные матчи/`;
-it requires separate owner authorization before work starts. On 2026-09-11 the
-owner deferred NBA, so it is outside this first audit. The files have not yet
-been audited for metadata, rights, independent source/game/replay groups or
-coverage. The source priority does not weaken the Phase 1 exit gate or required
-strata, including `different_camera_or_league` and `OOD/non-basketball`.
-BARD/E-BARD remain separate audit candidates. No external or user data may be
-imported, uploaded or trained on merely because it is listed as a candidate.
+0 infrastructure errors. It is not promotion evidence. No training is active.
+
+On 2026-09-11 the owner authorized the first bounded Phase 1 slice: audit the
+eight local UBA files in `Данные матчи/` and prepare a private first batch for
+human annotation. This includes local derived previews and the minimal review
+tool, but no production import/indexing, external transfer, training or model
+promotion. NBA remains deferred; BARD/E-BARD are separate audit candidates.
+
+The metadata/hash audit found eight stable H.264/AAC 1080p60 sources and no exact
+duplicates. Two whole sources were assigned `development_review` before decoding;
+one suspected previously studied game remains excluded as regression material;
+five remain `reserve_uninspected`, not a sealed promotion holdout. Rights,
+cross-source replay groups and gold coverage remain unresolved. The first review
+batch is an annotation pilot, not a sealed dataset or quality benchmark. Its
+contract and replay commands are in `docs/benchmarks/phase1/README.md`.
+The complete Phase 1 exit gate, including `different_camera_or_league` and
+`OOD/non-basketball`, remains required before training. No candidate source is
+authorized for training or external transfer merely because it was reviewed.
 
 ## Verification and handoff
 
