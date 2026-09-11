@@ -135,6 +135,10 @@ five remain `reserve_uninspected`, not a sealed promotion holdout. Rights,
 cross-source replay groups and gold coverage remain unresolved. The first review
 batch is an annotation pilot, not a sealed dataset or quality benchmark. Its
 contract and replay commands are in `docs/benchmarks/phase1/README.md`.
+The first 24 local 1080p60 previews are ready for owner review. Their receipt
+records unchanged source hashes, exact committed selection replay, 2,647 passing
+backend tests and a synthetic browser save/restart check. Human annotation was
+still pending at handoff; no model-quality conclusion follows from this pilot.
 The complete Phase 1 exit gate, including `different_camera_or_league` and
 `OOD/non-basketball`, remains required before training. No candidate source is
 authorized for training or external transfer merely because it was reviewed.
