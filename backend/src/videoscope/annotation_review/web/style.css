@@ -827,3 +827,11 @@ textarea::placeholder {
     scroll-behavior:auto!important
   }
 }
+
+.event-picker { margin: 0 0 20px; padding-bottom: 16px; border-bottom: 1px solid var(--line, #344035); }
+.event-list { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.event-list [aria-pressed="true"] { border-color: #c6dda5; background: #24331d; color: #d9eaba; }
+#add-event { width: 100%; text-align: left; }
+#remove-event { margin-top: 8px; }
+.choice-help { margin-top: 8px; font-size: 12px; color: #b5bfb0; }
+.choice-help summary { cursor: pointer; }

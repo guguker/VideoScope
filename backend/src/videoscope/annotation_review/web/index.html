@@ -48,7 +48,13 @@
         </section>
 
         <section class="annotation-panel" aria-labelledby="annotation-title">
-          <div class="annotation-heading"><h2 id="annotation-title">Что происходит?</h2><p class="muted">Один бросок — одна разметка. Если их несколько, сузь границы до одного.</p></div>
+          <div class="annotation-heading"><h2 id="annotation-title">Что происходит?</h2><p class="muted">Выбери бросок, задай его границы и сохрани. Остальные броски добавляй отдельно.</p></div>
+          <section class="event-picker" aria-label="Броски в этом клипе">
+            <div id="event-list" class="event-list"></div>
+            <button id="add-event" type="button">Добавить ещё один бросок в этом клипе</button>
+            <button id="remove-event" type="button" hidden>Убрать несохранённый бросок</button>
+            <p id="event-title" class="muted"></p>
+          </section>
           <form id="review-form" aria-label="Разметка эпизода" novalidate>
             <fieldset id="labels">
               <legend class="sr-only">Наблюдаемые признаки эпизода</legend>
@@ -70,7 +76,7 @@
                 <label><input type="radio" name="scoring_decision" value="not_counted"><span>Не засчитаны</span></label>
                 <label><input type="radio" name="scoring_decision" value="not_applicable"><span>Не применимо<span class="sr-only">, зачёт очков</span></span></label>
                 <label><input type="radio" name="scoring_decision" value="unclear"><span>Неясно<span class="sr-only">, зачёт очков</span></span></label>
-              </div><p class="choice-hint">Мяч в кольце и засчитанные очки — разные признаки. При промахе или отсутствии броска выбери «Не применимо»; если очки присуждены судьёй, укажи это и поясни в комментарии.</p></fieldset>
+              </div><details class="choice-help"><summary>Как выбрать зачёт очков</summary><p class="choice-hint">Мяч в кольце и засчитанные очки — разные признаки. При промахе или отсутствии броска выбери «Не применимо»; если очки присуждены судьёй, укажи это и поясни в комментарии.</p></details></fieldset>
               <fieldset class="choice-group"><legend><span>04</span> Обстоятельства броска</legend><div class="choices">
                 <label><input type="radio" name="play_context" value="in_play"><span>В игре</span></label>
                 <label><input type="radio" name="play_context" value="foul_on_shot"><span>Фол на броске</span></label>
@@ -78,7 +84,7 @@
                 <label><input type="radio" name="play_context" value="other_dead_ball"><span>Новый бросок при другой остановке</span></label>
                 <label><input type="radio" name="play_context" value="not_applicable"><span>Не применимо<span class="sr-only">, обстоятельства</span></span></label>
                 <label><input type="radio" name="play_context" value="unclear"><span>Неясно<span class="sr-only">, обстоятельства</span></span></label>
-              </div><p class="choice-hint">«После свистка» и «при другой остановке» — отдельный новый бросок вне игры, например добрасывание партнёра. Продолжение начатого броска с фолом отметь как «Фол на броске»: очки могут засчитать.</p><p class="choice-hint">Штатный штрафной — «В игре», даже если таймер стоит. Мяч, выпущенный до сирены, тоже не становится новым броском после остановки.</p><p id="decision-hint" class="choice-hint decision-hint" role="status" aria-live="polite" hidden></p></fieldset>
+              </div><details class="choice-help"><summary>Фол, свисток и штрафные</summary><p class="choice-hint">«После свистка» и «при другой остановке» — отдельный новый бросок вне игры, например добрасывание партнёра. Продолжение начатого броска с фолом отметь как «Фол на броске»: очки могут засчитать.</p><p class="choice-hint">Штатный штрафной — «В игре», даже если таймер стоит. Мяч, выпущенный до сирены, тоже не становится новым броском после остановки.</p></details><p id="decision-hint" class="choice-hint decision-hint" role="status" aria-live="polite" hidden></p></fieldset>
               <fieldset class="choice-group"><legend><span>05</span> Как показан момент?</legend><div class="choices">
                 <label><input type="radio" name="presentation" value="live"><span>Основной эпизод</span></label>
                 <label><input type="radio" name="presentation" value="replay"><span>Повтор</span></label>
@@ -93,9 +99,9 @@
               <textarea id="notes" rows="3" maxlength="2000" placeholder="Например: не видно положение ног или клип обрывается до исхода"></textarea>
               <p id="draft-hint" class="draft-hint">Ответы сохраняются кнопкой ниже. Без догадок — только то, что видно.</p>
             </fieldset>
-            <div class="save-area"><button id="save" class="primary-button" type="submit">Сохранить и дальше</button><div class="navigation-buttons"><button id="previous" type="button">Предыдущий</button><button id="next" type="button">Следующий</button></div><p class="muted centered">«Следующий» позволяет отложить эпизод без сохранения.</p></div>
+            <div class="save-area"><button id="save-stay" class="primary-button" type="button">Сохранить бросок</button><button id="save" type="submit">Сохранить и дальше</button><div class="navigation-buttons"><button id="previous" type="button">Предыдущий</button><button id="next" type="button">Следующий</button></div><p class="muted centered">«Следующий» позволяет отложить эпизод без сохранения.</p></div>
           </form>
-          <details class="instructions"><summary>Как проверять спорный момент</summary><p>Просмотри клип целиком; при необходимости замедли видео. Каждый ответ относится к одному броску внутри выбранных границ. Если броски нельзя разделить, выбери «Неясно» для неоднозначных признаков и опиши ситуацию в комментарии.</p><p>Если броска нет, для исхода, зачёта очков и обстоятельств выбери «Не применимо». «Основной эпизод» и «Повтор» описывают показ на экране, а обстоятельства — само событие.</p><p>Пример: партнёр забросил после остановки — «Попадание», «Не засчитаны», «Новый бросок после свистка». Попадание с фолом может быть засчитано: выбирай «Фол на броске» и отдельно подтверждай решение об очках.</p><p>Если не хватает начала или конца, отметь это и напиши, чего не видно. Не нужно угадывать решение судьи по одному звуку свистка или реплике комментатора; если подтверждения нет, выбери «Неясно».</p><p>Проверенные ответы сохраняются локально с историей изменений. Эта первая проверка ещё не делает пример окончательным эталоном: спорные случаи разбираем отдельно.</p></details>
+          <details class="instructions"><summary>Как проверять спорный момент</summary><p>Просмотри клип целиком; при необходимости замедли видео. Каждый ответ относится к одному броску внутри выбранных границ. Для другого броска нажми «Добавить ещё один бросок в этом клипе» — первые ответы останутся на месте. Если броски нельзя разделить, выбери «Неясно» для неоднозначных признаков и опиши ситуацию в комментарии.</p><p>Если броска нет, для исхода, зачёта очков и обстоятельств выбери «Не применимо». «Основной эпизод» и «Повтор» описывают показ на экране, а обстоятельства — само событие.</p><p>Пример: партнёр забросил после остановки — «Попадание», «Не засчитаны», «Новый бросок после свистка». Попадание с фолом может быть засчитано: выбирай «Фол на броске» и отдельно подтверждай решение об очках.</p><p>Если не хватает начала или конца, отметь это и напиши, чего не видно. Не нужно угадывать решение судьи по одному звуку свистка или реплике комментатора; если подтверждения нет, выбери «Неясно».</p><p>Проверенные ответы сохраняются локально с историей изменений. Эта первая проверка ещё не делает пример окончательным эталоном: спорные случаи разбираем отдельно.</p></details>
         </section>
       </div>
     </main>

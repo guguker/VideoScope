@@ -431,8 +431,8 @@ def test_v1_history_is_readable_needs_review_and_not_rewritten_when_v2_appends(b
     path, old_bytes = write_legacy_record(root, old)
     client = client_for(root)
     review = client.get("/api/review").json()
-    assert review["annotation_schema_version"] == 2
-    assert client.get("/api/health").json()["annotation_schema_version"] == 2
+    assert review["annotation_schema_version"] == 3
+    assert client.get("/api/health").json()["annotation_schema_version"] == 3
     latest = review["annotations"]["e01"]
     assert latest["schema_version"] == 1
     assert latest["needs_review"] is True
@@ -449,7 +449,7 @@ def test_v1_history_is_readable_needs_review_and_not_rewritten_when_v2_appends(b
     assert saved.json()["reviewed_count"] == 1
     restarted = client_for(root)
     exported = restarted.get("/api/export").json()
-    assert exported["schema_version"] == 2
+    assert exported["schema_version"] == 3
     assert exported["records"][0] == old
     assert exported["records"][0]["label_status"] == "human_reviewed"
     assert exported["records"][1]["schema_version"] == 2
@@ -473,7 +473,7 @@ def test_legacy_draft_remains_draft_without_guessed_new_fields(batch):
     assert path.read_bytes() == old_bytes
 
 
-@pytest.mark.parametrize("schema_version", [None, 1, 3, True, "2", 2.0])
+@pytest.mark.parametrize("schema_version", [None, 1, 4, True, "2", 2.0])
 def test_stale_form_requests_fail_with_reload_message_and_preserve_history(batch, schema_version):
     root, manifest = batch
     old = legacy_record(manifest)
@@ -576,3 +576,99 @@ def test_concurrent_v2_append_to_legacy_history_preserves_old_bytes(batch):
     assert [record["schema_version"] for record in records] == [1, 2]
     assert [record["revision"] for record in records] == [1, 2]
     assert path.read_bytes() == old_bytes
+
+
+def event_annotation(manifest, event_id='primary', **changes):
+    return annotation(manifest, schema_version=3, event_id=event_id, **changes)
+
+
+def test_multiple_events_keep_separate_boundaries_history_and_legacy_answer(batch):
+    root, manifest = batch
+    client = client_for(root)
+    assert save(client, annotation(manifest, outcome='miss', scoring_decision='not_applicable',
+                                   play_context='foul_on_shot', end_seconds=5.844)).status_code == 200
+    original = (root/'annotations/e01/000001.json').read_bytes()
+    second = 'event-' + 'a'*32
+    payload = event_annotation(manifest, second, start_seconds=5.844, end_seconds=11.0,
+                               scoring_decision='not_counted', play_context='after_whistle')
+    response = save(client, payload)
+    assert response.status_code == 200, response.text
+    assert response.json()['annotation']['event_id'] == second
+    restarted = client_for(root)
+    events = restarted.get('/api/review').json()['events']['e01']
+    assert [item['event_id'] for item in events] == ['primary', second]
+    assert [(item['start_seconds'], item['end_seconds']) for item in events] == [(2.0, 5.844), (5.844, 11.0)]
+    assert save(restarted, {**payload, 'expected_revision':1, 'start_seconds':6.0}).status_code == 200
+    assert (root/'annotations/e01/000001.json').read_bytes() == original
+    exported = restarted.get('/api/export').json()
+    assert exported['schema_version'] == 3
+    assert [(item.get('event_id','primary'), item['revision']) for item in exported['records']] == [('primary',1),(second,1),(second,2)]
+    assert all(not item['gold'] and not item['training_allowed'] for item in exported['records'])
+    # An old open form still saves only the original event, without touching the second.
+    assert save(restarted, annotation(manifest, expected_revision=1)).status_code == 200
+    assert restarted.get('/api/review').json()['events']['e01'][1]['start_seconds'] == 6.0
+
+
+def test_two_concurrent_event_creations_are_independent_but_same_event_conflicts(batch):
+    root, manifest = batch
+    clients = [client_for(root), client_for(root)]
+    payloads = [event_annotation(manifest, 'event-'+character*32) for character in ('a','b')]
+    with ThreadPoolExecutor(2) as pool:
+        responses = list(pool.map(lambda pair: save(*pair), zip(clients,payloads)))
+    assert [r.status_code for r in responses] == [200,200]
+    with ThreadPoolExecutor(2) as pool:
+        responses = list(pool.map(lambda client: save(client,{**payloads[0],'expected_revision':1}),clients))
+    assert sorted(r.status_code for r in responses) == [200,409]
+    assert len(clients[0].get('/api/review').json()['events']['e01']) == 2
+
+
+@pytest.mark.parametrize('event_id', ['../outside','events','primary/other','event-'+'g'*32,''])
+def test_event_identity_rejects_paths_and_noncanonical_names(batch,event_id):
+    root,manifest=batch
+    assert save(client_for(root),event_annotation(manifest,event_id)).status_code == 422
+
+
+def test_failed_second_event_publish_keeps_first_and_retries_without_overwrite(batch,monkeypatch):
+    root,manifest=batch
+    client=client_for(root)
+    assert save(client,annotation(manifest)).status_code==200
+    before=(root/'annotations/e01/000001.json').read_bytes()
+    link=server.os.link
+    def fail(*args,**kwargs):raise OSError('injected publication failure')
+    monkeypatch.setattr(server.os,'link',fail)
+    payload=event_annotation(manifest,'event-'+'c'*32)
+    assert save(client,payload).status_code==409
+    assert (root/'annotations/e01/000001.json').read_bytes()==before
+    monkeypatch.setattr(server.os,'link',link)
+    restarted=client_for(root)
+    assert save(restarted,payload).status_code==200
+    assert len(restarted.get('/api/review').json()['events']['e01'])==2
+
+
+def test_extra_event_limit_reserves_primary_and_can_still_edit(batch):
+    root,manifest=batch
+    client=client_for(root)
+    for index in range(31):
+        assert save(client,event_annotation(manifest,f'event-{index:032x}')).status_code==200
+    assert save(client,event_annotation(manifest,'event-'+'f'*32)).status_code==422
+    assert save(client,event_annotation(manifest)).status_code==200
+    assert save(client,event_annotation(manifest,'event-'+'0'*32,expected_revision=1)).status_code==200
+
+
+def test_event_record_cannot_be_moved_into_another_events_history(batch):
+    root,manifest=batch
+    client=client_for(root)
+    first,second='event-'+'a'*32,'event-'+'b'*32
+    assert save(client,event_annotation(manifest,first)).status_code==200
+    (root/f'annotations/e01/events/{first}').rename(root/f'annotations/e01/events/{second}')
+    with pytest.raises(server.ReviewConflict):client_for(root)
+
+
+def test_event_display_order_survives_restart_and_edits(batch):
+    root,manifest=batch
+    client=client_for(root)
+    first,second='event-'+'f'*32,'event-'+'a'*32
+    for event_id in (first,second):
+        assert save(client,event_annotation(manifest,event_id)).status_code==200
+    assert save(client,event_annotation(manifest,first,expected_revision=1)).status_code==200
+    assert [event['event_id'] for event in client_for(root).get('/api/review').json()['events']['e01']] == [first,second]

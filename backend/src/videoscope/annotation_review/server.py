@@ -9,6 +9,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import stat
 import tempfile
 import threading
@@ -23,7 +24,7 @@ from starlette.datastructures import Headers
 
 from .schema import (
     ANNOTATION_FIELDS, AnnotationRecord, AnnotationRecordV1, AnnotationRequest, BatchManifest,
-    annotation_complete, batch_revision, canonical_json,
+    EventAnnotationRecord, EventAnnotationRequest, annotation_complete, batch_revision, canonical_json,
 )
 
 
@@ -180,54 +181,81 @@ class ReviewStore:
             if item_dir.name not in self.examples:
                 raise ReviewConflict("unknown annotation example")
             _contained(self.root, f"annotations/{item_dir.name}", directory=True)
-            revision = 0
-            for path in sorted(item_dir.iterdir()):
-                # A crash before publication may leave an inert private temporary file.
-                if path.name.startswith(".pending-"):
-                    _contained(self.root, f"annotations/{item_dir.name}/{path.name}")
-                    continue
-                revision += 1
-                if len(records) >= 10000 or path.name != f"{revision:06d}.json":
-                    raise ReviewConflict("annotation history has gaps or exceeds bound")
-                _contained(self.root, f"annotations/{item_dir.name}/{path.name}")
-                try:
-                    raw_record = _read_json(path, MAX_BODY_BYTES)
-                    version = raw_record.get("schema_version")
-                    if type(version) is not int or version not in {1, 2}:
-                        raise ReviewConflict("annotation history has an unknown schema version")
-                    model = AnnotationRecordV1 if version == 1 else AnnotationRecord
-                    record = model.model_validate(raw_record)
-                except ValidationError as error:
-                    raise ReviewConflict("annotation history violates schema") from error
-                item = self.examples[item_dir.name]
-                source = self.sources[item.source_id]
-                if (record.batch_id != self.batch.batch_id or record.batch_revision != self.revision
-                        or record.example_id != item.example_id or record.revision != revision
-                        or record.source_id != source.source_id or record.source_sha256 != source.sha256
-                        or record.source_start_seconds != item.source_start_seconds
-                        or record.source_end_seconds != item.source_end_seconds
-                        or record.prepared_input_sha256 != item.prepared_input_sha256
-                        or (record.end_seconds is not None and record.end_seconds > item.clip_duration_seconds)):
-                    raise ReviewConflict("annotation history provenance mismatch")
-                # Validation must not rewrite history or invent fields in a v1 export.
-                records.append(raw_record)
+            event_dirs = [("primary", item_dir)]
+            extra = item_dir / "events"
+            if extra.exists() or extra.is_symlink():
+                _contained(self.root, str(extra.relative_to(self.root)), directory=True)
+                children = sorted(extra.iterdir())
+                if len(children) > 31:
+                    raise ReviewConflict("too many events in one clip")
+                for child in children:
+                    if not re.fullmatch(r"event-[0-9a-f]{32}", child.name):
+                        raise ReviewConflict("invalid event directory")
+                    _contained(self.root, str(child.relative_to(self.root)), directory=True)
+                    event_dirs.append((child.name, child))
+            for event_id, event_dir in event_dirs:
+                revision = 0
+                for path in sorted(event_dir.iterdir()):
+                    if event_id == "primary" and path.name == "events":
+                        continue
+                    if path.name.startswith(".pending-"):
+                        _contained(self.root, str(path.relative_to(self.root)))
+                        continue
+                    revision += 1
+                    if len(records) >= 10000 or path.name != f"{revision:06d}.json":
+                        raise ReviewConflict("annotation history has gaps or exceeds bound")
+                    _contained(self.root, str(path.relative_to(self.root)))
+                    try:
+                        raw_record = _read_json(path, MAX_BODY_BYTES)
+                        version = raw_record.get("schema_version")
+                        models = {1: AnnotationRecordV1, 2: AnnotationRecord, 3: EventAnnotationRecord}
+                        if type(version) is not int or version not in models:
+                            raise ReviewConflict("annotation history has an unknown schema version")
+                        record = models[version].model_validate(raw_record)
+                    except ValidationError as error:
+                        raise ReviewConflict("annotation history violates schema") from error
+                    item = self.examples[item_dir.name]
+                    source = self.sources[item.source_id]
+                    if (getattr(record, "event_id", "primary") != event_id
+                            or record.batch_id != self.batch.batch_id or record.batch_revision != self.revision
+                            or record.example_id != item.example_id or record.revision != revision
+                            or record.source_id != source.source_id or record.source_sha256 != source.sha256
+                            or record.source_start_seconds != item.source_start_seconds
+                            or record.source_end_seconds != item.source_end_seconds
+                            or record.prepared_input_sha256 != item.prepared_input_sha256
+                            or (record.end_seconds is not None and record.end_seconds > item.clip_duration_seconds)):
+                        raise ReviewConflict("annotation history provenance mismatch")
+                    records.append(raw_record)
         return records
 
     @staticmethod
-    def _latest(records):
-        return {record["example_id"]: {
+    def _latest_events(records):
+        first_saved = {}
+        for record in records:
+            first_saved.setdefault((record["example_id"], record.get("event_id", "primary")), record["created_at"])
+        latest = {(record["example_id"], record.get("event_id", "primary")): {
             "schema_version": record["schema_version"], "revision": record["revision"],
-            "needs_review": record["schema_version"] != 2 or not annotation_complete(record),
+            "event_id": record.get("event_id", "primary"),
+            "needs_review": record["schema_version"] == 1 or not annotation_complete(record),
             **{field: record.get(field) for field in ANNOTATION_FIELDS},
         } for record in records}
+        return {key: latest[key] for key in sorted(latest, key=lambda key: (
+            key[0], key[1] != "primary", first_saved[key], key[1]))}
+
+    @classmethod
+    def _latest(cls, records):
+        return {example_id: record for (example_id, event_id), record in cls._latest_events(records).items()
+                if event_id == "primary"}
 
     def review(self):
         self.check_batch()
         with self.lock:
-            annotations = self._latest(self._history())
+            history = self._history()
+            annotations = self._latest(history)
+            latest_events = self._latest_events(history)
         return {
             "batch_id": self.batch.batch_id, "batch_revision": self.revision,
-            "annotation_schema_version": 2,
+            "annotation_schema_version": 3,
             "title": self.batch.title,
             "examples": [{"example_id": item.example_id, "source_alias": item.source_id,
                 "source_start_seconds": item.source_start_seconds,
@@ -236,9 +264,11 @@ class ReviewStore:
                 "video_url": f"/media/{item.example_id}",
                 "poster_url": f"/posters/{item.example_id}"} for item in self.batch.examples],
             "annotations": annotations,
+            "events": {example_id: [record for (owner, _), record in latest_events.items()
+                                    if owner == example_id] for example_id in self.examples},
         }
 
-    def save(self, request: AnnotationRequest):
+    def save(self, request: AnnotationRequest | EventAnnotationRequest):
         self.check_batch()
         if request.batch_revision != self.revision:
             raise ReviewConflict("different batch revision")
@@ -251,16 +281,22 @@ class ReviewStore:
         with self._write_lock():
             self.check_batch()
             history = self._history()
-            latest = self._latest(history)
-            revision = latest.get(item.example_id, {}).get("revision", 0)
+            latest = self._latest_events(history)
+            event_id = getattr(request, "event_id", "primary")
+            key = (item.example_id, event_id)
+            if key not in latest and sum(owner == item.example_id for owner, _ in latest) >= 32:
+                raise HTTPException(422, "at most 32 events per clip")
+            revision = latest.get(key, {}).get("revision", 0)
             if revision != request.expected_revision:
                 raise ReviewConflict("annotation changed; reload before saving")
             if revision >= 10000 or len(history) >= 10000:
                 raise ReviewConflict("annotation history limit reached")
             source = self.sources[item.source_id]
             fields = {field: getattr(request, field) for field in ANNOTATION_FIELDS}
-            record = AnnotationRecord(
-                **fields, schema_version=2, batch_id=self.batch.batch_id,
+            model = EventAnnotationRecord if request.schema_version == 3 else AnnotationRecord
+            identity = {"event_id": event_id} if request.schema_version == 3 else {}
+            record = model(
+                **fields, **identity, schema_version=request.schema_version, batch_id=self.batch.batch_id,
                 batch_revision=self.revision, example_id=item.example_id, revision=revision + 1,
                 created_at=datetime.now(timezone.utc).isoformat(), reviewer="local_owner",
                 label_status="human_reviewed" if annotation_complete(fields) else "draft",
@@ -273,6 +309,17 @@ class ReviewStore:
             directory.mkdir(mode=0o700, exist_ok=True)
             _contained(self.root, f"annotations/{item.example_id}", directory=True)
             _fsync_directory(directory.parent)
+            if event_id != "primary":
+                directory = directory / "events"
+                directory.mkdir(mode=0o700, exist_ok=True)
+                _contained(self.root, str(directory.relative_to(self.root)), directory=True)
+                _fsync_directory(directory.parent)
+                if not (directory / event_id).exists() and len(list(directory.iterdir())) >= 31:
+                    raise HTTPException(422, "at most 31 additional events per clip")
+                directory = directory / event_id
+                directory.mkdir(mode=0o700, exist_ok=True)
+                _contained(self.root, str(directory.relative_to(self.root)), directory=True)
+                _fsync_directory(directory.parent)
             descriptor, temporary = tempfile.mkstemp(prefix=".pending-", dir=directory)
             try:
                 with os.fdopen(descriptor, "wb") as handle:
@@ -285,16 +332,17 @@ class ReviewStore:
             finally:
                 os.unlink(temporary)
             _fsync_directory(directory)
-            latest.update(self._latest([record]))
-            return {"annotation": latest[item.example_id],
-                    "reviewed_count": sum(not item["needs_review"] for item in latest.values()),
+            latest.update(self._latest_events([record]))
+            return {"annotation": latest[key],
+                    "reviewed_count": len({owner for (owner, _), item in latest.items() if not item["needs_review"]}),
+                    "event_count": len(latest),
                     "total_count": len(self.examples)}
 
     def export(self):
         self.check_batch()
         with self.lock:
             records = self._history()
-        return {"schema_version": 2, "batch_id": self.batch.batch_id,
+        return {"schema_version": 3, "batch_id": self.batch.batch_id,
                 "batch_revision": self.revision, "purpose": "annotation_pilot",
                 "training_allowed": False, "promotion_allowed": False,
                 "sources": [source.model_dump() for source in self.batch.sources],
@@ -354,8 +402,8 @@ class LocalBoundary:
                 return await reject(422, "invalid JSON")
             if scope["path"] == "/api/annotations" and isinstance(parsed, dict):
                 version = parsed.get("schema_version")
-                if type(version) is not int or version != 2:
-                    return await reject(409, "review form changed; reload the page before saving (schema version 2 required)")
+                if type(version) is not int or version not in {2, 3}:
+                    return await reject(409, "review form changed; reload the page before saving (schema version 2 or 3 required)")
 
             async def replay():
                 return {"type": "http.request", "body": bytes(body), "more_body": False}
@@ -382,14 +430,14 @@ def create_app(batch_dir: Path, *, port: int = 8766) -> FastAPI:
     @app.get("/api/health")
     def health():
         store.check_batch()
-        return {"status": "ready", "batch_id": store.batch.batch_id, "annotation_schema_version": 2}
+        return {"status": "ready", "batch_id": store.batch.batch_id, "annotation_schema_version": 3}
 
     @app.get("/api/review")
     def review():
         return store.review()
 
     @app.post("/api/annotations")
-    def annotate(request: AnnotationRequest):
+    def annotate(request: AnnotationRequest | EventAnnotationRequest):
         return store.save(request)
 
     @app.get("/api/export")

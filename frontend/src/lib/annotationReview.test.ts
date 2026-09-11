@@ -35,7 +35,7 @@ const reply = (value: unknown, status = 200) => new Response(JSON.stringify(valu
 let fetchMock: ReturnType<typeof vi.fn>
 let screen: ReturnType<typeof within>
 
-async function mount(data = review()) {
+async function mount(data: ReturnType<typeof review> & { events?: Record<string, unknown[]> } = review()) {
   fetchMock.mockResolvedValueOnce(reply(data))
   document.documentElement.innerHTML = html.replace(/<!doctype html>/i, '')
   screen = within(document.body)
@@ -66,6 +66,46 @@ describe('standalone local annotation review', () => {
     document.body.innerHTML = ''
   })
 
+  it('keeps the first draft and creates a separate blank second shot without saving implicitly', async () => {
+    await mount()
+    chooseLabels()
+    fireEvent.input(screen.getByLabelText('Конец фрагмента, секунды'), { target: { value: '5.844' } })
+    fireEvent.input(screen.getByLabelText('Комментарий'), { target: { value: 'Первый бросок с фолом' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Добавить ещё один бросок в этом клипе' }))
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(screen.getAllByRole('radio').every((input: HTMLElement) => !(input as HTMLInputElement).checked)).toBe(true)
+    expect(screen.getByLabelText('Начало фрагмента, секунды')).toHaveValue(5.844)
+    fireEvent.click(screen.getByRole('button', { name: /Бросок 1/ }))
+    expect(screen.getByLabelText('Комментарий')).toHaveValue('Первый бросок с фолом')
+    expect(screen.getByLabelText('Конец фрагмента, секунды')).toHaveValue(5.844)
+    expect(screen.getByLabelText('Трёхочковый')).toBeChecked()
+  })
+
+  it('saves the second event independently and stays in its clip', async () => {
+    const first = { ...annotation, event_id: 'primary', end_seconds: 5.844 }
+    await mount({ ...review({ e1: first }), events: { e1: [first], e2: [] } })
+    fireEvent.click(screen.getByRole('button', { name: 'Предыдущий' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Добавить ещё один бросок в этом клипе' }))
+    chooseLabels()
+    fireEvent.click(screen.getByLabelText('Не засчитаны'))
+    fireEvent.click(screen.getByLabelText('Новый бросок после свистка'))
+    fetchMock.mockImplementationOnce((_url: string, options: RequestInit) => {
+      const payload = JSON.parse(String(options.body))
+      return reply({ annotation: { ...payload, revision: 1 }, reviewed_count: 1, total_count: 2 })
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Сохранить бросок', exact: true }))
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+    const payload = JSON.parse(fetchMock.mock.calls[1][1].body)
+    expect(payload.schema_version).toBe(3)
+    expect(payload.event_id).toMatch(/^event-[a-f0-9]{32}$/)
+    expect(payload.expected_revision).toBe(0)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Сохранить бросок', exact: true })).toBeEnabled())
+    expect(screen.getByRole('heading', { name: 'Эпизод 01' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /Бросок 1/ }))
+    expect(screen.getByLabelText('Засчитаны')).toBeChecked()
+    expect(screen.getByLabelText('Конец фрагмента, секунды')).toHaveValue(5.844)
+  })
+
   it('starts every human label blank and requires an explicit decision', async () => {
     await mount()
     expect(screen.getAllByRole('radio').every((input: HTMLElement) => !(input as HTMLInputElement).checked)).toBe(true)
@@ -90,7 +130,7 @@ describe('standalone local annotation review', () => {
     const [url, options] = fetchMock.mock.calls[1]
     expect(url).toBe('/api/annotations')
     expect(JSON.parse(options.body)).toEqual({
-      schema_version: 2, scoring_decision: 'counted', play_context: 'in_play',
+      schema_version: 3, event_id: 'primary', scoring_decision: 'counted', play_context: 'in_play',
       batch_revision: 'revision-1', example_id: 'e1', expected_revision: 0,
       shot_type: 'three', outcome: 'made', presentation: 'live',
       boundary_status: 'complete', start_seconds: 0, end_seconds: 20, notes: '',
@@ -200,7 +240,7 @@ describe('standalone local annotation review', () => {
     fetchMock.mockResolvedValueOnce(reply({ annotation: { ...annotation, revision: 2, scoring_decision: 'not_counted', play_context: 'after_whistle' }, reviewed_count: 1, total_count: 2 }))
     fireEvent.click(screen.getByRole('button', { name: 'Сохранить и дальше' }))
     expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toMatchObject({
-      schema_version: 2, expected_revision: 1, shot_type: 'three', outcome: 'made',
+      schema_version: 3, event_id: 'primary', expected_revision: 1, shot_type: 'three', outcome: 'made',
       scoring_decision: 'not_counted', play_context: 'after_whistle',
       start_seconds: 1, end_seconds: 18, notes: 'Фол, затем чужое добивание',
     })
@@ -249,7 +289,7 @@ describe('standalone local annotation review', () => {
     expect(screen.getAllByRole('radio').filter((input: HTMLElement) => (input as HTMLInputElement).checked)).toHaveLength(6)
     expect(screen.getByRole('button', { name: 'Сохранить и дальше' })).toBeEnabled()
     expect(fetchMock).toHaveBeenCalledTimes(1)
-    expect(document.body).toHaveTextContent('Один бросок — одна разметка')
+    expect(document.body).toHaveTextContent('Остальные броски добавляй отдельно')
   })
 
   it('rejects invalid boundaries and notes before contacting the server', async () => {
