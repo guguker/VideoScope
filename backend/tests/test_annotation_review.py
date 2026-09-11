@@ -55,9 +55,11 @@ def client_for(root):
 
 def annotation(manifest, **changes):
     result = {
+        "schema_version": 2,
         "batch_revision": batch_revision(manifest), "example_id": "e01",
         "expected_revision": 0, "shot_type": "three", "outcome": "made",
         "presentation": "live", "boundary_status": "complete",
+        "scoring_decision": "counted", "play_context": "in_play",
         "start_seconds": 2.0, "end_seconds": 10.0, "notes": "Видно попадание",
     }
     result.update(changes)
@@ -394,3 +396,183 @@ def test_cli_binds_only_loopback_and_rejects_invalid_port(batch, monkeypatch):
     assert captured["access_log"] is False
     with pytest.raises(ValueError):
         create_app(root, port=80)
+
+
+def legacy_record(manifest, **changes):
+    """A historical v1 record, constructed independently of the current writer."""
+    request = annotation(manifest)
+    record = {key: value for key, value in request.items() if key not in {
+        "expected_revision", "scoring_decision", "play_context"}}
+    record.update({
+        "schema_version": 1, "batch_id": manifest["batch_id"], "revision": 1,
+        "created_at": "2026-09-11T12:05:00+00:00", "reviewer": "local_owner",
+        "label_status": "human_reviewed", "destination": "annotation_inbox",
+        "gold": False, "training_allowed": False, "promotion_allowed": False,
+        "source_id": "uba-01", "source_sha256": "b" * 64,
+        "source_start_seconds": 50.0, "source_end_seconds": 62.0,
+        "prepared_input_sha256": manifest["examples"][0]["prepared_input_sha256"],
+    })
+    record.update(changes)
+    return record
+
+
+def write_legacy_record(root, record):
+    directory = root / "annotations/e01"
+    directory.mkdir(parents=True)
+    path = directory / "000001.json"
+    raw = json.dumps(record, ensure_ascii=False, indent=3).encode() + b"\n\n"
+    path.write_bytes(raw)
+    return path, raw
+
+
+def test_v1_history_is_readable_needs_review_and_not_rewritten_when_v2_appends(batch):
+    root, manifest = batch
+    old = legacy_record(manifest)
+    path, old_bytes = write_legacy_record(root, old)
+    client = client_for(root)
+    review = client.get("/api/review").json()
+    assert review["annotation_schema_version"] == 2
+    assert client.get("/api/health").json()["annotation_schema_version"] == 2
+    latest = review["annotations"]["e01"]
+    assert latest["schema_version"] == 1
+    assert latest["needs_review"] is True
+    assert latest["scoring_decision"] is None
+    assert latest["play_context"] is None
+    assert latest["shot_type"] == "three"
+    assert latest["revision"] == 1
+    assert client.get("/api/export").json()["records"] == [old]
+    saved = save(client, annotation(manifest, expected_revision=1,
+        scoring_decision="not_counted", play_context="after_whistle"))
+    assert saved.status_code == 200
+    assert saved.json()["annotation"]["schema_version"] == 2
+    assert saved.json()["annotation"]["needs_review"] is False
+    assert saved.json()["reviewed_count"] == 1
+    restarted = client_for(root)
+    exported = restarted.get("/api/export").json()
+    assert exported["schema_version"] == 2
+    assert exported["records"][0] == old
+    assert exported["records"][0]["label_status"] == "human_reviewed"
+    assert exported["records"][1]["schema_version"] == 2
+    assert exported["records"][1]["scoring_decision"] == "not_counted"
+    assert all(record["gold"] is False for record in exported["records"])
+    assert path.read_bytes() == old_bytes
+    assert save(restarted, annotation(manifest, expected_revision=1)).status_code == 409
+
+
+def test_legacy_draft_remains_draft_without_guessed_new_fields(batch):
+    root, manifest = batch
+    old = legacy_record(manifest, outcome=None, label_status="draft")
+    path, old_bytes = write_legacy_record(root, old)
+    client = client_for(root)
+    assert client.get("/api/export").json()["records"] == [old]
+    latest = client.get("/api/review").json()["annotations"]["e01"]
+    assert latest["needs_review"] is True
+    assert latest["outcome"] is None
+    assert latest["scoring_decision"] is None
+    assert latest["play_context"] is None
+    assert path.read_bytes() == old_bytes
+
+
+@pytest.mark.parametrize("schema_version", [None, 1, 3, True, "2", 2.0])
+def test_stale_form_requests_fail_with_reload_message_and_preserve_history(batch, schema_version):
+    root, manifest = batch
+    old = legacy_record(manifest)
+    path, old_bytes = write_legacy_record(root, old)
+    request = annotation(manifest, schema_version=schema_version, expected_revision=1)
+    if schema_version is None:
+        request.pop("schema_version")
+    response = save(client_for(root), request)
+    assert response.status_code == 409
+    assert "reload" in response.json()["detail"].lower()
+    assert path.read_bytes() == old_bytes
+    assert len(list(root.glob("annotations/*/*.json"))) == 1
+
+
+@pytest.mark.parametrize("field", ["scoring_decision", "play_context"])
+@pytest.mark.parametrize("omit", [False, True])
+def test_missing_new_answers_stay_null_draft_until_explicitly_answered(batch, field, omit):
+    root, manifest = batch
+    client = client_for(root)
+    request = annotation(manifest, **{field: None})
+    if omit:
+        request.pop(field)
+    response = save(client, request)
+    assert response.status_code == 200
+    assert response.json()["annotation"][field] is None
+    assert response.json()["annotation"]["needs_review"] is True
+    assert response.json()["reviewed_count"] == 0
+    assert client.get("/api/export").json()["records"][0]["label_status"] == "draft"
+    response = save(client, annotation(manifest, expected_revision=1, **{field: "unclear"}))
+    assert response.json()["reviewed_count"] == 1
+    assert response.json()["annotation"]["needs_review"] is False
+
+
+@pytest.mark.parametrize("outcome,scoring,context", [
+    ("made", "not_counted", "after_whistle"),
+    ("miss", "not_counted", "foul_on_shot"),
+    ("made", "counted", "foul_on_shot"),
+    ("miss", "counted", "in_play"),  # Points awarded without a physical make.
+    ("unclear", "unclear", "unclear"),
+    ("made", "not_counted", "other_dead_ball"),
+])
+def test_visible_outcome_and_official_points_remain_independent(batch, outcome, scoring, context):
+    root, manifest = batch
+    client = client_for(root)
+    response = save(client, annotation(manifest, outcome=outcome,
+        scoring_decision=scoring, play_context=context))
+    assert response.status_code == 200
+    record = client_for(root).get("/api/export").json()["records"][0]
+    assert (record["outcome"], record["scoring_decision"], record["play_context"]) == (
+        outcome, scoring, context)
+    assert record["schema_version"] == 2
+
+
+@pytest.mark.parametrize("context", ["after_whistle", "other_dead_ball"])
+def test_entirely_new_dead_ball_shot_cannot_have_counted_points(batch, context):
+    root, manifest = batch
+    response = save(client_for(root), annotation(manifest, play_context=context))
+    assert response.status_code == 422
+    assert not list(root.glob("annotations/*/*.json"))
+
+
+@pytest.mark.parametrize("changes", [
+    {"scoring_decision": "automatically_counted"}, {"play_context": "no_foul_seen"},
+    {"scoring_decision": True}, {"play_context": False},
+])
+def test_new_annotation_fields_reject_unknown_or_coerced_labels(batch, changes):
+    root, manifest = batch
+    assert save(client_for(root), annotation(manifest, **changes)).status_code == 422
+    assert not list(root.glob("annotations/*/*.json"))
+
+
+def test_annotation_schema_export_matches_current_request_model():
+    from videoscope.annotation_review.schema import AnnotationRequest
+
+    schema_path = Path(__file__).resolve().parents[2] / "docs/benchmarks/phase1/annotation-request.schema.json"
+    assert json.loads(schema_path.read_text()) == {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        **AnnotationRequest.model_json_schema(),
+    }
+
+
+@pytest.mark.parametrize("version", [0, 3, True, 1.0, "1"])
+def test_history_never_guesses_unknown_or_coerced_schema_version(batch, version):
+    root, manifest = batch
+    path, old_bytes = write_legacy_record(root, legacy_record(manifest, schema_version=version))
+    with pytest.raises(ValueError):
+        create_app(root)
+    assert path.read_bytes() == old_bytes
+
+
+def test_concurrent_v2_append_to_legacy_history_preserves_old_bytes(batch):
+    root, manifest = batch
+    path, old_bytes = write_legacy_record(root, legacy_record(manifest))
+    clients = [client_for(root), client_for(root)]
+    request = annotation(manifest, expected_revision=1)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        responses = list(executor.map(lambda c: save(c, request), clients))
+    assert sorted(response.status_code for response in responses) == [200, 409]
+    records = client_for(root).get("/api/export").json()["records"]
+    assert [record["schema_version"] for record in records] == [1, 2]
+    assert [record["revision"] for record in records] == [1, 2]
+    assert path.read_bytes() == old_bytes

@@ -114,6 +114,25 @@ try {
   }
   const batchBytes = JSON.stringify(manifest, null, 2) + '\n'
   await writeFile(path.join(batchDir, 'batch.json'), batchBytes)
+  const { stdout: revisionOutput } = await run(path.join(root, '.venv/bin/python'), [
+    '-c', 'import json,sys; from videoscope.annotation_review.schema import batch_revision; print(batch_revision(json.load(open(sys.argv[1]))))',
+    path.join(batchDir, 'batch.json'),
+  ], { cwd: root })
+  const legacyRecord = {
+    schema_version: 1, batch_id: manifest.batch_id, batch_revision: revisionOutput.trim(),
+    example_id: 'synthetic-2', revision: 1, created_at: new Date().toISOString(),
+    reviewer: 'local_owner', label_status: 'human_reviewed', destination: 'annotation_inbox',
+    gold: false, training_allowed: false, promotion_allowed: false,
+    source_id: 'synthetic-source', source_sha256: sha256(sourceBytes),
+    source_start_seconds: 3, source_end_seconds: 6,
+    prepared_input_sha256: examples[1].prepared_input_sha256,
+    shot_type: 'two', outcome: 'made', presentation: 'live', boundary_status: 'complete',
+    start_seconds: 0.25, end_seconds: 2.75, notes: 'Синтетическая сохранённая разметка первой версии.',
+  }
+  const legacyDir = path.join(batchDir, 'annotations', 'synthetic-2')
+  await mkdir(legacyDir, { recursive: true })
+  const legacyBytes = JSON.stringify(legacyRecord, null, 2) + '\n'
+  await writeFile(path.join(legacyDir, '000001.json'), legacyBytes)
   const port = await freePort()
   const origin = `http://127.0.0.1:${port}`
   await startServer(port, origin)
@@ -144,7 +163,9 @@ try {
   await page.setViewportSize({ width: 1440, height: 1100 })
 
   await page.getByLabel('Броска нет', { exact: true }).check()
-  await page.getByLabel('Не применимо', { exact: true }).check()
+  await page.locator('input[name="outcome"][value="not_applicable"]').check()
+  await page.locator('input[name="scoring_decision"][value="not_applicable"]').check()
+  await page.locator('input[name="play_context"][value="not_applicable"]').check()
   await page.getByLabel('Основной эпизод', { exact: true }).check()
   await page.getByLabel('Контекста хватает', { exact: true }).check()
   await page.getByLabel('Начало фрагмента, секунды').fill('0.25')
@@ -171,10 +192,21 @@ try {
   acknowledge()
   await expect(page.getByRole('heading', { name: 'Эпизод 02' })).toBeVisible()
   await expect(page.getByText('1 из 2 сохранено')).toBeVisible()
-  await expect(page.locator('input[type=radio]:checked')).toHaveCount(0)
+  await expect(page.locator('input[name="shot_type"][value="two"]')).toBeChecked()
+  await expect(page.locator('input[name="outcome"][value="made"]')).toBeChecked()
+  await expect(page.locator('input[name="scoring_decision"]:checked')).toHaveCount(0)
+  await expect(page.locator('input[name="play_context"]:checked')).toHaveCount(0)
+  await expect(page.getByLabel('Комментарий', { exact: true })).toHaveValue(legacyRecord.notes)
+  await expect(page.getByRole('button', { name: 'Сохранить и дальше' })).toBeDisabled()
 
   await page.getByRole('button', { name: 'Предыдущий', exact: true }).click()
   await expect(page.getByLabel('Броска нет', { exact: true })).toBeChecked()
+  // A continued shot with a foul may count; context must not overwrite the
+  // independently observed outcome or the owner's scoring decision.
+  await page.locator('input[name="shot_type"][value="two"]').check()
+  await page.locator('input[name="outcome"][value="made"]').check()
+  await page.locator('input[name="scoring_decision"][value="counted"]').check()
+  await page.locator('input[name="play_context"][value="foul_on_shot"]').check()
   await page.getByLabel('Начало фрагмента, секунды').fill('0.5')
   await page.getByLabel('Комментарий', { exact: true }).fill('Синтетический тест: исправленная версия.')
   await page.getByRole('button', { name: 'Сохранить и дальше' }).click()
@@ -187,6 +219,25 @@ try {
   await expect(page.getByLabel('Начало фрагмента, секунды')).toHaveValue('0.5')
   await expect(page.getByLabel('Комментарий', { exact: true })).toHaveValue('Синтетический тест: исправленная версия.')
   await expect(page.getByText('Сохранено локально · версия 2. Ответы можно исправить.')).toBeVisible()
+  await expect(page.locator('input[name="scoring_decision"][value="counted"]')).toBeChecked()
+  await expect(page.locator('input[name="play_context"][value="foul_on_shot"]')).toBeChecked()
+
+  await page.getByRole('button', { name: 'Следующий', exact: true }).click()
+  await expect(page.getByLabel('Начало фрагмента, секунды')).toHaveValue('0.25')
+  await page.locator('input[name="play_context"][value="after_whistle"]').check()
+  await page.locator('input[name="scoring_decision"][value="counted"]').check()
+  await expect(page.getByRole('button', { name: 'Сохранить и дальше' })).toBeDisabled()
+  await expect(page.locator('input[name="outcome"][value="made"]')).toBeChecked()
+  await expect(page.locator('input[name="scoring_decision"][value="counted"]')).toBeChecked()
+  await page.locator('input[name="scoring_decision"][value="not_counted"]').check()
+  await page.getByLabel('Комментарий', { exact: true }).fill('Синтетический сценарий: новый бросок после свистка, мяч попал, очки не засчитаны.')
+  await page.getByRole('button', { name: 'Сохранить и дальше' }).click()
+  await expect(page.getByText('2 из 2 сохранено')).toBeVisible()
+  await page.reload()
+  await page.getByRole('button', { name: /Эпизод 02/ }).click()
+  await expect(page.locator('input[name="outcome"][value="made"]')).toBeChecked()
+  await expect(page.locator('input[name="scoring_decision"][value="not_counted"]')).toBeChecked()
+  await expect(page.locator('input[name="play_context"][value="after_whistle"]')).toBeChecked()
 
   const downloadPromise = page.waitForEvent('download')
   await page.getByRole('link', { name: 'Скачать разметку JSON' }).click()
@@ -194,15 +245,19 @@ try {
   const exportPath = path.join(temporary, 'exported-reviews.json')
   await download.saveAs(exportPath)
   const exported = JSON.parse(await readFile(exportPath, 'utf8'))
-  assert.equal(exported.records.length, 2)
-  assert.deepEqual(exported.records.map((record) => record.revision), [1, 2])
+  assert.equal(exported.schema_version, 2)
+  assert.equal(exported.records.length, 4)
+  assert.deepEqual(exported.records.map((record) => record.revision), [1, 2, 1, 2])
+  assert.deepEqual(exported.records.map((record) => record.schema_version), [2, 2, 1, 2])
+  assert.deepEqual(exported.records[2], legacyRecord)
+  assert.equal(await readFile(path.join(legacyDir, '000001.json'), 'utf8'), legacyBytes)
   for (const record of exported.records) {
     assert.equal(record.gold, false)
     assert.equal(record.training_allowed, false)
     assert.equal(record.promotion_allowed, false)
     assert.equal(record.destination, 'annotation_inbox')
     assert.equal(record.source_sha256, sha256(sourceBytes))
-    assert.equal(record.prepared_input_sha256, examples[0].prepared_input_sha256)
+    assert.equal(record.prepared_input_sha256, examples.find((item) => item.example_id === record.example_id).prepared_input_sha256)
   }
   assert.equal(await readFile(path.join(batchDir, 'batch.json'), 'utf8'), batchBytes)
   assert.equal(sha256(await readFile(sourcePath)), sha256(sourceBytes))
@@ -214,7 +269,10 @@ try {
   }
   const { stdout: gitStatus } = await run('git', ['status', '--porcelain'], { cwd: root })
   Object.assign(receipt, {
-    status: 'passed', code_sha: codeSha.trim(), examples: 2, annotation_revisions: 2,
+    status: 'passed', code_sha: codeSha.trim(), examples: 2, annotation_revisions: 4,
+    annotation_schema_version: 2, legacy_revision_bytes_preserved: true,
+    legacy_new_fields_blank: true, dead_ball_make_not_counted: true,
+    shooting_foul_counted_allowed: true, contradictory_scoring_blocked: true,
     working_tree_dirty: Boolean(gitStatus.trim()),
     runner_sha256: sha256(await readFile(fileURLToPath(import.meta.url))), web_assets_sha256: webAssets,
     playable_video: true, http_range_status: 206, blank_labels: true,

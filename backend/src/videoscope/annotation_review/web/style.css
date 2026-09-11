@@ -467,6 +467,17 @@ fieldset {
   margin-right:9px
 }
 
+.choice-hint {
+  color:var(--muted);
+  font-size:11px;
+  line-height:1.5;
+  margin-top:9px
+}
+
+.decision-hint {
+  color:var(--danger)
+}
+
 .choices {
   display:flex;
   flex-wrap:wrap;

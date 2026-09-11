@@ -68,6 +68,27 @@
       ],
       "title": "Outcome"
     },
+    "play_context": {
+      "anyOf": [
+        {
+          "enum": [
+            "in_play",
+            "foul_on_shot",
+            "after_whistle",
+            "other_dead_ball",
+            "not_applicable",
+            "unclear"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "after_whistle is an entirely new shot begun after play stopped; it excludes continuation. foul_on_shot may coexist with counted points. null is unanswered; unclear is an explicit answer.",
+      "title": "Play Context"
+    },
     "presentation": {
       "anyOf": [
         {
@@ -83,6 +104,30 @@
         }
       ],
       "title": "Presentation"
+    },
+    "schema_version": {
+      "const": 2,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "scoring_decision": {
+      "anyOf": [
+        {
+          "enum": [
+            "counted",
+            "not_counted",
+            "not_applicable",
+            "unclear"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Whether official points were awarded, independent of the visible ball outcome.",
+      "title": "Scoring Decision"
     },
     "shot_type": {
       "anyOf": [
@@ -123,6 +168,7 @@
     "start_seconds",
     "end_seconds",
     "notes",
+    "schema_version",
     "batch_revision",
     "example_id",
     "expected_revision"

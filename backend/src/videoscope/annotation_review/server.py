@@ -22,7 +22,7 @@ from pydantic import ValidationError
 from starlette.datastructures import Headers
 
 from .schema import (
-    ANNOTATION_FIELDS, AnnotationRecord, AnnotationRequest, BatchManifest,
+    ANNOTATION_FIELDS, AnnotationRecord, AnnotationRecordV1, AnnotationRequest, BatchManifest,
     annotation_complete, batch_revision, canonical_json,
 )
 
@@ -191,7 +191,12 @@ class ReviewStore:
                     raise ReviewConflict("annotation history has gaps or exceeds bound")
                 _contained(self.root, f"annotations/{item_dir.name}/{path.name}")
                 try:
-                    record = AnnotationRecord.model_validate(_read_json(path, MAX_BODY_BYTES))
+                    raw_record = _read_json(path, MAX_BODY_BYTES)
+                    version = raw_record.get("schema_version")
+                    if type(version) is not int or version not in {1, 2}:
+                        raise ReviewConflict("annotation history has an unknown schema version")
+                    model = AnnotationRecordV1 if version == 1 else AnnotationRecord
+                    record = model.model_validate(raw_record)
                 except ValidationError as error:
                     raise ReviewConflict("annotation history violates schema") from error
                 item = self.examples[item_dir.name]
@@ -204,13 +209,17 @@ class ReviewStore:
                         or record.prepared_input_sha256 != item.prepared_input_sha256
                         or (record.end_seconds is not None and record.end_seconds > item.clip_duration_seconds)):
                     raise ReviewConflict("annotation history provenance mismatch")
-                records.append(record.model_dump())
+                # Validation must not rewrite history or invent fields in a v1 export.
+                records.append(raw_record)
         return records
 
     @staticmethod
     def _latest(records):
-        return {record["example_id"]: {"revision": record["revision"],
-                 **{field: record[field] for field in ANNOTATION_FIELDS}} for record in records}
+        return {record["example_id"]: {
+            "schema_version": record["schema_version"], "revision": record["revision"],
+            "needs_review": record["schema_version"] != 2 or not annotation_complete(record),
+            **{field: record.get(field) for field in ANNOTATION_FIELDS},
+        } for record in records}
 
     def review(self):
         self.check_batch()
@@ -218,6 +227,7 @@ class ReviewStore:
             annotations = self._latest(self._history())
         return {
             "batch_id": self.batch.batch_id, "batch_revision": self.revision,
+            "annotation_schema_version": 2,
             "title": self.batch.title,
             "examples": [{"example_id": item.example_id, "source_alias": item.source_id,
                 "source_start_seconds": item.source_start_seconds,
@@ -250,7 +260,7 @@ class ReviewStore:
             source = self.sources[item.source_id]
             fields = {field: getattr(request, field) for field in ANNOTATION_FIELDS}
             record = AnnotationRecord(
-                **fields, schema_version=1, batch_id=self.batch.batch_id,
+                **fields, schema_version=2, batch_id=self.batch.batch_id,
                 batch_revision=self.revision, example_id=item.example_id, revision=revision + 1,
                 created_at=datetime.now(timezone.utc).isoformat(), reviewer="local_owner",
                 label_status="human_reviewed" if annotation_complete(fields) else "draft",
@@ -275,16 +285,16 @@ class ReviewStore:
             finally:
                 os.unlink(temporary)
             _fsync_directory(directory)
-            latest[item.example_id] = {"revision": revision + 1, **fields}
+            latest.update(self._latest([record]))
             return {"annotation": latest[item.example_id],
-                    "reviewed_count": sum(annotation_complete(item) for item in latest.values()),
+                    "reviewed_count": sum(not item["needs_review"] for item in latest.values()),
                     "total_count": len(self.examples)}
 
     def export(self):
         self.check_batch()
         with self.lock:
             records = self._history()
-        return {"schema_version": 1, "batch_id": self.batch.batch_id,
+        return {"schema_version": 2, "batch_id": self.batch.batch_id,
                 "batch_revision": self.revision, "purpose": "annotation_pilot",
                 "training_allowed": False, "promotion_allowed": False,
                 "sources": [source.model_dump() for source in self.batch.sources],
@@ -338,10 +348,14 @@ class LocalBoundary:
                 if not message.get("more_body", False):
                     break
             try:
-                json.loads(body, object_pairs_hook=_json_object,
-                           parse_constant=lambda _: (_ for _ in ()).throw(ValueError("nonfinite JSON")))
+                parsed = json.loads(body, object_pairs_hook=_json_object,
+                                    parse_constant=lambda _: (_ for _ in ()).throw(ValueError("nonfinite JSON")))
             except (ValueError, UnicodeDecodeError):
                 return await reject(422, "invalid JSON")
+            if scope["path"] == "/api/annotations" and isinstance(parsed, dict):
+                version = parsed.get("schema_version")
+                if type(version) is not int or version != 2:
+                    return await reject(409, "review form changed; reload the page before saving (schema version 2 required)")
 
             async def replay():
                 return {"type": "http.request", "body": bytes(body), "more_body": False}
@@ -368,7 +382,7 @@ def create_app(batch_dir: Path, *, port: int = 8766) -> FastAPI:
     @app.get("/api/health")
     def health():
         store.check_batch()
-        return {"status": "ready", "batch_id": store.batch.batch_id}
+        return {"status": "ready", "batch_id": store.batch.batch_id, "annotation_schema_version": 2}
 
     @app.get("/api/review")
     def review():

@@ -127,7 +127,7 @@ class BatchManifest(StrictModel):
         return self
 
 
-class AnnotationFields(StrictModel):
+class AnnotationFieldsV1(StrictModel):
     shot_type: Literal["two", "three", "free_throw", "non_shot", "unclear"] | None
     outcome: Literal["made", "miss", "not_applicable", "unclear"] | None
     presentation: Literal["live", "replay", "unclear"] | None
@@ -145,19 +145,51 @@ class AnnotationFields(StrictModel):
         return self
 
 
+class AnnotationFields(AnnotationFieldsV1):
+    # These are separate human observations, never inferred from the visible outcome.
+    scoring_decision: Literal["counted", "not_counted", "not_applicable", "unclear"] | None = Field(
+        default=None, description="Whether official points were awarded, independent of the visible ball outcome."
+    )
+    play_context: Literal[
+        "in_play", "foul_on_shot", "after_whistle", "other_dead_ball", "not_applicable", "unclear"
+    ] | None = Field(default=None, description=(
+        "after_whistle is an entirely new shot begun after play stopped; it excludes continuation. "
+        "foul_on_shot may coexist with counted points. null is unanswered; unclear is an explicit answer."
+    ))
+
+    @model_validator(mode="after")
+    def valid_scoring_context(self):
+        # after_whistle denotes a NEW shot begun after play stopped, not continuation.
+        if self.scoring_decision == "counted" and self.play_context in {"after_whistle", "other_dead_ball"}:
+            raise ValueError("a new dead-ball shot cannot have counted points")
+        return self
+
+
 class AnnotationRequest(AnnotationFields):
+    schema_version: Literal[2]
     batch_revision: Digest
     example_id: Identifier
     expected_revision: Annotated[int, Field(ge=0, le=10000)]
 
+    @field_validator("schema_version", mode="before")
+    @classmethod
+    def real_integer(cls, value):
+        if type(value) is not int:
+            raise ValueError("schema version must be an integer")
+        return value
 
-def annotation_complete(fields: dict) -> bool:
+
+def annotation_complete(fields: dict, *, schema_version: int = 2) -> bool:
     """Explicit unclear is an answer; null is an unfinished review field."""
-    return all(fields.get(name) is not None for name in (
-        "shot_type", "outcome", "presentation", "boundary_status", "start_seconds", "end_seconds"))
+    names = ("shot_type", "outcome", "presentation", "boundary_status", "start_seconds", "end_seconds")
+    if schema_version == 2:
+        names += ("scoring_decision", "play_context")
+    return all(fields.get(name) is not None for name in names)
 
 
-class AnnotationRecord(AnnotationFields):
+class AnnotationRecordV1(AnnotationFieldsV1):
+    """Historical v1 records retain their original fields and completion semantics."""
+
     schema_version: Literal[1]
     batch_id: Identifier
     batch_revision: Digest
@@ -178,10 +210,17 @@ class AnnotationRecord(AnnotationFields):
 
     @model_validator(mode="after")
     def status_matches_completeness(self):
-        expected = "human_reviewed" if annotation_complete(self.model_dump()) else "draft"
+        complete = annotation_complete(self.model_dump(), schema_version=self.schema_version)
+        expected = "human_reviewed" if complete else "draft"
         if self.label_status != expected:
             raise ValueError("annotation status must match explicit answers and boundaries")
         return self
+
+
+class AnnotationRecord(AnnotationFields, AnnotationRecordV1):
+    """New revisions use v2; older revisions are validated separately, never upgraded."""
+
+    schema_version: Literal[2]
 
 
 ANNOTATION_FIELDS = tuple(AnnotationFields.model_fields)
