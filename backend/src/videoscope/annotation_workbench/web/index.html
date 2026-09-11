@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>VideoScope · Разметка матчей</title>
+  <link rel="stylesheet" href="/style.css">
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#record-editor">Перейти к редактору</a>
+  <div id="workbench-app" class="app-shell">
+    <header class="topbar">
+      <div class="brand"><span class="brand-mark" aria-hidden="true">V</span><span>VideoScope</span><span class="brand-section">/ полная разметка</span></div>
+      <div class="top-actions"><span class="local-badge"><i aria-hidden="true"></i>Только на этом Mac</span><a id="export-link" class="button-link" href="/api/export" download aria-label="Скачать резервную копию">Резервная копия</a></div>
+    </header>
+
+    <p id="global-error" class="message error" role="alert" hidden></p>
+    <p id="global-status" class="message notice" role="status" aria-live="polite" hidden></p>
+    <div id="loading" class="loading" role="status">Открываем рабочее пространство…</div>
+
+    <main id="main-workbench" class="workbench" hidden>
+      <aside class="library" aria-labelledby="library-title">
+        <div class="panel-heading"><div><p class="eyebrow">БИБЛИОТЕКА UBA</p><h1 id="library-title">Матчи</h1></div><span id="source-count" class="count-pill"></span></div>
+        <nav id="source-list" class="source-list" aria-label="Список матчей"></nav>
+        <section class="quick-start" aria-labelledby="quick-title">
+          <h2 id="quick-title">Как начать</h2>
+          <ol><li>Откройте доступный матч и найдите момент.</li><li>Создайте владение или событие.</li><li>Сохраните черновик, затем отдельно подтвердите проверенную разметку.</li></ol>
+          <p>Черновики сохраняются автоматически. «Неясно» — полноценное наблюдение.</p>
+        </section>
+        <details class="backup-panel">
+          <summary>Восстановление из копии</summary>
+          <label for="restore-file">Файл резервной копии</label>
+          <input id="restore-file" type="file" accept=".ndjson,application/x-ndjson" aria-label="Файл резервной копии">
+          <button id="restore-button" type="button">Восстановить из копии</button>
+          <p id="restore-summary" class="muted" aria-live="polite"></p>
+        </details>
+      </aside>
+
+      <section class="review-space" aria-labelledby="match-title">
+        <header class="match-heading">
+          <div><p id="match-role" class="eyebrow"></p><h2 id="match-title" tabindex="-1">Матч</h2></div>
+          <div class="progress-copy"><span id="match-progress">0 объектов</span><span id="current-clock">00:00:00</span></div>
+        </header>
+
+        <div class="video-stage" id="video-stage">
+          <video id="match-video" aria-label="Видео матча" preload="metadata" playsinline></video>
+          <button id="point-surface" class="point-surface" type="button" aria-label="Кадр видео для отметки точек" hidden></button>
+          <div id="point-layer" class="point-layer" aria-live="polite"></div>
+        </div>
+
+        <section class="transport" aria-label="Управление воспроизведением">
+          <div class="transport-row">
+            <button id="play-pause" type="button" aria-label="Воспроизвести или поставить на паузу">▶</button>
+            <button id="frame-back" type="button" aria-label="Предыдущий кадр">− кадр</button>
+            <button id="step-back" type="button" aria-label="Назад на 0,25 секунды">−0,25</button>
+            <button id="short-back" type="button" aria-label="Назад на 2 секунды">−2 с</button>
+            <button id="short-forward" type="button" aria-label="Вперёд на 2 секунды">+2 с</button>
+            <button id="step-forward" type="button" aria-label="Вперёд на 0,25 секунды">+0,25</button>
+            <button id="frame-forward" type="button" aria-label="Следующий кадр">+ кадр</button>
+          </div>
+          <div class="seek-row">
+            <label for="exact-seek">Точное время <span>чч:мм:сс</span></label>
+            <input id="exact-seek" type="text" inputmode="decimal" value="00:00:00" aria-label="Точное время, чч:мм:сс">
+            <button id="seek-button" type="button">Перейти</button>
+            <label for="playback-rate">Скорость</label>
+            <select id="playback-rate" aria-label="Скорость воспроизведения"><option value="0.25">0,25×</option><option value="0.5">0,5×</option><option value="0.75">0,75×</option><option value="1" selected>1×</option><option value="1.5">1,5×</option><option value="2">2×</option></select>
+          </div>
+        </section>
+
+        <section class="timeline-panel" aria-labelledby="timeline-title">
+          <div class="section-heading"><h2 id="timeline-title">Разметка матча</h2><div class="create-actions"><button type="button" data-create="team">Добавить команду</button><button type="button" data-create="player">Добавить игрока</button><button type="button" data-create="possession">Добавить владение</button><button type="button" data-create="event">Добавить событие</button><button type="button" data-create="frame">Добавить кадр с точками</button></div></div>
+          <div class="filters" aria-label="Фильтры разметки">
+            <label for="kind-filter">Показывать</label><select id="kind-filter"><option value="all">Все объекты</option><option value="possession">Владения</option><option value="event">События</option><option value="frame">Кадры</option><option value="team">Команды</option><option value="player">Игроки</option></select>
+            <label for="status-filter">Состояние</label><select id="status-filter"><option value="all">Все состояния</option><option value="draft">Черновики</option><option value="human_reviewed">Подтверждённые</option><option value="local">Ожидают отправки</option></select>
+          </div>
+          <div id="record-list" class="record-list" aria-label="Объекты разметки"></div>
+        </section>
+      </section>
+
+      <aside class="editor-panel" aria-labelledby="editor-title">
+        <div class="editor-heading"><div><p id="editor-kind" class="eyebrow">ВЫБЕРИТЕ ОБЪЕКТ</p><h2 id="editor-title">Редактор</h2></div><span id="save-state" class="state-tag">Нет изменений</span></div>
+        <div id="empty-editor" class="empty-editor"><p>Выберите объект слева или создайте новый. Здесь появятся его точные поля и история.</p></div>
+        <form id="record-editor" aria-label="Редактор разметки" novalidate hidden>
+          <div id="editor-fields"></div>
+          <p id="editor-error" class="message error" role="alert" hidden></p>
+          <div class="save-actions"><button id="save-draft" class="primary-button" type="button">Сохранить черновик</button><button id="confirm-record" type="button">Подтвердить разметку</button></div>
+          <p class="autosave-copy">Изменения сначала сохраняются как черновик. Подтверждение всегда выполняется отдельной кнопкой.</p>
+        </form>
+        <section id="history-panel" class="history-panel" hidden aria-labelledby="history-title"><div class="section-heading"><h3 id="history-title">История изменений</h3><button id="load-history" type="button">Показать историю</button></div><ol id="history-list"></ol></section>
+      </aside>
+    </main>
+  </div>
+</body>
+</html>
