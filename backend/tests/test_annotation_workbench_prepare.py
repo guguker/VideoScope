@@ -157,3 +157,111 @@ def test_cross_source_player_reference_is_rejected(tmp_path):
     store=WorkbenchStore(root)
     player=save(store,'player',{'number_status':'unreadable'},source_id='uba-02',status='human_reviewed')
     with pytest.raises(ValueError):save(store,data={**shot(),'actor_id':player['record_id']})
+
+
+def fresh_restore_target(tmp_path, legacy):
+    from videoscope.annotation_workbench.prepare import prepare_workspace
+    from videoscope.annotation_workbench.storage import WorkbenchStore
+    root=tmp_path/'restore-target'
+    prepare_workspace(audit_dir=tmp_path/'audit',project_root=tmp_path,legacy_batch=legacy,output=root,code_sha='review-fix')
+    return WorkbenchStore(root)
+
+
+def test_restore_rejects_new_human_entity_claiming_legacy_provenance(tmp_path):
+    store,_,legacy=workspace_fixture(tmp_path)
+    target=fresh_restore_target(tmp_path,legacy)
+    save(store,data=shot())
+    def forge(rows):
+        record=next(r['record'] for r in rows if r['type']=='record')
+        record['legacy']=dict(batch_revision='a'*64,example_id='clip-a',event_id='primary',source_id='uba-01',source_sha256=record['source_sha256'],source_start_seconds=0.,source_end_seconds=18.,schema_version=2,label_status='human_reviewed')
+    bad=rewrite_backup(store.export_lines(),forge)
+    before=list(target.export_lines())
+    with pytest.raises(ValueError):target.restore_lines(bad)
+    assert list(target.export_lines())==before
+
+
+@pytest.mark.parametrize('mutation',['change','drop'])
+def test_restore_human_edit_must_retain_verified_legacy_metadata(tmp_path,mutation):
+    store,source,legacy=workspace_fixture(tmp_path)
+    target=fresh_restore_target(tmp_path,legacy)
+    add_legacy(legacy,hashlib.sha256(source.read_bytes()).hexdigest())
+    from videoscope.annotation_workbench.legacy import import_legacy
+    import_legacy(store,legacy)
+    old=store.source('uba-01')['records'][0]
+    save(store,data={**old['data'],'notes':'human correction'},record_id=old['record_id'],expected_revision=1)
+    backup=list(store.export_lines())
+    def forge(rows):
+        record=next(r['record'] for r in rows if r['type']=='record' and r['record']['revision']==2)
+        if mutation=='change':record['legacy']['example_id']='made-up-clip'
+        else:record.pop('legacy')
+    bad=rewrite_backup(backup,forge)
+    before=list(target.export_lines())
+    with pytest.raises(ValueError):target.restore_lines(bad)
+    assert list(target.export_lines())==before
+    assert target.restore_lines(backup)['added']==2
+    assert target.history(old['record_id'])==store.history(old['record_id'])
+
+
+def test_restore_rejects_invalid_historical_reference_even_when_later_cleared(tmp_path):
+    store,_,legacy=workspace_fixture(tmp_path)
+    target=fresh_restore_target(tmp_path,legacy)
+    team=save(store,'team',{'name':'Blue'})
+    event=save(store,data=shot())
+    save(store,data={**event['data'],'notes':'later'},record_id=event['record_id'],expected_revision=1)
+    def forge(rows):
+        first=next(r['record'] for r in rows if r['type']=='record' and r['record']['record_id']==event['record_id'] and r['record']['revision']==1)
+        first['data']['actor_id']=team['record_id']
+    before=list(target.export_lines())
+    with pytest.raises(ValueError):target.restore_lines(rewrite_backup(store.export_lines(),forge))
+    assert list(target.export_lines())==before
+
+
+@pytest.mark.parametrize('mutation',['shrink','archive'])
+def test_restore_replays_parent_reverse_invalidation_at_every_revision(tmp_path,mutation):
+    store,_,legacy=workspace_fixture(tmp_path)
+    target=fresh_restore_target(tmp_path,legacy)
+    possession=save(store,'possession',{'start_seconds':10.,'end_seconds':20.})
+    save(store,data={**shot(),'possession_id':possession['record_id']})
+    save(store,'possession',{**possession['data'],'notes':'second'},record_id=possession['record_id'],expected_revision=1)
+    save(store,'possession',{**possession['data'],'notes':'third'},record_id=possession['record_id'],expected_revision=2)
+    def forge(rows):
+        middle=next(r['record'] for r in rows if r['type']=='record' and r['record']['record_id']==possession['record_id'] and r['record']['revision']==2)
+        if mutation=='shrink':middle['data']['end_seconds']=14.
+        else:middle['archived']=True
+    before=list(target.export_lines())
+    with pytest.raises(ValueError):target.restore_lines(rewrite_backup(store.export_lines(),forge))
+    assert list(target.export_lines())==before
+
+
+def test_restore_valid_interleaving_and_older_backup_with_newer_live_references(tmp_path):
+    store,_,legacy=workspace_fixture(tmp_path)
+    target=fresh_restore_target(tmp_path,legacy)
+    possession=save(store,'possession',{'start_seconds':10.,'end_seconds':20.})
+    event=save(store,data={**shot(),'possession_id':possession['record_id']})
+    earlier=list(store.export_lines())
+    save(store,data={**event['data'],'end_seconds':15.},record_id=event['record_id'],expected_revision=1)
+    save(store,'possession',{**possession['data'],'end_seconds':16.},record_id=possession['record_id'],expected_revision=1)
+    current=list(store.export_lines())
+    assert target.restore_lines(current)['added']==4
+    assert target.restore_lines(earlier)['added']==0
+    assert list(target.export_lines())==current
+
+
+def test_restore_rejects_merge_that_would_create_invalid_appended_history(tmp_path):
+    store,_,legacy=workspace_fixture(tmp_path)
+    target=fresh_restore_target(tmp_path,legacy)
+    possession=save(store,'possession',{'start_seconds':10.,'end_seconds':20.})
+    event=save(store,data={**shot(),'possession_id':possession['record_id']})
+    save(store,data={**event['data'],'end_seconds':15.},record_id=event['record_id'],expected_revision=1)
+    save(store,'possession',{**possession['data'],'end_seconds':16.},record_id=possession['record_id'],expected_revision=1)
+    complete=list(store.export_lines())
+    def parents_only(rows):
+        rows[:]=[row for row in rows if row['type']!='record' or row['record']['kind']=='possession']
+        rows[-1]['counts']['records']=2
+    # This independent branch has a valid parent history, with no observed child yet.
+    target.restore_lines(rewrite_backup(complete,parents_only))
+    before=list(target.export_lines())
+    # Appending event r1 after the newer parent would create an invalid historical state,
+    # even though event r2 subsequently fits. Leave the whole merge untouched.
+    with pytest.raises(ValueError):target.restore_lines(complete)
+    assert list(target.export_lines())==before
