@@ -45,7 +45,7 @@ def create_app(workspace_dir:Path,*,port:int=8767)->FastAPI:
     @app.exception_handler(WorkbenchMissing)
     async def missing(request,exc):return JSONResponse({'detail':str(exc)},status_code=404)
     @app.exception_handler(ValueError)
-    async def invalid(request,exc):return JSONResponse({'detail':'Invalid annotation, reference or backup; verify required answers and source identity.'},status_code=422)
+    async def invalid(request,exc):return JSONResponse({'detail':'Проверьте обязательные ответы, границы эпизода и ссылки на участников. Для восстановления нужна полная копия разметки тех же матчей.'},status_code=422)
 
     async def json_body(request):
         from fastapi import HTTPException

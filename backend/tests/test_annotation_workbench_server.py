@@ -54,3 +54,12 @@ def test_stream_never_reopens_swapped_path(client):
     try: assert os.read(fd,16)==bytes(range(16))
     finally: os.close(fd)
     assert c.head('/media/uba-01').status_code==409
+
+
+def test_invalid_annotation_explains_safe_correction_in_russian(client):
+    c,store,_=client
+    response=c.post('/api/records',json={},headers={'Origin':'http://127.0.0.1:8767'})
+    assert response.status_code==422
+    assert 'Проверьте' in response.json()['detail']
+    assert 'границы' in response.json()['detail']
+    assert str(store.root) not in response.text

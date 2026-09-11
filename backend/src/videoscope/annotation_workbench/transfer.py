@@ -48,6 +48,73 @@ def _validate_record(store,record):
     if record['needs_review'] is not needs_review: raise ValueError('review state mismatch')
 
 
+
+def _validate_history_transition(stage, record, previous):
+    """Bind each historical revision to its predecessor and any exact pilot bytes."""
+    if record['revision'] != (previous['revision'] + 1 if previous else 1):
+        raise ValueError('restore history gap')
+    if previous and any(record[key] != previous[key] for key in (
+        'source_id', 'source_sha256', 'kind', 'created_at'
+    )):
+        raise ValueError('immutable entity identity changed')
+    if record['origin'] == 'legacy':
+        legacy_id = record['record_id'] + ':' + str(record['revision'])
+        raw = stage.execute('SELECT body FROM legacy WHERE legacy_id=?', (legacy_id,)).fetchone()
+        if not raw:
+            raise ValueError('legacy record has no exact raw history')
+        entry = parse_json(raw[0])
+        converted = legacy_record(base64.b64decode(entry['raw_base64']), entry['context'])
+        if previous:
+            converted['created_at'] = previous['created_at']
+        if canonical(converted) != canonical(record):
+            raise ValueError('legacy transformation mismatch')
+    else:
+        if previous is None:
+            if 'legacy' in record:
+                raise ValueError('new human record cannot claim legacy provenance')
+        elif ('legacy' in record) != ('legacy' in previous) or record.get('legacy') != previous.get('legacy'):
+            raise ValueError('human correction must retain verified legacy provenance')
+
+
+def _validate_backup_history(store, stage, replay_path):
+    """Replay the backup alone before touching live history, including obsolete states.
+
+    Existing newer annotations must not contaminate validation of an older, otherwise
+    valid backup. The subsequent merge still checks the resulting live references.
+    """
+    replay = sqlite3.connect(replay_path)
+    try:
+        replay.executescript('''
+            CREATE TABLE revisions (
+                record_id TEXT NOT NULL, revision INTEGER NOT NULL,
+                source_id TEXT NOT NULL, body BLOB NOT NULL,
+                UNIQUE(record_id, revision)
+            );
+            CREATE TABLE progress (source_id TEXT PRIMARY KEY, body BLOB NOT NULL);
+        ''')
+        for rid, revision, body in stage.execute(
+            'SELECT record_id,revision,body FROM records ORDER BY seq'
+        ):
+            record = parse_json(body)
+            prior = replay.execute(
+                'SELECT body FROM revisions WHERE record_id=? ORDER BY revision DESC LIMIT 1',
+                (rid,),
+            ).fetchone()
+            previous = parse_json(prior[0]) if prior else None
+            _validate_history_transition(stage, record, previous)
+            replay.execute(
+                'INSERT INTO revisions VALUES(?,?,?,?)',
+                (rid, revision, record['source_id'], body),
+            )
+            store._validate_references(replay)
+        replay.executemany('INSERT INTO progress VALUES(?,?)', stage.execute(
+            'SELECT source_id,body FROM progress'
+        ))
+        store._validate_references(replay)
+    finally:
+        replay.close()
+
+
 def restore_lines(store,lines):
     store.check_manifest()
     digest=hashlib.sha256();counts={'records':0,'legacy':0,'progress':0};total=0;trailer=False
@@ -99,6 +166,7 @@ def restore_lines(store,lines):
                 rid,revision=lid.rsplit(':',1)
                 row=stage.execute('SELECT body FROM records WHERE record_id=? AND revision=?',(rid,int(revision))).fetchone()
                 if not row or parse_json(row[0])['origin']!='legacy': raise ValueError('orphan legacy raw history')
+            _validate_backup_history(store, stage, directory + '/replay.sqlite3')
             added=unchanged=0
             with store._db(write=True) as db:
                 for lid,body in stage.execute('SELECT legacy_id,body FROM legacy'):
@@ -107,12 +175,6 @@ def restore_lines(store,lines):
                     if not old: db.execute('INSERT INTO legacy VALUES(?,?)',(lid,body))
                 for rid,revision,body in stage.execute('SELECT record_id,revision,body FROM records ORDER BY seq'):
                     record=parse_json(body)
-                    if record['origin']=='legacy':
-                        raw=db.execute('SELECT body FROM legacy WHERE legacy_id=?',(rid+':'+str(revision),)).fetchone()
-                        if not raw: raise ValueError('legacy record has no exact raw history')
-                        entry=parse_json(raw[0]);converted=legacy_record(base64.b64decode(entry['raw_base64']),entry['context'])
-                        converted['created_at']=record['created_at']
-                        if canonical(converted)!=body: raise ValueError('legacy transformation mismatch')
                     old=db.execute('SELECT body FROM revisions WHERE record_id=? AND revision=?',(rid,revision)).fetchone()
                     if old:
                         if old[0]!=body:raise WorkbenchConflict('divergent annotation revision')
@@ -122,6 +184,7 @@ def restore_lines(store,lines):
                     if revision!=(previous['revision']+1 if previous else 1):raise ValueError('restore history gap')
                     if previous and any(record[k]!=previous[k] for k in ('source_id','source_sha256','kind','created_at')):raise ValueError('immutable entity identity changed')
                     db.execute('INSERT INTO revisions(record_id,revision,source_id,body) VALUES(?,?,?,?)',(rid,revision,record['source_id'],body));added+=1
+                    store._validate_references(db)
                 for sid,body in stage.execute('SELECT source_id,body FROM progress'):
                     old=db.execute('SELECT body FROM progress WHERE source_id=?',(sid,)).fetchone()
                     if not old or parse_json(body)['updated_at']>parse_json(old[0])['updated_at']:
