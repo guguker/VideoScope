@@ -1,0 +1,54 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "workspace_revision": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Workspace Revision",
+      "type": "string"
+    },
+    "source_id": {
+      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$",
+      "title": "Source Id",
+      "type": "string"
+    },
+    "position_seconds": {
+      "minimum": 0,
+      "title": "Position Seconds",
+      "type": "number"
+    },
+    "selected_record_id": {
+      "anyOf": [
+        {
+          "pattern": "^(team|player|possession|event|frame)-[0-9a-f]{32}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Selected Record Id"
+    },
+    "playback_rate": {
+      "default": 1.0,
+      "maximum": 4,
+      "minimum": 0.25,
+      "title": "Playback Rate",
+      "type": "number"
+    }
+  },
+  "required": [
+    "schema_version",
+    "workspace_revision",
+    "source_id",
+    "position_seconds"
+  ],
+  "title": "ProgressRequest",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}
