@@ -1,0 +1,1593 @@
+{
+  "$defs": {
+    "BackupCounts": {
+      "additionalProperties": false,
+      "properties": {
+        "records": {
+          "minimum": 0,
+          "title": "Records",
+          "type": "integer"
+        },
+        "legacy": {
+          "minimum": 0,
+          "title": "Legacy",
+          "type": "integer"
+        },
+        "progress": {
+          "minimum": 0,
+          "title": "Progress",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "records",
+        "legacy",
+        "progress"
+      ],
+      "title": "BackupCounts",
+      "type": "object"
+    },
+    "BackupHeader": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "header",
+          "title": "Type",
+          "type": "string"
+        },
+        "format": {
+          "const": "videoscope-workbench",
+          "title": "Format",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "workspace_revision": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Workspace Revision",
+          "type": "string"
+        },
+        "workspace": {
+          "$ref": "#/$defs/PublicWorkspace"
+        }
+      },
+      "required": [
+        "type",
+        "format",
+        "schema_version",
+        "workspace_revision",
+        "workspace"
+      ],
+      "title": "BackupHeader",
+      "type": "object"
+    },
+    "BackupLegacy": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "legacy",
+          "title": "Type",
+          "type": "string"
+        },
+        "legacy_id": {
+          "pattern": "^event-[0-9a-f]{32}:[1-9][0-9]{0,6}$",
+          "title": "Legacy Id",
+          "type": "string"
+        },
+        "context": {
+          "$ref": "#/$defs/LegacyContext"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        },
+        "raw_base64": {
+          "maxLength": 21848,
+          "title": "Raw Base64",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "legacy_id",
+        "context",
+        "sha256",
+        "raw_base64"
+      ],
+      "title": "BackupLegacy",
+      "type": "object"
+    },
+    "BackupProgress": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "progress",
+          "title": "Type",
+          "type": "string"
+        },
+        "progress": {
+          "$ref": "#/$defs/StoredProgress"
+        }
+      },
+      "required": [
+        "type",
+        "progress"
+      ],
+      "title": "BackupProgress",
+      "type": "object"
+    },
+    "BackupRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "record",
+          "title": "Type",
+          "type": "string"
+        },
+        "record": {
+          "discriminator": {
+            "mapping": {
+              "event": "#/$defs/StoredEvent",
+              "frame": "#/$defs/StoredFrame",
+              "player": "#/$defs/StoredPlayer",
+              "possession": "#/$defs/StoredPossession",
+              "team": "#/$defs/StoredTeam"
+            },
+            "propertyName": "kind"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/StoredTeam"
+            },
+            {
+              "$ref": "#/$defs/StoredPlayer"
+            },
+            {
+              "$ref": "#/$defs/StoredPossession"
+            },
+            {
+              "$ref": "#/$defs/StoredEvent"
+            },
+            {
+              "$ref": "#/$defs/StoredFrame"
+            }
+          ],
+          "title": "Record"
+        }
+      },
+      "required": [
+        "type",
+        "record"
+      ],
+      "title": "BackupRecord",
+      "type": "object"
+    },
+    "BackupTrailer": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "trailer",
+          "title": "Type",
+          "type": "string"
+        },
+        "counts": {
+          "$ref": "#/$defs/BackupCounts"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "counts",
+        "sha256"
+      ],
+      "title": "BackupTrailer",
+      "type": "object"
+    },
+    "Event": {
+      "additionalProperties": false,
+      "properties": {
+        "start_seconds": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Start Seconds"
+        },
+        "end_seconds": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "End Seconds"
+        },
+        "event_type": {
+          "default": "shot",
+          "enum": [
+            "shot",
+            "pass",
+            "rebound",
+            "turnover",
+            "foul",
+            "substitution",
+            "screen",
+            "defense",
+            "other",
+            "unclear"
+          ],
+          "title": "Event Type",
+          "type": "string"
+        },
+        "possession_id": {
+          "anyOf": [
+            {
+              "pattern": "^(team|player|possession|event|frame)-[0-9a-f]{32}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Possession Id"
+        },
+        "actor_id": {
+          "anyOf": [
+            {
+              "pattern": "^(team|player|possession|event|frame)-[0-9a-f]{32}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Actor Id"
+        },
+        "receiver_id": {
+          "anyOf": [
+            {
+              "pattern": "^(team|player|possession|event|frame)-[0-9a-f]{32}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Receiver Id"
+        },
+        "passer_id": {
+          "anyOf": [
+            {
+              "pattern": "^(team|player|possession|event|frame)-[0-9a-f]{32}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Passer Id"
+        },
+        "last_pass_seconds": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Last Pass Seconds"
+        },
+        "incoming_player_id": {
+          "anyOf": [
+            {
+              "pattern": "^(team|player|possession|event|frame)-[0-9a-f]{32}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Incoming Player Id"
+        },
+        "outgoing_player_id": {
+          "anyOf": [
+            {
+              "pattern": "^(team|player|possession|event|frame)-[0-9a-f]{32}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Outgoing Player Id"
+        },
+        "shot_type": {
+          "anyOf": [
+            {
+              "enum": [
+                "two",
+                "three",
+                "free_throw",
+                "non_shot",
+                "unclear"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Shot Type"
+        },
+        "outcome": {
+          "anyOf": [
+            {
+              "enum": [
+                "made",
+                "miss",
+                "not_applicable",
+                "unclear"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Outcome"
+        },
+        "scoring_decision": {
+          "anyOf": [
+            {
+              "enum": [
+                "counted",
+                "not_counted",
+                "not_applicable",
+                "unclear"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scoring Decision"
+        },
+        "play_context": {
+          "anyOf": [
+            {
+              "enum": [
+                "in_play",
+                "foul_on_shot",
+                "after_whistle",
+                "other_dead_ball",
+                "not_applicable",
+                "unclear"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Play Context"
+        },
+        "presentation": {
+          "anyOf": [
+            {
+              "enum": [
+                "live",
+                "replay",
+                "unclear"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Presentation"
+        },
+        "boundary_status": {
+          "anyOf": [
+            {
+              "enum": [
+                "complete",
+                "too_short",
+                "unclear"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Boundary Status"
+        },
+        "defensive_action": {
+          "anyOf": [
+            {
+              "enum": [
+                "on_ball",
+                "help",
+                "switch",
+                "trap",
+                "zone",
+                "man_to_man",
+                "unclear"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Defensive Action"
+        },
+        "notes": {
+          "default": "",
+          "maxLength": 2000,
+          "title": "Notes",
+          "type": "string"
+        }
+      },
+      "title": "Event",
+      "type": "object"
+    },
+    "Frame": {
+      "additionalProperties": false,
+      "properties": {
+        "timestamp_seconds": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timestamp Seconds"
+        },
+        "event_id": {
+          "anyOf": [
+            {
+              "pattern": "^(team|player|possession|event|frame)-[0-9a-f]{32}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Event Id"
+        },
+        "possession_id": {
+          "anyOf": [
+            {
+              "pattern": "^(team|player|possession|event|frame)-[0-9a-f]{32}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Possession Id"
+        },
+        "notes": {
+          "default": "",
+          "maxLength": 2000,
+          "title": "Notes",
+          "type": "string"
+        },
+        "points": {
+          "items": {
+            "$ref": "#/$defs/Point"
+          },
+          "maxItems": 32,
+          "title": "Points",
+          "type": "array"
+        }
+      },
+      "title": "Frame",
+      "type": "object"
+    },
+    "LegacyContext": {
+      "additionalProperties": false,
+      "properties": {
+        "batch_revision": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Batch Revision",
+          "type": "string"
+        },
+        "example_id": {
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$",
+          "title": "Example Id",
+          "type": "string"
+        },
+        "event_id": {
+          "pattern": "^(primary|event-[0-9a-f]{32})$",
+          "title": "Event Id",
+          "type": "string"
+        },
+        "source_id": {
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$",
+          "title": "Source Id",
+          "type": "string"
+        },
+        "source_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Source Sha256",
+          "type": "string"
+        },
+        "source_start_seconds": {
+          "minimum": 0,
+          "title": "Source Start Seconds",
+          "type": "number"
+        },
+        "source_end_seconds": {
+          "minimum": 0,
+          "title": "Source End Seconds",
+          "type": "number"
+        }
+      },
+      "required": [
+        "batch_revision",
+        "example_id",
+        "event_id",
+        "source_id",
+        "source_sha256",
+        "source_start_seconds",
+        "source_end_seconds"
+      ],
+      "title": "LegacyContext",
+      "type": "object"
+    },
+    "LegacyMetadata": {
+      "additionalProperties": false,
+      "properties": {
+        "batch_revision": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Batch Revision",
+          "type": "string"
+        },
+        "example_id": {
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$",
+          "title": "Example Id",
+          "type": "string"
+        },
+        "event_id": {
+          "pattern": "^(primary|event-[0-9a-f]{32})$",
+          "title": "Event Id",
+          "type": "string"
+        },
+        "source_id": {
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$",
+          "title": "Source Id",
+          "type": "string"
+        },
+        "source_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Source Sha256",
+          "type": "string"
+        },
+        "source_start_seconds": {
+          "minimum": 0,
+          "title": "Source Start Seconds",
+          "type": "number"
+        },
+        "source_end_seconds": {
+          "minimum": 0,
+          "title": "Source End Seconds",
+          "type": "number"
+        },
+        "schema_version": {
+          "enum": [
+            1,
+            2,
+            3
+          ],
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "label_status": {
+          "enum": [
+            "draft",
+            "human_reviewed"
+          ],
+          "title": "Label Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "batch_revision",
+        "example_id",
+        "event_id",
+        "source_id",
+        "source_sha256",
+        "source_start_seconds",
+        "source_end_seconds",
+        "schema_version",
+        "label_status"
+      ],
+      "title": "LegacyMetadata",
+      "type": "object"
+    },
+    "Player": {
+      "additionalProperties": false,
+      "properties": {
+        "team_id": {
+          "anyOf": [
+            {
+              "pattern": "^(team|player|possession|event|frame)-[0-9a-f]{32}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Team Id"
+        },
+        "jersey_number": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9]{1,3}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Jersey Number"
+        },
+        "number_status": {
+          "default": "not_reviewed",
+          "enum": [
+            "not_reviewed",
+            "readable",
+            "unreadable",
+            "offscreen",
+            "unclear"
+          ],
+          "title": "Number Status",
+          "type": "string"
+        },
+        "evidence_seconds": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Evidence Seconds"
+        },
+        "notes": {
+          "default": "",
+          "maxLength": 2000,
+          "title": "Notes",
+          "type": "string"
+        }
+      },
+      "title": "Player",
+      "type": "object"
+    },
+    "Point": {
+      "additionalProperties": false,
+      "properties": {
+        "point_id": {
+          "pattern": "^[0-9a-f]{32}$",
+          "title": "Point Id",
+          "type": "string"
+        },
+        "entity": {
+          "enum": [
+            "player",
+            "ball"
+          ],
+          "title": "Entity",
+          "type": "string"
+        },
+        "player_id": {
+          "anyOf": [
+            {
+              "pattern": "^(team|player|possession|event|frame)-[0-9a-f]{32}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Player Id"
+        },
+        "x": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "X"
+        },
+        "y": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Y"
+        },
+        "visibility": {
+          "enum": [
+            "visible",
+            "occluded",
+            "offscreen",
+            "unclear"
+          ],
+          "title": "Visibility",
+          "type": "string"
+        },
+        "anchor": {
+          "enum": [
+            "floor_contact",
+            "image_center"
+          ],
+          "title": "Anchor",
+          "type": "string"
+        },
+        "notes": {
+          "default": "",
+          "maxLength": 2000,
+          "title": "Notes",
+          "type": "string"
+        }
+      },
+      "required": [
+        "point_id",
+        "entity",
+        "visibility",
+        "anchor"
+      ],
+      "title": "Point",
+      "type": "object"
+    },
+    "Possession": {
+      "additionalProperties": false,
+      "properties": {
+        "start_seconds": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Start Seconds"
+        },
+        "end_seconds": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "End Seconds"
+        },
+        "team_id": {
+          "anyOf": [
+            {
+              "pattern": "^(team|player|possession|event|frame)-[0-9a-f]{32}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Team Id"
+        },
+        "attack_direction": {
+          "default": "unclear",
+          "enum": [
+            "left",
+            "right",
+            "unclear"
+          ],
+          "title": "Attack Direction",
+          "type": "string"
+        },
+        "notes": {
+          "default": "",
+          "maxLength": 2000,
+          "title": "Notes",
+          "type": "string"
+        }
+      },
+      "title": "Possession",
+      "type": "object"
+    },
+    "PublicSource": {
+      "additionalProperties": false,
+      "properties": {
+        "source_id": {
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$",
+          "title": "Source Id",
+          "type": "string"
+        },
+        "title": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        },
+        "duration_seconds": {
+          "exclusiveMinimum": 0,
+          "title": "Duration Seconds",
+          "type": "number"
+        },
+        "byte_size": {
+          "exclusiveMinimum": 0,
+          "title": "Byte Size",
+          "type": "integer"
+        },
+        "review_allowed": {
+          "title": "Review Allowed",
+          "type": "boolean"
+        },
+        "role": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Role",
+          "type": "string"
+        },
+        "source_group": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Source Group",
+          "type": "string"
+        },
+        "training_rights": {
+          "const": "unknown",
+          "title": "Training Rights",
+          "type": "string"
+        },
+        "media_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Media Url"
+        },
+        "fps": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "maximum": 1000,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Fps"
+        }
+      },
+      "required": [
+        "source_id",
+        "title",
+        "sha256",
+        "duration_seconds",
+        "byte_size",
+        "review_allowed",
+        "role",
+        "source_group",
+        "training_rights",
+        "media_url"
+      ],
+      "title": "PublicSource",
+      "type": "object"
+    },
+    "PublicWorkspace": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "workspace_id": {
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$",
+          "title": "Workspace Id",
+          "type": "string"
+        },
+        "title": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        },
+        "sources": {
+          "items": {
+            "$ref": "#/$defs/PublicSource"
+          },
+          "maxItems": 100,
+          "minItems": 1,
+          "title": "Sources",
+          "type": "array"
+        }
+      },
+      "required": [
+        "schema_version",
+        "workspace_id",
+        "title",
+        "sources"
+      ],
+      "title": "PublicWorkspace",
+      "type": "object"
+    },
+    "StoredEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "record_id": {
+          "pattern": "^(team|player|possession|event|frame)-[0-9a-f]{32}$",
+          "title": "Record Id",
+          "type": "string"
+        },
+        "revision": {
+          "maximum": 1000001,
+          "minimum": 1,
+          "title": "Revision",
+          "type": "integer"
+        },
+        "source_id": {
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$",
+          "title": "Source Id",
+          "type": "string"
+        },
+        "source_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Source Sha256",
+          "type": "string"
+        },
+        "kind": {
+          "const": "event",
+          "title": "Kind",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "draft",
+            "human_reviewed"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "archived": {
+          "title": "Archived",
+          "type": "boolean"
+        },
+        "data": {
+          "$ref": "#/$defs/Event"
+        },
+        "created_at": {
+          "maxLength": 40,
+          "title": "Created At",
+          "type": "string"
+        },
+        "updated_at": {
+          "maxLength": 40,
+          "title": "Updated At",
+          "type": "string"
+        },
+        "origin": {
+          "enum": [
+            "human",
+            "legacy"
+          ],
+          "title": "Origin",
+          "type": "string"
+        },
+        "needs_review": {
+          "title": "Needs Review",
+          "type": "boolean"
+        },
+        "legacy": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LegacyMetadata"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "record_id",
+        "revision",
+        "source_id",
+        "source_sha256",
+        "kind",
+        "status",
+        "archived",
+        "data",
+        "created_at",
+        "updated_at",
+        "origin",
+        "needs_review"
+      ],
+      "title": "StoredEvent",
+      "type": "object"
+    },
+    "StoredFrame": {
+      "additionalProperties": false,
+      "properties": {
+        "record_id": {
+          "pattern": "^(team|player|possession|event|frame)-[0-9a-f]{32}$",
+          "title": "Record Id",
+          "type": "string"
+        },
+        "revision": {
+          "maximum": 1000001,
+          "minimum": 1,
+          "title": "Revision",
+          "type": "integer"
+        },
+        "source_id": {
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$",
+          "title": "Source Id",
+          "type": "string"
+        },
+        "source_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Source Sha256",
+          "type": "string"
+        },
+        "kind": {
+          "const": "frame",
+          "title": "Kind",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "draft",
+            "human_reviewed"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "archived": {
+          "title": "Archived",
+          "type": "boolean"
+        },
+        "data": {
+          "$ref": "#/$defs/Frame"
+        },
+        "created_at": {
+          "maxLength": 40,
+          "title": "Created At",
+          "type": "string"
+        },
+        "updated_at": {
+          "maxLength": 40,
+          "title": "Updated At",
+          "type": "string"
+        },
+        "origin": {
+          "enum": [
+            "human",
+            "legacy"
+          ],
+          "title": "Origin",
+          "type": "string"
+        },
+        "needs_review": {
+          "title": "Needs Review",
+          "type": "boolean"
+        },
+        "legacy": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LegacyMetadata"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "record_id",
+        "revision",
+        "source_id",
+        "source_sha256",
+        "kind",
+        "status",
+        "archived",
+        "data",
+        "created_at",
+        "updated_at",
+        "origin",
+        "needs_review"
+      ],
+      "title": "StoredFrame",
+      "type": "object"
+    },
+    "StoredPlayer": {
+      "additionalProperties": false,
+      "properties": {
+        "record_id": {
+          "pattern": "^(team|player|possession|event|frame)-[0-9a-f]{32}$",
+          "title": "Record Id",
+          "type": "string"
+        },
+        "revision": {
+          "maximum": 1000001,
+          "minimum": 1,
+          "title": "Revision",
+          "type": "integer"
+        },
+        "source_id": {
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$",
+          "title": "Source Id",
+          "type": "string"
+        },
+        "source_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Source Sha256",
+          "type": "string"
+        },
+        "kind": {
+          "const": "player",
+          "title": "Kind",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "draft",
+            "human_reviewed"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "archived": {
+          "title": "Archived",
+          "type": "boolean"
+        },
+        "data": {
+          "$ref": "#/$defs/Player"
+        },
+        "created_at": {
+          "maxLength": 40,
+          "title": "Created At",
+          "type": "string"
+        },
+        "updated_at": {
+          "maxLength": 40,
+          "title": "Updated At",
+          "type": "string"
+        },
+        "origin": {
+          "enum": [
+            "human",
+            "legacy"
+          ],
+          "title": "Origin",
+          "type": "string"
+        },
+        "needs_review": {
+          "title": "Needs Review",
+          "type": "boolean"
+        },
+        "legacy": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LegacyMetadata"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "record_id",
+        "revision",
+        "source_id",
+        "source_sha256",
+        "kind",
+        "status",
+        "archived",
+        "data",
+        "created_at",
+        "updated_at",
+        "origin",
+        "needs_review"
+      ],
+      "title": "StoredPlayer",
+      "type": "object"
+    },
+    "StoredPossession": {
+      "additionalProperties": false,
+      "properties": {
+        "record_id": {
+          "pattern": "^(team|player|possession|event|frame)-[0-9a-f]{32}$",
+          "title": "Record Id",
+          "type": "string"
+        },
+        "revision": {
+          "maximum": 1000001,
+          "minimum": 1,
+          "title": "Revision",
+          "type": "integer"
+        },
+        "source_id": {
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$",
+          "title": "Source Id",
+          "type": "string"
+        },
+        "source_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Source Sha256",
+          "type": "string"
+        },
+        "kind": {
+          "const": "possession",
+          "title": "Kind",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "draft",
+            "human_reviewed"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "archived": {
+          "title": "Archived",
+          "type": "boolean"
+        },
+        "data": {
+          "$ref": "#/$defs/Possession"
+        },
+        "created_at": {
+          "maxLength": 40,
+          "title": "Created At",
+          "type": "string"
+        },
+        "updated_at": {
+          "maxLength": 40,
+          "title": "Updated At",
+          "type": "string"
+        },
+        "origin": {
+          "enum": [
+            "human",
+            "legacy"
+          ],
+          "title": "Origin",
+          "type": "string"
+        },
+        "needs_review": {
+          "title": "Needs Review",
+          "type": "boolean"
+        },
+        "legacy": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LegacyMetadata"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "record_id",
+        "revision",
+        "source_id",
+        "source_sha256",
+        "kind",
+        "status",
+        "archived",
+        "data",
+        "created_at",
+        "updated_at",
+        "origin",
+        "needs_review"
+      ],
+      "title": "StoredPossession",
+      "type": "object"
+    },
+    "StoredProgress": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "workspace_revision": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Workspace Revision",
+          "type": "string"
+        },
+        "source_id": {
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$",
+          "title": "Source Id",
+          "type": "string"
+        },
+        "position_seconds": {
+          "minimum": 0,
+          "title": "Position Seconds",
+          "type": "number"
+        },
+        "selected_record_id": {
+          "anyOf": [
+            {
+              "pattern": "^(team|player|possession|event|frame)-[0-9a-f]{32}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Selected Record Id"
+        },
+        "playback_rate": {
+          "default": 1.0,
+          "maximum": 4,
+          "minimum": 0.25,
+          "title": "Playback Rate",
+          "type": "number"
+        },
+        "updated_at": {
+          "maxLength": 40,
+          "title": "Updated At",
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema_version",
+        "workspace_revision",
+        "source_id",
+        "position_seconds",
+        "updated_at"
+      ],
+      "title": "StoredProgress",
+      "type": "object"
+    },
+    "StoredTeam": {
+      "additionalProperties": false,
+      "properties": {
+        "record_id": {
+          "pattern": "^(team|player|possession|event|frame)-[0-9a-f]{32}$",
+          "title": "Record Id",
+          "type": "string"
+        },
+        "revision": {
+          "maximum": 1000001,
+          "minimum": 1,
+          "title": "Revision",
+          "type": "integer"
+        },
+        "source_id": {
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$",
+          "title": "Source Id",
+          "type": "string"
+        },
+        "source_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Source Sha256",
+          "type": "string"
+        },
+        "kind": {
+          "const": "team",
+          "title": "Kind",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "draft",
+            "human_reviewed"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "archived": {
+          "title": "Archived",
+          "type": "boolean"
+        },
+        "data": {
+          "$ref": "#/$defs/Team"
+        },
+        "created_at": {
+          "maxLength": 40,
+          "title": "Created At",
+          "type": "string"
+        },
+        "updated_at": {
+          "maxLength": 40,
+          "title": "Updated At",
+          "type": "string"
+        },
+        "origin": {
+          "enum": [
+            "human",
+            "legacy"
+          ],
+          "title": "Origin",
+          "type": "string"
+        },
+        "needs_review": {
+          "title": "Needs Review",
+          "type": "boolean"
+        },
+        "legacy": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LegacyMetadata"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "record_id",
+        "revision",
+        "source_id",
+        "source_sha256",
+        "kind",
+        "status",
+        "archived",
+        "data",
+        "created_at",
+        "updated_at",
+        "origin",
+        "needs_review"
+      ],
+      "title": "StoredTeam",
+      "type": "object"
+    },
+    "Team": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "default": "",
+          "maxLength": 80,
+          "title": "Name",
+          "type": "string"
+        },
+        "color": {
+          "default": "",
+          "maxLength": 40,
+          "title": "Color",
+          "type": "string"
+        },
+        "evidence_seconds": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Evidence Seconds"
+        }
+      },
+      "title": "Team",
+      "type": "object"
+    }
+  },
+  "discriminator": {
+    "mapping": {
+      "header": "#/$defs/BackupHeader",
+      "legacy": "#/$defs/BackupLegacy",
+      "progress": "#/$defs/BackupProgress",
+      "record": "#/$defs/BackupRecord",
+      "trailer": "#/$defs/BackupTrailer"
+    },
+    "propertyName": "type"
+  },
+  "oneOf": [
+    {
+      "$ref": "#/$defs/BackupHeader"
+    },
+    {
+      "$ref": "#/$defs/BackupRecord"
+    },
+    {
+      "$ref": "#/$defs/BackupLegacy"
+    },
+    {
+      "$ref": "#/$defs/BackupProgress"
+    },
+    {
+      "$ref": "#/$defs/BackupTrailer"
+    }
+  ],
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}
