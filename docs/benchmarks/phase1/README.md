@@ -35,8 +35,8 @@ provisional, and all sources retain `training_allowed:false` and
 
 ## Pilot contract
 
-The target is 24 unlabelled context clips from the two development sources:
-eight timeline controls and sixteen weak SigLIP proposals. The selector does
+The first batch contains 24 unlabelled context clips from the two development
+sources: eight timeline controls and sixteen weak SigLIP proposals. The selector does
 not invent duplicate windows to fill a quota; the completed batch manifest is
 the authority for its actual count. The five proposal prompts cover three-point
 attempts, close-range attempts, free throws, replays and non-game content.
@@ -76,11 +76,12 @@ labels before a person saves a review. Implicit clicks are not labels.
 ## Private artifacts and replay
 
 Private files live under `data/ml/reviews/uba-pilot-v1/` and are excluded from
-Git. The expected local layout is:
+Git. The retained local layout is:
 
 ```text
 audit/                 inventory, raw probes, rights ledger, reviewed source roles
 preparation-v2/        sampled frames, sampling receipt, weak scores
+preparation-committed-replay/  independent replay from the committed implementation
 batch-v1/              immutable batch.json, receipt, clips/, posters/
   annotations/         append-only human review revisions, created on first save
 ```
@@ -155,6 +156,26 @@ The export endpoint returns complete private review history and provenance.
 
 ## Validation and stopping condition
 
+The [pilot receipt](pilot-receipt.json) records the completed 2026-09-11 handoff
+from implementation `96a1d6fb6c1ab9c2af1e062cfb379eb52875b296`: 24 previews,
+432 seconds of context and 404,914,368 prepared bytes. All previews passed full
+decoding, format/hash checks and HTTP range playback checks. All eight original
+source hashes remained unchanged. The real batch contained zero annotations at
+handoff; browser write/restart checks used only synthetic media.
+
+Replaying the committed sampler and scorer reproduced all 2,620 frame hashes,
+timestamps and 24 selected intervals, with a maximum absolute score difference
+of zero against the predeclared tolerance of `1e-6`. This is a reproducibility
+check, not evidence of shot recognition quality.
+
+The full backend suite passed 2,647 tests; the 120 annotation tests passed with
+90.03% combined coverage with branch measurement enabled. All 60 frontend tests,
+the frontend build and the real Chromium review smoke passed. The private error
+ledger retains two resolved infrastructure failures: unavailable sandbox Metal
+access before inference, and a coverage-file collision after an earlier passing
+test run. Neither is a model miss; semantic model quality remains unevaluated.
+This pilot does not supply a new full-ML memory or promotion attestation.
+
 Narrow backend checks, including concurrent writers and a forced failed
 annotation publication that retains the previous revision:
 
@@ -181,8 +202,8 @@ The browser check must verify actual local preview playback/seeking, explicit
 answers, boundary correction, save acknowledgement, reload persistence and
 export. Write/reload smoke checks use a **disposable synthetic batch**, keeping
 the real owner-review batch unlabelled. Human content review is not replaced
-by this browser smoke. These commands and checks define the protocol; their
-presence here does not claim that every command or final real batch has run.
+by this browser smoke. The receipt above records this handoff's actual checks;
+future replays must retain their own results.
 
 This slice stops when the local batch is technically validated, the owner can
 review and save it, and the private provenance/annotation history are retained.

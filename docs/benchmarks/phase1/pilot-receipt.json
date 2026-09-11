@@ -1,0 +1,119 @@
+{
+  "batch": {
+    "all_full_decode_passed": true,
+    "all_range_requests_passed": true,
+    "batch_id": "uba-pilot-v1",
+    "batch_revision": "264130b6bc9591dfed3445f5f8cbd7652a1915da1fb499951c21e51fa86e66c2",
+    "context_seconds": 432.0,
+    "examples": 24,
+    "human_annotations_at_handoff": 0,
+    "model_labels_are_gold": false,
+    "native_1080p60_h264_aac": true,
+    "prepared_bytes": 404914368,
+    "uniform_controls": 8,
+    "weak_siglip_proposals": 16
+  },
+  "browser_smoke": {
+    "annotation_revisions": 2,
+    "blank_labels": true,
+    "code_sha": "96a1d6fb6c1ab9c2af1e062cfb379eb52875b296",
+    "examples": 2,
+    "export_provenance_verified": true,
+    "exported_reviews_bytes": 3035,
+    "external_requests": [],
+    "http_range_status": 206,
+    "javascript_errors": [],
+    "playable_video": true,
+    "purpose": "synthetic_annotation_review_smoke",
+    "raw_receipt_sha256": "f2419aba9dbc88d4e614c730216d07add3fea9472a11b2992dda52f7f75d59fa",
+    "restored_after_server_restart": true,
+    "runner_sha256": "c70a1c54b4094f110b17409f040b0a6a7ab4e938a685f0ec57c561583cfef738",
+    "save_acknowledged_before_advance": true,
+    "server_stopped": true,
+    "source_and_batch_unchanged": true,
+    "status": "passed",
+    "web_assets_sha256": {
+      "app.js": "80f8c4e9980f1c77bbe02765e23041646e5cd6144bb3863ad31e22fed999fcb8",
+      "index.html": "aee387efb6f082a86cb141aa8aab247f74daf8b195b7d11852559da90634b231",
+      "style.css": "6b91ef86d82e73b398db024edc14b1673b9cba4d95d4905400a6e9836d73bf0c"
+    },
+    "working_tree_dirty": true
+  },
+  "committed_replay": {
+    "committed_code_sha": "96a1d6fb6c1ab9c2af1e062cfb379eb52875b296",
+    "identical_source_identities_frame_bytes_timestamps_and_selected_intervals": true,
+    "max_absolute_score_delta": 0.0,
+    "model_quality_evidence": false,
+    "sampled_frames": 2620,
+    "score_absolute_tolerance": 1e-06,
+    "selected_windows": 24,
+    "source_count": 2,
+    "status": "passed",
+    "training": false
+  },
+  "created_at": "2026-09-11T11:16:30.808003+00:00",
+  "external_media_transfer": false,
+  "frozen_phase0_serving_sha": "7054f137f92c18676461242a18c8fc2619898b68",
+  "implementation_code_sha": "96a1d6fb6c1ab9c2af1e062cfb379eb52875b296",
+  "inventory": {
+    "bytes": 47170278639,
+    "development_review": 2,
+    "duration_seconds": 68732.133878,
+    "exact_duplicate_groups": 0,
+    "reserve_uninspected": 5,
+    "rights": "unknown",
+    "sealed_holdout": false,
+    "source_count": 8,
+    "source_hashes_unchanged": true,
+    "suspected_regression": 1
+  },
+  "model_quality_evaluation": "pending_human_gold_and_independent_data",
+  "phase1_exit_gate_complete": false,
+  "private_artifact_sha256": {
+    "audit/inventory.json": "ba50034ecfe675a7a107d9490d7af8f8af18d7a42ff4b501bd560cb20056e837",
+    "audit/source-rights-ledger.json": "7f04e446a6436394dafa3f621c22577b0d02a604624b05e3fd67ef4f35e62c47",
+    "audit/source-roles.json": "3d875f68191eb4a72594b45dc91b2d2acb4bb1f9ff488f3437c03eaf7560c0b6",
+    "batch-v1/batch.json": "2ca7879bdc09df622ccf14c68162896630fa8b52ffdf819391124ce7b20f6868",
+    "batch-v1/preparation-receipt.json": "a8e80b4221e40425af38053378d3443c4d8b7bbae66f19385ee3ff1fcdd80e5b",
+    "committed-replay-verification.json": "8f6ec78c066e25ef66023648ce383a82e4a20e497398f9e65e8fbc0d7ba249e5",
+    "preparation-error-ledger.json": "1ccda2485ababe19890a02f7c5389426ca64286d424c6ef34ba54a9a793dcb6f"
+  },
+  "production_runtime_changed": false,
+  "promotion": false,
+  "remaining_gates": [
+    "training_rights",
+    "cross_source_game_replay_group_audit",
+    "human_labels_and_adjudication",
+    "required_strata_coverage",
+    "sealed_train_dev_holdout",
+    "candidate_recall_before_training"
+  ],
+  "schema_version": 1,
+  "scope": "phase1_private_annotation_pilot",
+  "status": "ready_for_owner_review",
+  "tests": {
+    "backend_annotation": {
+      "branch_coverage_enabled": true,
+      "coverage_percent": 90.03,
+      "exit_code": 0,
+      "passed": 120
+    },
+    "backend_full": {
+      "command": ".venv/bin/pytest backend/tests",
+      "elapsed_seconds": 46.04,
+      "exit_code": 0,
+      "passed": 2647,
+      "warnings": 2
+    },
+    "base_python": "3.12.14",
+    "code_sha": "96a1d6fb6c1ab9c2af1e062cfb379eb52875b296",
+    "frontend": {
+      "browser_smoke": "passed",
+      "build": "passed",
+      "passed": 60
+    },
+    "node": "v26.5.0",
+    "production_code_changes": false
+  },
+  "training": false
+}
