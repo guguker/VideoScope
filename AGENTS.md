@@ -122,9 +122,14 @@ The accepted baseline remains `regression_seen`, with failed model-quality
 guardrails and a direct verifier result of 3 matches, 7 model misses and
 0 infrastructure errors. It is not promotion evidence. No training or later
 phase is active. The next proposed bounded goal is a Phase 1 read-only
-data/provenance audit; it requires separate owner authorization before work
-starts. No external or user data may be imported, uploaded or trained on merely
-because it is listed as a candidate.
+data/provenance audit of the eight owner-reported UBA files in `Данные матчи/`;
+it requires separate owner authorization before work starts. On 2026-09-11 the
+owner deferred NBA, so it is outside this first audit. The files have not yet
+been audited for metadata, rights, independent source/game/replay groups or
+coverage. The source priority does not weaken the Phase 1 exit gate or required
+strata, including `different_camera_or_league` and `OOD/non-basketball`.
+BARD/E-BARD remain separate audit candidates. No external or user data may be
+imported, uploaded or trained on merely because it is listed as a candidate.
 
 ## Verification and handoff
 
