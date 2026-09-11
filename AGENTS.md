@@ -16,6 +16,38 @@ local video → indexing → natural-language query → ranked precise interval
 
 Do not optimize a component metric at the expense of this path.
 
+## Owner working preferences — 2026-09-11
+
+- **Superpowers is the primary process across the entire project.** Start with
+  `superpowers:using-superpowers` from the installed skill catalog and use its
+  relevant planning, implementation, debugging, review and verification skills
+  before other skill workflows. Domain skills supplement that process; do not
+  run competing process checklists. Direct owner instructions and platform
+  instructions retain precedence, and the ML contracts below remain binding.
+- **Deliver larger, complete user workflows without artificial fragmentation.**
+  Plan from how the owner will actually use the result, including the next
+  necessary action. Do not stop at a button, schema, tiny pilot or proposal when
+  the authorized workflow still requires the owner to request its obvious missing
+  pieces. Small technical tasks and commits are internal implementation units,
+  not automatic handoff or approval boundaries.
+- Keep the same scrutiny: contracts, focused tests, relevant full suites,
+  independent review when useful, reproducible evidence and rollback. One
+  principal change per measured ML experiment preserves causal attribution; it
+  does not limit an integrated product delivery to one component.
+- Continue through already authorized, reversible work without repeatedly asking
+  for approval of ordinary intermediate steps. Ask when a material unresolved
+  choice, new data use, irreversible action or a real phase gate requires it;
+  explain the specific reason. Do not reinterpret broader delivery as permission
+  to skip training, privacy, holdout or promotion gates.
+- Optimize time and tokens: reuse inspected context, batch independent reads,
+  delegate genuinely independent work and report meaningful findings concisely.
+  Avoid repeated planning, speculative model shopping and arbitrary batch caps.
+- The owner is willing to annotate all eight UBA videos if the tool is comfortable.
+  Tool design must support sustained full-match work, saved progress and gradual
+  enrichment. A small smoke fixture or pilot checks the tool; it is not a cap on
+  the owner's annotation effort. Preserve source roles and evaluation isolation
+  when expanding the reviewed material.
+
 ## Mandatory ML operating contract
 
 Before planning, changing, evaluating, or documenting any ML-related behavior,
@@ -34,7 +66,8 @@ future work does not inherit a stale decision.
 
 ## Goal discipline
 
-- Work toward one numbered phase or one bounded vertical slice at a time.
+- Work toward one numbered phase or one coherent end-to-end deliverable at a
+  time; complete its connected workflow before handing it back.
 - At the start of a goal, name the phase, current evidence, exact deliverables,
   validation commands and verifiable stopping condition.
 - Determine progress from repository artifacts and fresh checks, not chat memory.
@@ -102,7 +135,7 @@ future work does not inherit a stale decision.
 - Automatic retraining may build and evaluate a candidate, but changing `active`
   requires explicit owner approval until the project separately approves L4.
 
-## Current next phase
+## Current phase and delivery goal
 
 Phase 0 of `docs/ml-autonomy-plan.md` is complete at serving revision
 `7054f137f92c18676461242a18c8fc2619898b68`. The unchanged collector accepted the
@@ -148,6 +181,22 @@ histories. The batch and source media are unchanged; no human label is inferred.
 The complete Phase 1 exit gate, including `different_camera_or_league` and
 `OOD/non-basketball`, remains required before training. No candidate source is
 authorized for training or external transfer merely because it was reviewed.
+
+The owner-directed Phase 1 delivery goal is now a comfortable, durable local
+workbench for sustained annotation of full matches: resume progress, create and
+correct multiple events and possessions, identify participants, add spatial
+observations, and retain/export all revisions with source/time evidence. Design
+it for the eight-file UBA collection, without requiring manual clip preparation
+or repeated entry of existing answers. This is the next delivery target, not a
+claim that those capabilities already exist. The detailed completion contract is
+in `docs/ml-autonomy-plan.md` under “Текущая цель Фазы 1”.
+
+Research public dataset/model descriptions as candidates, including defensive
+interactions, while keeping access, label quality, license and hardware claims
+separate. Reading public documentation is not importing a dataset. Actual new
+source access must follow the recorded source roles; reviewed development games
+cannot later be presented as an untouched holdout. No training or production
+artifact change is activated by this goal.
 
 ## Verification and handoff
 
