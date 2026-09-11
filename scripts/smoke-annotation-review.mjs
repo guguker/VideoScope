@@ -239,17 +239,54 @@ try {
   await expect(page.locator('input[name="scoring_decision"][value="not_counted"]')).toBeChecked()
   await expect(page.locator('input[name="play_context"][value="after_whistle"]')).toBeChecked()
 
+  // Save a second independent event in the first clip, then restart and edit it.
+  await page.getByRole('button', { name: 'Предыдущий', exact: true }).click()
+  const primaryPath = path.join(batchDir, 'annotations/synthetic-1/000002.json')
+  const primaryBytes = await readFile(primaryPath, 'utf8')
+  await page.getByRole('button', { name: 'Добавить ещё один бросок в этом клипе' }).click()
+  await expect(page.locator('input[type=radio]:checked')).toHaveCount(0)
+  await expect(page.getByLabel('Начало фрагмента, секунды')).toHaveValue('2.75')
+  await page.getByLabel('Начало фрагмента, секунды').fill('2')
+  await page.getByLabel('Конец фрагмента, секунды').fill('3')
+  await page.locator('input[name="shot_type"][value="two"]').check()
+  await page.locator('input[name="outcome"][value="made"]').check()
+  await page.locator('input[name="scoring_decision"][value="not_counted"]').check()
+  await page.locator('input[name="play_context"][value="after_whistle"]').check()
+  await page.locator('input[name="presentation"][value="live"]').check()
+  await page.locator('input[name="boundary_status"][value="complete"]').check()
+  await page.getByRole('button', { name: 'Сохранить бросок', exact: true }).click()
+  await expect(page.getByRole('button', { name: 'Бросок 2 ✓', exact: true })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Эпизод 01' })).toBeVisible()
+  await stopServer()
+  await startServer(port, origin)
+  await page.reload()
+  await page.getByRole('button', { name: /Эпизод 01/ }).click()
+  await page.getByRole('button', { name: 'Бросок 2 ✓', exact: true }).click()
+  await expect(page.locator('input[name="play_context"][value="after_whistle"]')).toBeChecked()
+  await expect(page.getByLabel('Начало фрагмента, секунды')).toHaveValue('2')
+  await page.getByLabel('Начало фрагмента, секунды').fill('2.1')
+  await page.getByRole('button', { name: 'Сохранить бросок', exact: true }).click()
+  await expect(page.getByText('Сохранено локально · версия 2. Ответы можно исправить.')).toBeVisible()
+  await page.getByRole('button', { name: 'Бросок 1 ✓', exact: true }).click()
+  await expect(page.getByLabel('Начало фрагмента, секунды')).toHaveValue('0.5')
+  await expect(page.locator('input[name="play_context"][value="foul_on_shot"]')).toBeChecked()
+  assert.equal(await readFile(primaryPath, 'utf8'), primaryBytes)
+  await page.screenshot({ path: path.join(temporary, 'multiple-events.png'), fullPage: true })
+
   const downloadPromise = page.waitForEvent('download')
   await page.getByRole('link', { name: 'Скачать разметку JSON' }).click()
   const download = await downloadPromise
   const exportPath = path.join(temporary, 'exported-reviews.json')
   await download.saveAs(exportPath)
   const exported = JSON.parse(await readFile(exportPath, 'utf8'))
-  assert.equal(exported.schema_version, 2)
-  assert.equal(exported.records.length, 4)
-  assert.deepEqual(exported.records.map((record) => record.revision), [1, 2, 1, 2])
-  assert.deepEqual(exported.records.map((record) => record.schema_version), [2, 2, 1, 2])
-  assert.deepEqual(exported.records[2], legacyRecord)
+  assert.equal(exported.schema_version, 3)
+  assert.equal(exported.records.length, 6)
+  assert.deepEqual(exported.records.map((record) => record.revision), [1, 2, 1, 2, 1, 2])
+  assert.deepEqual(exported.records.map((record) => record.schema_version), [3, 3, 3, 3, 1, 3])
+  assert.deepEqual(exported.records[4], legacyRecord)
+  assert.equal(exported.records[2].event_id, exported.records[3].event_id)
+  assert.notEqual(exported.records[2].event_id, 'primary')
+  assert.equal(exported.records[3].start_seconds, 2.1)
   assert.equal(await readFile(path.join(legacyDir, '000001.json'), 'utf8'), legacyBytes)
   for (const record of exported.records) {
     assert.equal(record.gold, false)
@@ -269,8 +306,8 @@ try {
   }
   const { stdout: gitStatus } = await run('git', ['status', '--porcelain'], { cwd: root })
   Object.assign(receipt, {
-    status: 'passed', code_sha: codeSha.trim(), examples: 2, annotation_revisions: 4,
-    annotation_schema_version: 2, legacy_revision_bytes_preserved: true,
+    status: 'passed', code_sha: codeSha.trim(), examples: 2, annotation_revisions: 6, multiple_events_independent: true,
+    annotation_schema_version: 3, legacy_revision_bytes_preserved: true,
     legacy_new_fields_blank: true, dead_ball_make_not_counted: true,
     shooting_foul_counted_allowed: true, contradictory_scoring_blocked: true,
     working_tree_dirty: Boolean(gitStatus.trim()),

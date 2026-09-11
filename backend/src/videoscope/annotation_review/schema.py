@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 Identifier = Annotated[str, Field(pattern=r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$")]
 Digest = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+EventIdentifier = Annotated[str, Field(pattern=r"^(primary|event-[0-9a-f]{32})$")]
 Seconds = Annotated[float, Field(ge=0, allow_inf_nan=False)]
 
 
@@ -179,10 +180,15 @@ class AnnotationRequest(AnnotationFields):
         return value
 
 
+class EventAnnotationRequest(AnnotationRequest):
+    schema_version: Literal[3]
+    event_id: EventIdentifier
+
+
 def annotation_complete(fields: dict, *, schema_version: int = 2) -> bool:
     """Explicit unclear is an answer; null is an unfinished review field."""
     names = ("shot_type", "outcome", "presentation", "boundary_status", "start_seconds", "end_seconds")
-    if schema_version == 2:
+    if schema_version >= 2:
         names += ("scoring_decision", "play_context")
     return all(fields.get(name) is not None for name in names)
 
@@ -221,6 +227,11 @@ class AnnotationRecord(AnnotationFields, AnnotationRecordV1):
     """New revisions use v2; older revisions are validated separately, never upgraded."""
 
     schema_version: Literal[2]
+
+
+class EventAnnotationRecord(AnnotationRecord):
+    schema_version: Literal[3]
+    event_id: EventIdentifier
 
 
 ANNOTATION_FIELDS = tuple(AnnotationFields.model_fields)

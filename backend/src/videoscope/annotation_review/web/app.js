@@ -3,7 +3,7 @@
   "use strict";
 
   const byId = (id) => document.getElementById(id);
-  const schemaVersion = 2;
+  const schemaVersion = 3;
   const newFields = ["scoring_decision", "play_context"];
   const fields = ["shot_type", "outcome", ...newFields, "presentation", "boundary_status"];
   const choices = {
@@ -17,6 +17,7 @@
   const player = byId("player");
   const form = byId("review-form");
   const drafts = new Map();
+  const selectedEvents = new Map();
   let batch = null;
   let position = 0;
   let saving = false;
@@ -26,8 +27,13 @@
   const round = (value) => Math.round(value * 1000) / 1000;
   const numberLabel = (index) => String(index + 1).padStart(2, "0");
   const current = () => batch.examples[position];
-  const saved = (example) => batch.annotations[example.example_id];
-  const completed = (example) => completeAnnotation(saved(example), example);
+  const selectedEvent = (example) => selectedEvents.get(example.example_id) || "primary";
+  const draftKey = (example, eventId = selectedEvent(example)) => `${example.example_id}:${eventId}`;
+  const saved = (example, eventId = selectedEvent(example)) => batch.events[example.example_id].find((item) => item.event_id === eventId);
+  const eventIds = (example) => [...new Set(["primary", ...batch.events[example.example_id].map((item) => item.event_id),
+    ...[...drafts.keys()].filter((key) => key.startsWith(`${example.example_id}:`)).map((key) => key.split(":")[1])])];
+  const completed = (example) => eventIds(example).every((id) => completeAnnotation(saved(example, id), example));
+  const currentComplete = (example) => completeAnnotation(saved(example), example);
   const reviewedCount = () => batch.examples.filter(completed).length;
 
   function clock(value) {
@@ -50,6 +56,8 @@
       || typeof data.annotations !== "object" || Array.isArray(data.annotations)) {
       throw new Error("Invalid review batch");
     }
+    data.events ??= Object.fromEntries(data.examples.map((example) => [example.example_id,
+      data.annotations[example.example_id] ? [{ ...data.annotations[example.example_id], event_id: "primary" }] : []]));
     const ids = new Set();
     for (const example of data.examples) {
       if (typeof example.example_id !== "string" || !example.example_id || ids.has(example.example_id)
@@ -66,6 +74,11 @@
         && !validAnnotation(data.annotations[example.example_id], example)) {
         throw new Error("Invalid saved annotation");
       }
+      const events = data.events[example.example_id];
+      if (!Array.isArray(events) || events.length > 32 || new Set(events.map((item) => item.event_id)).size !== events.length
+        || events.some((item) => !/^(primary|event-[a-f0-9]{32})$/.test(item.event_id) || !validAnnotation(item, example))) {
+        throw new Error("Invalid event collection");
+      }
       ids.add(example.example_id);
     }
     return data;
@@ -73,7 +86,7 @@
 
   function validAnnotation(annotation, example) {
     return annotation && Number.isInteger(annotation.revision) && annotation.revision > 0
-      && [1, schemaVersion].includes(annotation.schema_version)
+      && [1, 2, schemaVersion].includes(annotation.schema_version)
       && fields.every((field) => annotation[field] === null || choices[field].includes(annotation[field])
         || (annotation.schema_version === 1 && newFields.includes(field) && annotation[field] === undefined))
       && ((annotation.start_seconds === null && annotation.end_seconds === null)
@@ -82,7 +95,7 @@
   }
 
   function completeAnnotation(annotation, example) {
-    return annotation?.schema_version === schemaVersion
+    return [2, schemaVersion].includes(annotation?.schema_version)
       && fields.every((field) => choices[field].includes(annotation[field]))
       && !decisionConflict(annotation)
       && validBounds(annotation.start_seconds, annotation.end_seconds, example.clip_duration_seconds);
@@ -100,20 +113,22 @@
       && start >= 0 && start < end && end <= duration;
   }
 
-  function freshDraft(example) {
-    const record = saved(example);
+  function freshDraft(example, eventId = selectedEvent(example)) {
+    const record = saved(example, eventId);
     return {
       ...Object.fromEntries(fields.map((field) => [field, record?.[field] ?? null])),
       start_seconds: record?.start_seconds ?? 0,
       end_seconds: record?.end_seconds ?? example.clip_duration_seconds,
       notes: record ? record.notes : "",
       dirty: false,
+      base_revision: record?.revision || 0,
     };
   }
 
   function draftFor(example) {
-    if (!drafts.has(example.example_id)) drafts.set(example.example_id, freshDraft(example));
-    return drafts.get(example.example_id);
+    const key = draftKey(example);
+    if (!drafts.has(key)) drafts.set(key, freshDraft(example));
+    return drafts.get(key);
   }
 
   function showError(message) {
@@ -147,7 +162,7 @@
     batch.examples.forEach((example, index) => {
       const button = document.createElement("button");
       const isSaved = Boolean(completed(example));
-      const dirty = drafts.get(example.example_id)?.dirty;
+      const dirty = eventIds(example).some((id) => drafts.get(draftKey(example, id))?.dirty);
       const state = dirty ? "черновик" : isSaved ? "сохранён" : saved(example) ? "нужно завершить" : "не сохранён";
       button.type = "button";
       button.textContent = numberLabel(index);
@@ -171,11 +186,11 @@
     const example = current();
     const draft = draftFor(example);
     const state = byId("episode-state");
-    state.textContent = draft.dirty ? "Черновик" : completed(example) ? "Сохранён" : saved(example) ? "Нужно завершить" : "Не сохранён";
-    state.className = `state-tag${draft.dirty ? " dirty" : completed(example) ? " saved" : ""}`;
+    state.textContent = draft.dirty ? "Черновик" : currentComplete(example) ? "Сохранён" : saved(example) ? "Нужно завершить" : "Не сохранён";
+    state.className = `state-tag${draft.dirty ? " dirty" : currentComplete(example) ? " saved" : ""}`;
     byId("draft-hint").textContent = draft.dirty
       ? "Есть несохранённые ответы. При переходе они остаются черновиком в этой вкладке."
-      : completed(example)
+      : currentComplete(example)
         ? `Сохранено локально · версия ${saved(example).revision}. Ответы можно исправить.`
         : saved(example)?.schema_version === 1
           ? "Прежние ответы сохранены. Подтвердите два новых вопроса: зачёт очков и обстоятельства броска. Затем сохраните новую версию."
@@ -195,6 +210,7 @@
       || fields.some((field) => !choices[field].includes(draft[field]))
       || !validBounds(draft.start_seconds, draft.end_seconds, current().clip_duration_seconds)
       || draft.notes.length > 2000;
+    byId("save-stay").disabled = byId("save").disabled;
   }
 
   function updateClock() {
@@ -214,21 +230,24 @@
     updateSaveAvailability();
     form.setAttribute("aria-busy", String(value));
     updateProgress();
+    renderEvents();
   }
 
   function render() {
     const example = current();
     const draft = draftFor(example);
     player.pause();
-    player.src = localMediaURL(example.video_url);
+    const mediaChanged = player.src !== localMediaURL(example.video_url);
+    if (mediaChanged) player.src = localMediaURL(example.video_url);
     if (example.poster_url) player.poster = localMediaURL(example.poster_url);
     else player.removeAttribute("poster");
-    player.load();
+    if (mediaChanged) player.load();
+    else if (Number.isFinite(draft.start_seconds)) player.currentTime = draft.start_seconds;
     player.playbackRate = Number(byId("speed").value);
     byId("episode-title").textContent = `Эпизод ${numberLabel(position)}`;
     byId("source-alias").textContent = example.source_alias;
     byId("source-range").textContent = `В матче ${clock(example.source_start_seconds)}–${clock(example.source_end_seconds)}`;
-    byId("source-time").textContent = clock(example.source_start_seconds);
+    byId("source-time").textContent = clock(example.source_start_seconds + player.currentTime);
     for (const field of fields) {
       for (const input of form.querySelectorAll(`input[name="${field}"]`)) {
         input.checked = input.value === draft[field];
@@ -241,6 +260,52 @@
     byId("notes").value = draft.notes;
     updateState();
     setBusy(false);
+  }
+
+  function renderEvents() {
+    const example = current();
+    const ids = eventIds(example);
+    const list = byId("event-list");
+    list.replaceChildren();
+    ids.forEach((id, index) => {
+      const button = document.createElement("button");
+      const record = saved(example, id);
+      const dirty = drafts.get(draftKey(example, id))?.dirty;
+      button.type = "button";
+      button.textContent = `Бросок ${index + 1}${dirty ? " •" : completeAnnotation(record, example) ? " ✓" : ""}`;
+      button.setAttribute("aria-pressed", String(id === selectedEvent(example)));
+      button.disabled = saving;
+      button.addEventListener("click", () => { selectedEvents.set(example.example_id, id); render(); });
+      list.append(button);
+    });
+    byId("add-event").disabled = saving || ids.length >= 32;
+    byId("remove-event").hidden = selectedEvent(example) === "primary" || Boolean(saved(example));
+    byId("remove-event").disabled = saving;
+    byId("event-title").textContent = `Бросок ${ids.indexOf(selectedEvent(example)) + 1} · свои границы и ответы`;
+  }
+
+  function addEvent() {
+    if (!batch || saving || eventIds(current()).length >= 32) return;
+    const example = current();
+    const previous = draftFor(example);
+    const id = `event-${crypto.randomUUID().replaceAll("-", "")}`;
+    const draft = freshDraft(example, id);
+    if (Number.isFinite(previous.end_seconds) && previous.end_seconds < example.clip_duration_seconds) {
+      draft.start_seconds = previous.end_seconds;
+    }
+    draft.dirty = true;
+    drafts.set(draftKey(example, id), draft);
+    selectedEvents.set(example.example_id, id);
+    render();
+    notice("Новый бросок добавлен. У него отдельные ответы; предыдущий остался в списке выше.");
+  }
+
+  function removeUnsavedEvent() {
+    const example = current();
+    if (saving || selectedEvent(example) === "primary" || saved(example)) return;
+    drafts.delete(draftKey(example));
+    selectedEvents.set(example.example_id, "primary");
+    render();
   }
 
   function navigate(index) {
@@ -265,6 +330,7 @@
     notice("");
     updateState();
     updateProgress();
+    renderEvents();
   }
 
   function markBoundary(id) {
@@ -280,7 +346,7 @@
     updateClock();
   }
 
-  async function save(event) {
+  async function save(event, advance = true) {
     event.preventDefault();
     if (!batch || saving) return;
     if (conflict) {
@@ -310,9 +376,11 @@
       byId("error").focus();
       return;
     }
-    const expectedRevision = saved(example)?.revision || 0;
+    const eventId = selectedEvent(example);
+    const expectedRevision = draft.base_revision;
     const payload = {
       schema_version: schemaVersion,
+      event_id: eventId,
       batch_revision: batch.batch_revision,
       example_id: example.example_id,
       expected_revision: expectedRevision,
@@ -342,20 +410,26 @@
       }
       const result = await response.json();
       if (!validAnnotation(result.annotation, example) || !completeAnnotation(result.annotation, example)
+        || (result.annotation.event_id || "primary") !== eventId
         || result.annotation.revision <= expectedRevision
         || result.total_count !== batch.examples.length || !Number.isInteger(result.reviewed_count)
         || result.reviewed_count < 1 || result.reviewed_count > result.total_count) {
         throw new Error("Сервер вернул неполное подтверждение. Ввод остался здесь. Обновите страницу после проверки соединения, чтобы узнать статус сохранения.");
       }
-      batch.annotations[example.example_id] = result.annotation;
-      drafts.delete(example.example_id);
+      const records = batch.events[example.example_id];
+      const resultRecord = { ...result.annotation, event_id: eventId };
+      const existing = records.findIndex((item) => item.event_id === eventId);
+      if (existing < 0) records.push(resultRecord);
+      else records[existing] = resultRecord;
+      if (eventId === "primary") batch.annotations[example.example_id] = resultRecord;
+      drafts.delete(draftKey(example, eventId));
       saving = false;
       const nextPosition = position + 1 < batch.examples.length ? position + 1
         : batch.examples.findIndex((item) => !completed(item));
-      if (nextPosition >= 0) position = nextPosition;
+      if (advance && nextPosition >= 0) position = nextPosition;
       render();
       notice(reviewedCount() === batch.examples.length
-        ? "Все эпизоды проверены, ответы сохранены на этом Mac. Спасибо! Можно исправить любой ответ или скачать разметку. Спорные случаи разберём отдельно."
+        ? "Разметка есть во всех клипах. Можно добавить ещё броски, исправить ответы или скачать разметку."
         : `Эпизод ${numberLabel(batch.examples.indexOf(example))} сохранён на этом Mac.`);
       byId("episode-title").focus({ preventScroll: true });
     } catch (error) {
@@ -391,7 +465,10 @@
     }
   }
 
-  form.addEventListener("submit", save);
+  form.addEventListener("submit", (event) => save(event));
+  byId("save-stay").addEventListener("click", (event) => save(event, false));
+  byId("add-event").addEventListener("click", addEvent);
+  byId("remove-event").addEventListener("click", removeUnsavedEvent);
   form.addEventListener("input", edited);
   // Boundary inputs are outside the form visually, but belong to it semantically.
   byId("start-seconds").addEventListener("input", edited);

@@ -139,10 +139,12 @@ The first 24 local 1080p60 previews are ready for owner review. Their receipt
 records unchanged source hashes, exact committed selection replay, 2,647 passing
 backend tests and a synthetic browser save/restart check. Human annotation was
 still pending at handoff; no model-quality conclusion follows from this pilot.
-The review form now uses annotation version 2, separating visible outcome,
-awarded points and play context. Version-1 answers remain immutable and need two
-explicit new answers before completing version 2. The batch manifest and source
-media are unchanged; no human decision is inferred during this update.
+The review form uses annotation version 3 with independently saved events inside
+each clip, retaining version-2 visible outcome, awarded points and play context.
+Version-1 answers remain immutable and need the two missing explicit answers.
+Version-2 answers remain usable as the primary event; old open forms can save
+only that event. Additional events have separate identities and append-only
+histories. The batch and source media are unchanged; no human label is inferred.
 The complete Phase 1 exit gate, including `different_camera_or_league` and
 `OOD/non-basketball`, remains required before training. No candidate source is
 authorized for training or external transfer merely because it was reviewed.

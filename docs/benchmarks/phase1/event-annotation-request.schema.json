@@ -1,0 +1,184 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "batch_revision": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Batch Revision",
+      "type": "string"
+    },
+    "boundary_status": {
+      "anyOf": [
+        {
+          "enum": [
+            "complete",
+            "too_short",
+            "unclear"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Boundary Status"
+    },
+    "end_seconds": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "End Seconds"
+    },
+    "event_id": {
+      "pattern": "^(primary|event-[0-9a-f]{32})$",
+      "title": "Event Id",
+      "type": "string"
+    },
+    "example_id": {
+      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$",
+      "title": "Example Id",
+      "type": "string"
+    },
+    "expected_revision": {
+      "maximum": 10000,
+      "minimum": 0,
+      "title": "Expected Revision",
+      "type": "integer"
+    },
+    "notes": {
+      "maxLength": 2000,
+      "title": "Notes",
+      "type": "string"
+    },
+    "outcome": {
+      "anyOf": [
+        {
+          "enum": [
+            "made",
+            "miss",
+            "not_applicable",
+            "unclear"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Outcome"
+    },
+    "play_context": {
+      "anyOf": [
+        {
+          "enum": [
+            "in_play",
+            "foul_on_shot",
+            "after_whistle",
+            "other_dead_ball",
+            "not_applicable",
+            "unclear"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "after_whistle is an entirely new shot begun after play stopped; it excludes continuation. foul_on_shot may coexist with counted points. null is unanswered; unclear is an explicit answer.",
+      "title": "Play Context"
+    },
+    "presentation": {
+      "anyOf": [
+        {
+          "enum": [
+            "live",
+            "replay",
+            "unclear"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Presentation"
+    },
+    "schema_version": {
+      "const": 3,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "scoring_decision": {
+      "anyOf": [
+        {
+          "enum": [
+            "counted",
+            "not_counted",
+            "not_applicable",
+            "unclear"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Whether official points were awarded, independent of the visible ball outcome.",
+      "title": "Scoring Decision"
+    },
+    "shot_type": {
+      "anyOf": [
+        {
+          "enum": [
+            "two",
+            "three",
+            "free_throw",
+            "non_shot",
+            "unclear"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Shot Type"
+    },
+    "start_seconds": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Start Seconds"
+    }
+  },
+  "required": [
+    "shot_type",
+    "outcome",
+    "presentation",
+    "boundary_status",
+    "start_seconds",
+    "end_seconds",
+    "notes",
+    "schema_version",
+    "batch_revision",
+    "example_id",
+    "expected_revision",
+    "event_id"
+  ],
+  "title": "EventAnnotationRequest",
+  "type": "object"
+}

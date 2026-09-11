@@ -79,8 +79,8 @@ The owner requested this correction after encountering a missed shot with a foul
 followed by a teammate's new shot after the whistle. One annotation describes
 one event within its selected boundaries; different shots must not be merged
 into one outcome. If the event cannot be isolated confidently, retain uncertainty
-and explain the ambiguity in the note. This pilot still saves one selected event
-per preview; it is not a complete multi-event annotation editor.
+and explain the ambiguity in the note. Version 2 saved one selected event per
+preview; version 3 below removes that limitation.
 
 `outcome` records what happened physically, not an official field-goal statistic.
 The independent `scoring_decision` is `counted`, `not_counted`, `not_applicable`
@@ -93,7 +93,7 @@ Visible outcome and points remain independent, including cases such as awarded
 points without a visible make. Replay presentation is independent of play context.
 These distinctions follow [FIBA rules, articles 10.3–10.4](https://assets.fiba.basketball/image/upload/documents-corporate-fiba-official-rules-2024-v10a.pdf).
 
-New requests and saved records use annotation `schema_version:2`; the immutable
+Version-2 requests and saved records use annotation `schema_version:2`; the immutable
 batch manifest stays at version 1. Old version-1 revisions remain byte-identical
 on disk and unchanged in the version-2 export history. Their old answers remain
 available, while the two new fields appear blank and require explicit review.
@@ -113,6 +113,48 @@ to it. The local server advertises annotation version 2 and retains the original
 batch revision. Full-ML smoke and model inference were not run for this form
 change; Phase 0 artifacts and rollback remain unchanged.
 
+### Annotation version 3: several events in the same clip
+
+The owner requested a usable way to retain both the original missed foul shot
+and a teammate's later dead-ball make. The current form has a selector for each
+shot, **Save shot**, **Save and next**, and **Add another shot in this clip**.
+Adding a shot creates a separate blank draft; it does not save, copy labels or
+replace the first shot. The proposed start is the previous selected end when
+there is room in the clip. The owner checks both boundaries before saving.
+Switching shots restores their individual answers and seeks to their start;
+an accidentally added unsaved shot can be removed. Drafts remain in the current
+tab during navigation; only explicitly saved answers survive closing the tab.
+
+New requests and records use `schema_version:3` and a stable `event_id` bound to
+the same immutable source/example. The original event is `primary`; historical
+v1/v2 files remain byte-identical. Old open version-2 forms may still save only
+`primary`, so a pending old-form answer cannot overwrite an additional event.
+All six human labels keep version-2 semantics; no new semantic answers are
+inferred. A v1 answer still needs the two missing version-2 fields.
+
+Additional events have independent optimistic revisions and atomic append-only
+histories under `annotations/<example>/events/<event-id>/`; primary revisions
+retain their existing path. At most 31 additional events are allowed per clip.
+Display order follows first save, so editing or restarting does not reorder
+saved shots. The version-3 export retains every original v1/v2/v3 record and its
+source/clip provenance. All related events inherit the same source/replay split
+constraints. Neither preview preparation nor production indexing is rerun.
+
+The version-3 request schema is
+[event-annotation-request.schema.json](event-annotation-request.schema.json).
+Regression checks exercise two shots, separate boundaries, independent edits,
+mixed legacy history, concurrent creation, failed publication/retry and restart.
+The browser smoke also verifies both shots remain separately selectable after
+restart and exports both histories. This verifies the annotation workflow;
+it does not establish complete event coverage or model quality.
+
+Validation: 2,689 backend tests, including 103 review tests, and 68 frontend
+tests passed; the frontend build passed. The synthetic browser smoke saved and
+independently edited a second event after restart, retained the first event and
+legacy revision bytes, and exported all six revisions. Source media, preparation
+receipts and the Phase 0 baseline/rollback are unchanged. No ML inference or
+training is part of this update.
+
 ## Private artifacts and replay
 
 Private files live under `data/ml/reviews/uba-pilot-v1/` and are excluded from
@@ -124,6 +166,7 @@ preparation-v2/        sampled frames, sampling receipt, weak scores
 preparation-committed-replay/  independent replay from the committed implementation
 batch-v1/              immutable batch.json, receipt, clips/, posters/
   annotations/         append-only human review revisions, created on first save
+    <example>/events/  separate revision histories for additional shots
 ```
 
 Only schemas, code, synthetic tests and this aggregate report belong in Git.
