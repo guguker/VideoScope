@@ -36,7 +36,7 @@
           </div>
           <section class="boundaries" aria-labelledby="boundaries-title">
             <div class="section-heading"><h3 id="boundaries-title">Границы события</h3><span id="source-range"></span></div>
-            <p class="muted">В секундах от начала клипа. Оставь подготовку к броску и его исход.</p>
+            <p class="muted">В секундах от начала клипа. Выдели один бросок с подготовкой, исходом и контекстом свистка.</p>
             <div class="boundary-grid">
               <label for="start-seconds">Начало<input id="start-seconds" type="number" inputmode="decimal" min="0" step="0.01" aria-label="Начало фрагмента, секунды" form="review-form"></label>
               <button type="button" id="mark-start">Начало здесь</button>
@@ -48,7 +48,7 @@
         </section>
 
         <section class="annotation-panel" aria-labelledby="annotation-title">
-          <div class="annotation-heading"><h2 id="annotation-title">Что происходит?</h2><p class="muted">Выбери по одному ответу в каждой группе.</p></div>
+          <div class="annotation-heading"><h2 id="annotation-title">Что происходит?</h2><p class="muted">Один бросок — одна разметка. Если их несколько, сузь границы до одного.</p></div>
           <form id="review-form" aria-label="Разметка эпизода" novalidate>
             <fieldset id="labels">
               <legend class="sr-only">Наблюдаемые признаки эпизода</legend>
@@ -59,18 +59,32 @@
                 <label><input type="radio" name="shot_type" value="non_shot"><span>Броска нет</span></label>
                 <label><input type="radio" name="shot_type" value="unclear"><span>Неясно<span class="sr-only">, тип броска</span></span></label>
               </div></fieldset>
-              <fieldset class="choice-group"><legend><span>02</span> Чем закончился?</legend><div class="choices">
+              <fieldset class="choice-group"><legend><span>02</span> Видимый исход броска</legend><div class="choices">
                 <label><input type="radio" name="outcome" value="made"><span>Попадание</span></label>
                 <label><input type="radio" name="outcome" value="miss"><span>Промах</span></label>
                 <label><input type="radio" name="outcome" value="not_applicable"><span>Не применимо</span></label>
                 <label><input type="radio" name="outcome" value="unclear"><span>Неясно<span class="sr-only">, исход</span></span></label>
               </div></fieldset>
-              <fieldset class="choice-group"><legend><span>03</span> Как показан момент?</legend><div class="choices">
+              <fieldset class="choice-group"><legend><span>03</span> Очки засчитаны?</legend><div class="choices">
+                <label><input type="radio" name="scoring_decision" value="counted"><span>Засчитаны</span></label>
+                <label><input type="radio" name="scoring_decision" value="not_counted"><span>Не засчитаны</span></label>
+                <label><input type="radio" name="scoring_decision" value="not_applicable"><span>Не применимо<span class="sr-only">, зачёт очков</span></span></label>
+                <label><input type="radio" name="scoring_decision" value="unclear"><span>Неясно<span class="sr-only">, зачёт очков</span></span></label>
+              </div><p class="choice-hint">Мяч в кольце и засчитанные очки — разные признаки. При промахе или отсутствии броска выбери «Не применимо»; если очки присуждены судьёй, укажи это и поясни в комментарии.</p></fieldset>
+              <fieldset class="choice-group"><legend><span>04</span> Обстоятельства броска</legend><div class="choices">
+                <label><input type="radio" name="play_context" value="in_play"><span>В игре</span></label>
+                <label><input type="radio" name="play_context" value="foul_on_shot"><span>Фол на броске</span></label>
+                <label><input type="radio" name="play_context" value="after_whistle"><span>Новый бросок после свистка</span></label>
+                <label><input type="radio" name="play_context" value="other_dead_ball"><span>Новый бросок при другой остановке</span></label>
+                <label><input type="radio" name="play_context" value="not_applicable"><span>Не применимо<span class="sr-only">, обстоятельства</span></span></label>
+                <label><input type="radio" name="play_context" value="unclear"><span>Неясно<span class="sr-only">, обстоятельства</span></span></label>
+              </div><p class="choice-hint">«После свистка» и «при другой остановке» — отдельный новый бросок вне игры, например добрасывание партнёра. Продолжение начатого броска с фолом отметь как «Фол на броске»: очки могут засчитать.</p><p class="choice-hint">Штатный штрафной — «В игре», даже если таймер стоит. Мяч, выпущенный до сирены, тоже не становится новым броском после остановки.</p><p id="decision-hint" class="choice-hint decision-hint" role="status" aria-live="polite" hidden></p></fieldset>
+              <fieldset class="choice-group"><legend><span>05</span> Как показан момент?</legend><div class="choices">
                 <label><input type="radio" name="presentation" value="live"><span>Основной эпизод</span></label>
                 <label><input type="radio" name="presentation" value="replay"><span>Повтор</span></label>
                 <label><input type="radio" name="presentation" value="unclear"><span>Неясно<span class="sr-only">, показ эпизода</span></span></label>
               </div></fieldset>
-              <fieldset class="choice-group"><legend><span>04</span> Достаточно ли фрагмента?</legend><div class="choices">
+              <fieldset class="choice-group"><legend><span>06</span> Достаточно ли фрагмента?</legend><div class="choices">
                 <label><input type="radio" name="boundary_status" value="complete"><span>Контекста хватает</span></label>
                 <label><input type="radio" name="boundary_status" value="too_short"><span>Не хватает начала или конца</span></label>
                 <label><input type="radio" name="boundary_status" value="unclear"><span>Неясно<span class="sr-only">, границы</span></span></label>
@@ -81,7 +95,7 @@
             </fieldset>
             <div class="save-area"><button id="save" class="primary-button" type="submit">Сохранить и дальше</button><div class="navigation-buttons"><button id="previous" type="button">Предыдущий</button><button id="next" type="button">Следующий</button></div><p class="muted centered">«Следующий» позволяет отложить эпизод без сохранения.</p></div>
           </form>
-          <details class="instructions"><summary>Как проверять спорный момент</summary><p>Просмотри клип целиком; при необходимости замедли видео. Если тип броска или исход не виден, выбери «Неясно». Если броска нет, для исхода выбери «Не применимо».</p><p>Если не хватает начала или конца, отметь это и напиши, чего не видно. Не нужно угадывать событие по комментатору или счёту.</p><p>Проверенные ответы сохраняются локально с историей изменений. Эта первая проверка ещё не делает пример окончательным эталоном: спорные случаи разбираем отдельно.</p></details>
+          <details class="instructions"><summary>Как проверять спорный момент</summary><p>Просмотри клип целиком; при необходимости замедли видео. Каждый ответ относится к одному броску внутри выбранных границ. Если броски нельзя разделить, выбери «Неясно» для неоднозначных признаков и опиши ситуацию в комментарии.</p><p>Если броска нет, для исхода, зачёта очков и обстоятельств выбери «Не применимо». «Основной эпизод» и «Повтор» описывают показ на экране, а обстоятельства — само событие.</p><p>Пример: партнёр забросил после остановки — «Попадание», «Не засчитаны», «Новый бросок после свистка». Попадание с фолом может быть засчитано: выбирай «Фол на броске» и отдельно подтверждай решение об очках.</p><p>Если не хватает начала или конца, отметь это и напиши, чего не видно. Не нужно угадывать решение судьи по одному звуку свистка или реплике комментатора; если подтверждения нет, выбери «Неясно».</p><p>Проверенные ответы сохраняются локально с историей изменений. Эта первая проверка ещё не делает пример окончательным эталоном: спорные случаи разбираем отдельно.</p></details>
         </section>
       </div>
     </main>

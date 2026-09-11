@@ -57,13 +57,13 @@ its byte size and SHA-256 bind it to the source interval. The source files are
 read-only throughout preparation. The longer review context is not a change to
 the frozen Phase 0 protocol or the future ranker prediction contract.
 
-The review form asks explicitly for shot type, outcome, live/replay status and
-boundary completeness. Corrections use **clip-relative seconds**, bounded by
+The review form asks explicitly for shot type, visible outcome, scoring decision,
+play context, live/replay status and boundary completeness. Corrections use **clip-relative seconds**, bounded by
 the actual prepared duration. Unclear answers are valid; an ambiguous episode
 does not acquire an invented label. The proposed selection category is omitted
 from the review API to avoid presenting the model's guess as a human answer.
 
-Saving appends a revision with source and prepared-input provenance. Four
+Saving appends a revision with source and prepared-input provenance. Six
 explicit answers and both clip-relative boundaries are required for status
 `human_reviewed`; a saved nullable field remains a `draft` and is excluded from
 the completed-review count. Explicit `unclear` is a valid completed answer.
@@ -72,6 +72,46 @@ Both statuses remain in `annotation_inbox`, with `gold:false`,
 require the later annotation policy, critical-conflict adjudication and dataset
 sealing before they can support training or promotion. The server creates no
 labels before a person saves a review. Implicit clicks are not labels.
+
+### Annotation version 2: visible outcome and awarded points
+
+The owner requested this correction after encountering a missed shot with a foul
+followed by a teammate's new shot after the whistle. One annotation describes
+one event within its selected boundaries; different shots must not be merged
+into one outcome. If the event cannot be isolated confidently, retain uncertainty
+and explain the ambiguity in the note. This pilot still saves one selected event
+per preview; it is not a complete multi-event annotation editor.
+
+`outcome` records what happened physically, not an official field-goal statistic.
+The independent `scoring_decision` is `counted`, `not_counted`, `not_applicable`
+or `unclear`. `play_context` is `in_play`, `foul_on_shot`, `after_whistle`,
+`other_dead_ball`, `not_applicable` or `unclear`. Here `after_whistle` means a
+**new** shot after play stopped, not continuation of a shot with a foul. A
+continued shot with a foul may count. A new dead-ball shot cannot be marked
+`counted`; the form and API reject that contradiction without changing answers.
+Visible outcome and points remain independent, including cases such as awarded
+points without a visible make. Replay presentation is independent of play context.
+These distinctions follow [FIBA rules, articles 10.3–10.4](https://assets.fiba.basketball/image/upload/documents-corporate-fiba-official-rules-2024-v10a.pdf).
+
+New requests and saved records use annotation `schema_version:2`; the immutable
+batch manifest stays at version 1. Old version-1 revisions remain byte-identical
+on disk and unchanged in the version-2 export history. Their old answers remain
+available, while the two new fields appear blank and require explicit review.
+Old `human_reviewed` status describes the old protocol; it does not complete
+version 2. Missing values are not inferred from outcomes, comments or whistles.
+An outdated form cannot save through the new API without the version-2 request
+contract. Answers remain private and do not become gold or training data.
+
+Version 2 validation passed 2,678 backend tests and 66 frontend tests, including
+92 backend review tests and 21 frontend review tests; the frontend build passed.
+The synthetic browser check now seeds a version-1 answer and verifies blank new
+fields, byte-identical old history, explicit version-2 correction, a counted shot
+with a foul, a visible make after stoppage without awarded points, contradiction
+rejection, restart and mixed-version export. The real batch's 50 existing
+manifest/media files were hash-checked unchanged; no test answers were written
+to it. The local server advertises annotation version 2 and retains the original
+batch revision. Full-ML smoke and model inference were not run for this form
+change; Phase 0 artifacts and rollback remain unchanged.
 
 ## Private artifacts and replay
 

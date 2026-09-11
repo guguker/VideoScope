@@ -3,10 +3,14 @@
   "use strict";
 
   const byId = (id) => document.getElementById(id);
-  const fields = ["shot_type", "outcome", "presentation", "boundary_status"];
+  const schemaVersion = 2;
+  const newFields = ["scoring_decision", "play_context"];
+  const fields = ["shot_type", "outcome", ...newFields, "presentation", "boundary_status"];
   const choices = {
     shot_type: ["two", "three", "free_throw", "non_shot", "unclear"],
     outcome: ["made", "miss", "not_applicable", "unclear"],
+    scoring_decision: ["counted", "not_counted", "not_applicable", "unclear"],
+    play_context: ["in_play", "foul_on_shot", "after_whistle", "other_dead_ball", "not_applicable", "unclear"],
     presentation: ["live", "replay", "unclear"],
     boundary_status: ["complete", "too_short", "unclear"],
   };
@@ -69,16 +73,27 @@
 
   function validAnnotation(annotation, example) {
     return annotation && Number.isInteger(annotation.revision) && annotation.revision > 0
-      && fields.every((field) => annotation[field] === null || choices[field].includes(annotation[field]))
+      && [1, schemaVersion].includes(annotation.schema_version)
+      && fields.every((field) => annotation[field] === null || choices[field].includes(annotation[field])
+        || (annotation.schema_version === 1 && newFields.includes(field) && annotation[field] === undefined))
       && ((annotation.start_seconds === null && annotation.end_seconds === null)
         || validBounds(annotation.start_seconds, annotation.end_seconds, example.clip_duration_seconds))
       && typeof annotation.notes === "string" && annotation.notes.length <= 2000;
   }
 
   function completeAnnotation(annotation, example) {
-    return annotation && fields.every((field) => choices[field].includes(annotation[field]))
+    return annotation?.schema_version === schemaVersion
+      && fields.every((field) => choices[field].includes(annotation[field]))
+      && !decisionConflict(annotation)
       && validBounds(annotation.start_seconds, annotation.end_seconds, example.clip_duration_seconds);
   }
+
+  function decisionConflict(annotation) {
+    return annotation.scoring_decision === "counted"
+      && ["after_whistle", "other_dead_ball"].includes(annotation.play_context);
+  }
+
+  const decisionConflictMessage = "Проверьте решение об очках и обстоятельства: новый бросок после остановки не может одновременно быть засчитан. Если это продолжение броска с фолом, выберите «Фол на броске». При сомнении отметьте «Неясно».";
 
   function validBounds(start, end, duration) {
     return Number.isFinite(start) && Number.isFinite(end)
@@ -88,7 +103,7 @@
   function freshDraft(example) {
     const record = saved(example);
     return {
-      ...Object.fromEntries(fields.map((field) => [field, record ? record[field] : null])),
+      ...Object.fromEntries(fields.map((field) => [field, record?.[field] ?? null])),
       start_seconds: record?.start_seconds ?? 0,
       end_seconds: record?.end_seconds ?? example.clip_duration_seconds,
       notes: record ? record.notes : "",
@@ -162,6 +177,8 @@
       ? "Есть несохранённые ответы. При переходе они остаются черновиком в этой вкладке."
       : completed(example)
         ? `Сохранено локально · версия ${saved(example).revision}. Ответы можно исправить.`
+        : saved(example)?.schema_version === 1
+          ? "Прежние ответы сохранены. Подтвердите два новых вопроса: зачёт очков и обстоятельства броска. Затем сохраните новую версию."
         : saved(example)
           ? "Сохранён незавершённый ответ. Дополните пустые группы и проверьте границы."
         : "Ответы сохраняются кнопкой ниже. Без догадок — только то, что видно.";
@@ -170,7 +187,11 @@
 
   function updateSaveAvailability() {
     const draft = draftFor(current());
+    const invalidDecision = decisionConflict(draft);
+    byId("decision-hint").textContent = invalidDecision ? decisionConflictMessage : "";
+    byId("decision-hint").hidden = !invalidDecision;
     byId("save").disabled = saving || conflict
+      || invalidDecision
       || fields.some((field) => !choices[field].includes(draft[field]))
       || !validBounds(draft.start_seconds, draft.end_seconds, current().clip_duration_seconds)
       || draft.notes.length > 2000;
@@ -270,7 +291,12 @@
     const example = current();
     const draft = draftFor(example);
     if (fields.some((field) => !choices[field].includes(draft[field]))) {
-      showError("Выберите ответ в каждой из четырёх групп. Если не уверены, можно выбрать «Неясно».");
+      showError("Выберите ответ в каждой из шести групп. Если не уверены, можно выбрать «Неясно».");
+      byId("error").focus();
+      return;
+    }
+    if (decisionConflict(draft)) {
+      showError(decisionConflictMessage);
       byId("error").focus();
       return;
     }
@@ -286,6 +312,7 @@
     }
     const expectedRevision = saved(example)?.revision || 0;
     const payload = {
+      schema_version: schemaVersion,
       batch_revision: batch.batch_revision,
       example_id: example.example_id,
       expected_revision: expectedRevision,
