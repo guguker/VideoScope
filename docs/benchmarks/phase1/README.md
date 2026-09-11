@@ -6,6 +6,16 @@ Phase 1. The accepted [Phase 0 baseline](../phase0/accepted/7054f13/README.md)
 and its rollback evidence remain unchanged. The strategic gate is defined in
 [the ML autonomy plan](../../ml-autonomy-plan.md).
 
+The owner's 2026-09-11 delivery preference extends the next tool goal to a
+comfortable full-match annotation workbench with resumable progress, events,
+possessions, participants and spatial observations. The pilot below records
+what already exists; its 24 clips are not a limit on future annotation volume.
+The current goal and its acceptance checks live under “Текущая цель Фазы 1” in
+the plan. This documentation update does not implement that workbench or change
+source roles. The [public dataset/model survey](external-candidates-2026-09-11.md)
+records possible external components, including defensive interactions, without
+importing media or training models.
+
 ## Authorization and observed inventory
 
 The owner authorized auditing the eight downloaded UBA files and preparing a
