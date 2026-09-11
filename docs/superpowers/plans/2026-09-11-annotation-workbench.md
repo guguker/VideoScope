@@ -112,7 +112,7 @@ review, points disappear on time change, keyboard shortcuts ignore inputs.
 
 ```sh
 cd frontend
-pnpm test src/lib/annotationWorkbench.test.ts
+node node_modules/vitest/vitest.mjs run src/lib/annotationWorkbench.test.ts
 ```
 
 - [ ] Implement the connected Russian interface from the spec: match/record
@@ -128,6 +128,8 @@ pnpm test src/lib/annotationWorkbench.test.ts
 
 **Files:**
 - Create `scripts/smoke-annotation-workbench.mjs`.
+- Create `scripts/open-annotation-workbench.command` for reopening the prepared
+  local workspace after a Mac restart, without manual terminal commands.
 - Create `docs/benchmarks/phase1/workbench/README.md` and sanitized smoke receipt.
 - Update `AGENTS.md`, `docs/ml-autonomy-plan.md`, `docs/benchmarks/phase1/README.md`
   with measured current capabilities and remaining Phase 1 gates.
@@ -161,9 +163,11 @@ assert.deepEqual(externalRequests, [])
 
 ```sh
 PYTHONPATH=backend/src .venv/bin/pytest backend/tests
-cd frontend && pnpm test && pnpm build
+cd frontend && node node_modules/vitest/vitest.mjs run
+node node_modules/typescript/bin/tsc -b && node node_modules/vite/bin/vite.js build
+cd ..
 node scripts/smoke-annotation-review.mjs
-node scripts/smoke-annotation-workbench.mjs
+node scripts/smoke-annotation-workbench.mjs --require-clean
 ```
 
 - [ ] Obtain task and final reviews against exact committed diffs, address material

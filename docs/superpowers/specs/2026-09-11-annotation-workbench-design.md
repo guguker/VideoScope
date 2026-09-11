@@ -32,6 +32,10 @@ SHA plus compatible duration. Namespace imported entity IDs by batch revision,
 example ID and original event ID. Add clip source offset to event boundaries but
 retain exact original JSON bytes, raw field values and old completion status.
 Missing new optional fields never invalidate a previously reviewed answer.
+The original v1 status remains in raw history; its current projection must still
+indicate the two missing required v2 shot answers (`scoring_decision`,
+`play_context`), consistent with the existing pilot. Complete v2/v3 projections
+remain reviewed when optional participants/positions have not been entered.
 
 SQLite stores immutable per-entity revisions and a latest projection. Transactions
 enforce expected_revision, provenance, source membership and references. Deletes
@@ -58,6 +62,9 @@ JSON writes require `application/json`; backup upload uses `application/x-ndjson
 Unavailable sources have `media_url:null`. Titles are stable aliases; user may
 name teams separately. Public source entries also contain `source_group` and
 `training_rights` when known; rights remain unknown by default.
+Public `fps` is nullable and derived from audited stream frame-rate metadata,
+without probing blocked media. Frame-step uses it when known; frame observations
+prefer browser presented-frame `mediaTime` over an arbitrary seek position.
 
 `GET /api/sources/{source_id}` returns `{source, records, progress}`. `records` is
 the latest non-archived projection by default, including saved drafts, each shaped:
