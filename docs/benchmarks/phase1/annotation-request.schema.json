@@ -1,0 +1,132 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "batch_revision": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Batch Revision",
+      "type": "string"
+    },
+    "boundary_status": {
+      "anyOf": [
+        {
+          "enum": [
+            "complete",
+            "too_short",
+            "unclear"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Boundary Status"
+    },
+    "end_seconds": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "End Seconds"
+    },
+    "example_id": {
+      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$",
+      "title": "Example Id",
+      "type": "string"
+    },
+    "expected_revision": {
+      "maximum": 10000,
+      "minimum": 0,
+      "title": "Expected Revision",
+      "type": "integer"
+    },
+    "notes": {
+      "maxLength": 2000,
+      "title": "Notes",
+      "type": "string"
+    },
+    "outcome": {
+      "anyOf": [
+        {
+          "enum": [
+            "made",
+            "miss",
+            "not_applicable",
+            "unclear"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Outcome"
+    },
+    "presentation": {
+      "anyOf": [
+        {
+          "enum": [
+            "live",
+            "replay",
+            "unclear"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Presentation"
+    },
+    "shot_type": {
+      "anyOf": [
+        {
+          "enum": [
+            "two",
+            "three",
+            "free_throw",
+            "non_shot",
+            "unclear"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Shot Type"
+    },
+    "start_seconds": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Start Seconds"
+    }
+  },
+  "required": [
+    "shot_type",
+    "outcome",
+    "presentation",
+    "boundary_status",
+    "start_seconds",
+    "end_seconds",
+    "notes",
+    "batch_revision",
+    "example_id",
+    "expected_revision"
+  ],
+  "title": "AnnotationRequest",
+  "type": "object"
+}

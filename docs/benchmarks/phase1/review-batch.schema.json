@@ -1,0 +1,214 @@
+{
+  "$defs": {
+    "ReviewExample": {
+      "additionalProperties": false,
+      "properties": {
+        "clip_duration_seconds": {
+          "exclusiveMinimum": 0,
+          "maximum": 60,
+          "title": "Clip Duration Seconds",
+          "type": "number"
+        },
+        "clip_path": {
+          "title": "Clip Path",
+          "type": "string"
+        },
+        "example_id": {
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$",
+          "title": "Example Id",
+          "type": "string"
+        },
+        "poster_path": {
+          "title": "Poster Path",
+          "type": "string"
+        },
+        "prepared_input_byte_size": {
+          "exclusiveMinimum": 0,
+          "maximum": 1073741824,
+          "title": "Prepared Input Byte Size",
+          "type": "integer"
+        },
+        "prepared_input_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Prepared Input Sha256",
+          "type": "string"
+        },
+        "selection_method": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Selection Method",
+          "type": "string"
+        },
+        "selection_notes": {
+          "maxLength": 2000,
+          "title": "Selection Notes",
+          "type": "string"
+        },
+        "source_end_seconds": {
+          "minimum": 0,
+          "title": "Source End Seconds",
+          "type": "number"
+        },
+        "source_id": {
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$",
+          "title": "Source Id",
+          "type": "string"
+        },
+        "source_start_seconds": {
+          "minimum": 0,
+          "title": "Source Start Seconds",
+          "type": "number"
+        }
+      },
+      "required": [
+        "example_id",
+        "source_id",
+        "source_start_seconds",
+        "source_end_seconds",
+        "clip_duration_seconds",
+        "prepared_input_sha256",
+        "prepared_input_byte_size",
+        "clip_path",
+        "poster_path",
+        "selection_method",
+        "selection_notes"
+      ],
+      "title": "ReviewExample",
+      "type": "object"
+    },
+    "ReviewSource": {
+      "additionalProperties": false,
+      "properties": {
+        "byte_size": {
+          "exclusiveMinimum": 0,
+          "title": "Byte Size",
+          "type": "integer"
+        },
+        "duration_seconds": {
+          "exclusiveMinimum": 0,
+          "title": "Duration Seconds",
+          "type": "number"
+        },
+        "review_allowed": {
+          "const": true,
+          "title": "Review Allowed",
+          "type": "boolean"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        },
+        "source_group": {
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$",
+          "title": "Source Group",
+          "type": "string"
+        },
+        "source_id": {
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$",
+          "title": "Source Id",
+          "type": "string"
+        },
+        "training_rights": {
+          "const": "unknown",
+          "title": "Training Rights",
+          "type": "string"
+        },
+        "usage": {
+          "const": "development_review",
+          "title": "Usage",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source_id",
+        "sha256",
+        "byte_size",
+        "duration_seconds",
+        "source_group",
+        "usage",
+        "review_allowed",
+        "training_rights"
+      ],
+      "title": "ReviewSource",
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "batch_id": {
+      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$",
+      "title": "Batch Id",
+      "type": "string"
+    },
+    "code_sha": {
+      "pattern": "^[0-9a-f]{40}$",
+      "title": "Code Sha",
+      "type": "string"
+    },
+    "created_at": {
+      "maxLength": 40,
+      "title": "Created At",
+      "type": "string"
+    },
+    "examples": {
+      "items": {
+        "$ref": "#/$defs/ReviewExample"
+      },
+      "maxItems": 100,
+      "minItems": 1,
+      "title": "Examples",
+      "type": "array"
+    },
+    "promotion_allowed": {
+      "const": false,
+      "title": "Promotion Allowed",
+      "type": "boolean"
+    },
+    "purpose": {
+      "const": "annotation_pilot",
+      "title": "Purpose",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "sources": {
+      "items": {
+        "$ref": "#/$defs/ReviewSource"
+      },
+      "maxItems": 100,
+      "minItems": 1,
+      "title": "Sources",
+      "type": "array"
+    },
+    "title": {
+      "maxLength": 200,
+      "minLength": 1,
+      "title": "Title",
+      "type": "string"
+    },
+    "training_allowed": {
+      "const": false,
+      "title": "Training Allowed",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "schema_version",
+    "batch_id",
+    "title",
+    "created_at",
+    "code_sha",
+    "purpose",
+    "training_allowed",
+    "promotion_allowed",
+    "sources",
+    "examples"
+  ],
+  "title": "BatchManifest",
+  "type": "object"
+}
