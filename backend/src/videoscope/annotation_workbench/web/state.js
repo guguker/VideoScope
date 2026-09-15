@@ -28,8 +28,9 @@ export function loadLocalDrafts(storage, workspaceId, workspaceRevision, sourceI
 export function writeLocalDrafts(storage, workspaceId, workspaceRevision, sourceId, drafts) {
   const pending = [...drafts.values()]
     .filter(draft => draft.dirty)
-    .map(({ record_id, kind, status, archived, data, expected_revision, generation }) => ({
+    .map(({ record_id, kind, status, archived, data, expected_revision, generation, conflict, recoverable_data }) => ({
       record_id, kind, status, archived, data: clone(data), expected_revision, generation,
+      conflict: clone(conflict), recoverable_data: clone(recoverable_data),
     }));
   const key = storageKey(workspaceId, workspaceRevision, sourceId);
   if (pending.length) storage.setItem(key, JSON.stringify(pending));
