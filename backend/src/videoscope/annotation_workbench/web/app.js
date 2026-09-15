@@ -129,6 +129,10 @@ export async function mountWorkbench() {
     draft.saveState = "local";
     draft.error = "";
     draft.generation = (draft.generation || 0) + 1;
+    if (draft.conflict) {
+      draft.conflict.local_data = clone(draft.data);
+      draft.recoverable_data = clone(draft.data);
+    }
     persistPending();
     updateSaveState();
     renderRecordList();
@@ -150,8 +154,9 @@ export async function mountWorkbench() {
     const draft = selectedDraft();
     const node = $("save-state");
     if (!draft) { node.textContent = "Нет изменений"; node.className = "state-tag"; return; }
+    const incompleteReviewed = draft.status === "human_reviewed" && draft.needs_review;
     const states = {
-      saving: ["Сохраняем…", "saving"], saved: [draft.status === "human_reviewed" ? "Подтверждено" : "Черновик сохранён", "saved"],
+      saving: ["Сохраняем…", "saving"], saved: [incompleteReviewed ? "Нужно дополнить" : draft.status === "human_reviewed" ? "Подтверждено" : "Черновик сохранён", incompleteReviewed ? "warning" : "saved"],
       error: ["Сохранено локально, ожидает отправки", "error"], local: ["Сохранено локально", "local"],
     };
     const [text, className] = states[draft.saveState] || states.local;
@@ -166,7 +171,28 @@ export async function mountWorkbench() {
       status, archived: false, data: clone(data),
     };
   }
-  async function saveRecord(draft, status = "draft") {
+  function validLatestRevision(history, draft, contextSource) {
+    return (Array.isArray(history) ? history : [])
+      .filter(item => item?.record_id === draft.record_id && item.source_id === contextSource.source_id &&
+        item.source_sha256 === contextSource.sha256 && item.kind === draft.kind &&
+        Number.isInteger(item.revision) && item.revision > draft.expected_revision && !item.archived)
+      .sort((left, right) => right.revision - left.revision)[0] || null;
+  }
+  async function recoverConflict(draft, context, localData) {
+    const result = await request(`/api/records/${encodeURIComponent(draft.record_id)}/history`);
+    const history = result?.records || result?.revisions || result?.history || (Array.isArray(result) ? result : []);
+    const latest = validLatestRevision(history, draft, context.source);
+    if (!latest) throw new Error("Не удалось получить более новую версию этой записи");
+    draft.conflict = {
+      source_id: context.source.source_id, source_sha256: context.source.sha256,
+      record_id: draft.record_id, kind: draft.kind, latest_revision: latest.revision,
+      server_data: clone(latest.data), server_status: latest.status,
+      server_needs_review: Boolean(latest.needs_review), local_data: clone(localData),
+    };
+    draft.recoverable_data = clone(localData);
+    draft.error = "Сервер сохранил более новую версию. Сравните обе версии и явно выберите дальнейшее действие.";
+  }
+  async function saveRecord(draft, status = "draft", { refreshEditor = false } = {}) {
     if (!draft || disposed) return;
     clearSaveTimer(draft.record_id);
     const generation = draft.generation || 0;
@@ -186,6 +212,8 @@ export async function mountWorkbench() {
         draft.status = saved.status;
         draft.needs_review = saved.needs_review ?? saved.status !== "human_reviewed";
         draft.error = "";
+        draft.conflict = null;
+        draft.recoverable_data = null;
         if ((draft.generation || 0) === generation) {
           draft.dirty = false;
           draft.saveState = "saved";
@@ -198,7 +226,8 @@ export async function mountWorkbench() {
         if (context.session === sourceSession) {
           showMessage("editor-error");
           renderRecordList();
-          renderEditor();
+          if (refreshEditor && selectedId === draft.record_id && (draft.generation || 0) === generation) renderEditor();
+          else updateEditorChrome();
           updateProgressCopy();
           if (selectedId === draft.record_id) saveProgress();
         }
@@ -206,13 +235,14 @@ export async function mountWorkbench() {
       } catch (error) {
         draft.dirty = true;
         draft.saveState = "error";
-        draft.error = error.status === 409
-          ? "На сервере уже есть более новая версия. Ваша правка сохранена локально; откройте историю и перенесите её вручную."
-          : `Не удалось отправить черновик: ${error.message}. Правка сохранена локально.`;
+        if (error.status === 409) {
+          try { await recoverConflict(draft, context, data); }
+          catch (historyError) { draft.error = `Конфликт версий: ${historyError.message}. Ваша правка сохранена локально.`; }
+        } else draft.error = `Не удалось отправить черновик: ${error.message}. Правка сохранена локально.`;
         persistPending(context);
         if (context.session === sourceSession) {
-          if (selectedId === draft.record_id) showMessage("editor-error", draft.error);
-          updateSaveState();
+          if (selectedId === draft.record_id) renderEditor();
+          else updateSaveState();
           renderRecordList();
         }
         throw error;
@@ -304,6 +334,8 @@ export async function mountWorkbench() {
     const list = [...drafts.values()].filter(draft => {
       if (kind !== "all" && draft.kind !== kind) return false;
       if (status === "local") return draft.dirty;
+      if (status === "human_reviewed") return draft.status === "human_reviewed" && !draft.needs_review;
+      if (status === "draft") return draft.status === "draft" || draft.needs_review;
       return status === "all" || draft.status === status;
     }).sort((a, b) => recordTime(a) - recordTime(b) || a.record_id.localeCompare(b.record_id));
     const node = $("record-list");
@@ -324,13 +356,13 @@ export async function mountWorkbench() {
       const title = document.createElement("span"); title.className = "record-card-title";
       title.textContent = recordLabel(draft).replace(/^.+?: /, "");
       const state = document.createElement("small");
-      state.textContent = draft.dirty ? "• локальная правка" : draft.needs_review ? "! нужно дополнить" : draft.status === "human_reviewed" ? "✓ подтверждено" : "черновик";
+      state.textContent = draft.dirty ? "• локальная правка" : draft.status === "human_reviewed" && draft.needs_review ? "! нужно дополнить" : draft.status === "human_reviewed" ? "✓ подтверждено" : "черновик";
       button.append(top, title, state); node.append(button);
     }
   }
   function updateProgressCopy() {
     const all = [...drafts.values()];
-    const reviewed = all.filter(item => item.status === "human_reviewed" && !item.dirty).length;
+    const reviewed = all.filter(item => item.status === "human_reviewed" && !item.needs_review && !item.dirty).length;
     $("match-progress").textContent = `${all.length} объектов · ${reviewed} подтверждено`;
   }
 
@@ -378,20 +410,98 @@ export async function mountWorkbench() {
     }).join("");
     return `<div class="field-grid">${textField("Время кадра, секунды", "timestamp_seconds", data.timestamp_seconds, { type: "number", step: "0.001" })}<label class="field"><span>Событие</span><select data-field="event_id" aria-label="Событие">${eventOptions(data.event_id)}</select></label><label class="field"><span>Владение</span><select data-field="possession_id" aria-label="Владение">${possessionOptions(data.possession_id)}</select></label>${textArea("Комментарий к кадру", "notes", data.notes)}</div><fieldset class="point-tools"><legend>Точки на кадре</legend><div class="radio-row"><label><input type="radio" name="point-entity" value="player"${pointTool.entity === "player" ? " checked" : ""}> Игрок</label><label><input type="radio" name="point-entity" value="ball" aria-label="Мяч"${pointTool.entity === "ball" ? " checked" : ""}> Мяч</label></div><label class="field"><span>Игрок для точки</span><select id="point-player" aria-label="Игрок для точки">${playerOptions(pointTool.playerId, "Выберите игрока")}</select></label><div class="point-options">${selectField("Видимость", "point_visibility", pointTool.visibility, [["visible", "Виден"], ["occluded", "Перекрыт"], ["offscreen", "Вне кадра"], ["unclear", "Неясно"]])}${selectField("Опорная точка", "point_anchor", pointTool.anchor, [["floor_contact", "Контакт с площадкой"], ["image_center", "Центр изображения"]])}</div><p>Поставьте видео на паузу и нажмите на стопы игрока. Для мяча используется центр. Нажмите существующую метку, чтобы переставить её.</p><div class="mark-actions"><button id="return-to-frame" type="button">Вернуться к кадру</button><button id="new-point" type="button">Добавить следующую точку</button><button id="add-point-without-position" type="button">Добавить без координат</button></div><ul class="point-list">${pointRows || "<li class=\"muted\">Точек пока нет</li>"}</ul></fieldset>`;
   }
+  function conflictValue(value) {
+    if (value == null || value === "") return "не указано";
+    if (Array.isArray(value)) return value.length ? `${value.length} отметок` : "нет отметок";
+    if (typeof value === "object") return JSON.stringify(value);
+    return String(value);
+  }
+  const conflictFieldNames = {
+    name: "Название", color: "Цвет формы", team_id: "Команда", jersey_number: "Номер формы",
+    number_status: "Видимость номера", evidence_seconds: "Время подтверждения", start_seconds: "Начало",
+    end_seconds: "Конец", attack_direction: "Направление атаки", event_type: "Тип события",
+    possession_id: "Владение", actor_id: "Исполнитель", receiver_id: "Получатель передачи",
+    passer_id: "Последний пасующий", last_pass_seconds: "Время последней передачи",
+    incoming_player_id: "Вышел на площадку", outgoing_player_id: "Покинул площадку",
+    shot_type: "Тип броска", outcome: "Исход броска", scoring_decision: "Решение по очкам",
+    play_context: "Контекст игры", presentation: "Показ момента", boundary_status: "Полнота границ",
+    defensive_action: "Защитное действие", notes: "Комментарий", timestamp_seconds: "Время кадра",
+    event_id: "Событие", points: "Точки на кадре",
+  };
+  function conflictHtml(draft) {
+    const conflict = draft.conflict;
+    if (!conflict) return "";
+    const local = conflict.local_data || draft.recoverable_data || draft.data;
+    const server = conflict.server_data || {};
+    const fields = [...new Set([...Object.keys(local), ...Object.keys(server)])]
+      .filter(field => JSON.stringify(local[field]) !== JSON.stringify(server[field]));
+    const comparisons = fields.map(field => `<div class="conflict-field"><strong>${escapeHtml(conflictFieldNames[field] || field)}</strong><dl><div><dt>Моя версия</dt><dd>${escapeHtml(conflictValue(local[field]))}</dd></div><div><dt>Серверная версия</dt><dd>${escapeHtml(conflictValue(server[field]))}</dd></div></dl></div>`).join("");
+    return `<section class="conflict-panel" aria-labelledby="conflict-title"><div><p class="eyebrow">ТРЕБУЕТ РЕШЕНИЯ</p><h3 id="conflict-title">Конфликт версий</h3><p>Версия сервера: ${conflict.latest_revision}. Обе версии сохранены локально до вашего выбора.</p></div><div class="conflict-comparison">${comparisons || "<p>Поля совпадают, но серверная ревизия новее.</p>"}</div><div class="conflict-actions"><button type="button" data-conflict-action="server">Загрузить серверную версию</button><button type="button" data-conflict-action="local">Вернуть мои локальные изменения</button><button type="button" class="primary-button" data-conflict-action="save-local">Сохранить мои изменения черновиком</button></div></section>`;
+  }
+  function updateEditorChrome() {
+    const draft = selectedDraft();
+    $("history-panel").hidden = !draft || draft.expected_revision === 0;
+    if (!draft) { updateSaveState(); return; }
+    $("confirm-record").textContent = draft.status === "human_reviewed" && !draft.needs_review
+      ? "Подтвердить исправление" : "Подтвердить разметку";
+    showMessage("editor-error", draft.error);
+    updateSaveState();
+  }
+  function activeConflict(draft) {
+    const conflict = draft?.conflict;
+    if (!conflict || conflict.source_id !== source?.source_id || conflict.source_sha256 !== source?.sha256 ||
+      conflict.record_id !== draft.record_id || conflict.kind !== draft.kind || !Number.isInteger(conflict.latest_revision)) return null;
+    return conflict;
+  }
+  function chooseConflictVersion(draft, choice) {
+    const conflict = activeConflict(draft);
+    if (!conflict) return;
+    draft.expected_revision = conflict.latest_revision;
+    if (choice === "server") {
+      draft.data = clone(conflict.server_data);
+      draft.status = conflict.server_status;
+      draft.needs_review = conflict.server_needs_review;
+    } else {
+      draft.data = clone(conflict.local_data || draft.recoverable_data);
+      draft.status = "draft";
+      draft.needs_review = true;
+    }
+    draft.dirty = true;
+    draft.saveState = "local";
+    draft.error = "";
+    draft.generation = (draft.generation || 0) + 1;
+    persistPending();
+    renderEditor();
+    renderRecordList();
+    updateProgressCopy();
+  }
+  function saveConflictAsDraft(draft) {
+    const conflict = activeConflict(draft);
+    if (!conflict) return;
+    draft.data = clone(conflict.local_data || draft.recoverable_data);
+    draft.expected_revision = conflict.latest_revision;
+    draft.status = "draft";
+    draft.needs_review = true;
+    draft.dirty = true;
+    draft.saveState = "local";
+    draft.error = "";
+    draft.generation = (draft.generation || 0) + 1;
+    persistPending();
+    renderEditor();
+    saveRecord(draft, "draft", { refreshEditor: true });
+  }
   function renderEditor() {
     const draft = selectedDraft();
     $("empty-editor").hidden = Boolean(draft);
     editor.hidden = !draft;
-    $("history-panel").hidden = !draft || draft.expected_revision === 0;
-    if (!draft) { $("point-surface").hidden = true; $("point-layer").replaceChildren(); updateSaveState(); return; }
+    if (!draft) { $("point-surface").hidden = true; $("point-layer").replaceChildren(); video.controls = true; updateEditorChrome(); return; }
     $("editor-kind").textContent = KINDS[draft.kind].toUpperCase();
     $("editor-title").textContent = recordLabel(draft);
     const legacyContext = draft.legacy ? `<section class="legacy-context" aria-label="Контекст импортированной разметки"><strong>${draft.needs_review ? "Нужно дополнить два решения из новой схемы" : "Импортированная разметка"}</strong><p>Исходный клип ${escapeHtml(draft.legacy.example_id)} · схема ${escapeHtml(draft.legacy.schema_version)}</p><button type="button" data-seek-legacy="${numberValue(draft.legacy.source_start_seconds)}" aria-label="Перейти к исходному контексту">${formatTime(draft.legacy.source_start_seconds)}–${formatTime(draft.legacy.source_end_seconds)}</button></section>` : "";
-    $("editor-fields").innerHTML = legacyContext + ({ team: editorForTeam, player: editorForPlayer, possession: editorForPossession, event: editorForEvent, frame: editorForFrame })[draft.kind](draft.data);
-    $("confirm-record").textContent = draft.status === "human_reviewed" ? "Подтвердить исправление" : "Подтвердить разметку";
-    showMessage("editor-error", draft.error);
-    updateSaveState();
+    $("editor-fields").innerHTML = conflictHtml(draft) + legacyContext + ({ team: editorForTeam, player: editorForPlayer, possession: editorForPossession, event: editorForEvent, frame: editorForFrame })[draft.kind](draft.data);
+    updateEditorChrome();
     $("point-surface").hidden = draft.kind !== "frame";
+    video.controls = draft.kind !== "frame";
     renderPointLayer();
   }
 
@@ -400,7 +510,8 @@ export async function mountWorkbench() {
     if (!draft) return;
     const numeric = new Set(["evidence_seconds", "start_seconds", "end_seconds", "last_pass_seconds", "timestamp_seconds"]);
     const nullable = new Set(["team_id", "possession_id", "actor_id", "receiver_id", "passer_id", "incoming_player_id", "outgoing_player_id", "event_id"]);
-    let value = numeric.has(field) ? nullableNumber(target.value) : nullable.has(field) ? (target.value || null) : target.value;
+    const nullableEnums = new Set(["shot_type", "outcome", "scoring_decision", "play_context", "presentation", "boundary_status", "defensive_action"]);
+    let value = numeric.has(field) ? nullableNumber(target.value) : nullable.has(field) || nullableEnums.has(field) ? (target.value || null) : target.value;
     if (field === "jersey_number") {
       value = target.value.replace(/\D/g, "").slice(0, 3) || null;
       target.value = value || "";
@@ -511,8 +622,24 @@ export async function mountWorkbench() {
     recoveredIds = new Set();
     for (const local of loadLocalDrafts(localStorage, workspace.workspace_id, workspace.workspace_revision, source.source_id)) {
       const base = records.get(local.record_id);
-      drafts.set(local.record_id, { ...clone(local), dirty: true, saveState: "local", error: "", generation: local.generation || 1,
-        origin: base?.origin, legacy: clone(base?.legacy), needs_review: Boolean(base?.needs_review) });
+      const recovered = { ...clone(local), dirty: true, saveState: "local", error: "", generation: local.generation || 1,
+        origin: base?.origin, legacy: clone(base?.legacy), needs_review: Boolean(base?.needs_review) };
+      const storedConflict = recovered.conflict;
+      if (!storedConflict || storedConflict.source_id !== source.source_id || storedConflict.source_sha256 !== source.sha256 ||
+        storedConflict.record_id !== recovered.record_id || storedConflict.kind !== recovered.kind || !Number.isInteger(storedConflict.latest_revision)) {
+        recovered.conflict = null;
+      }
+      if (base && base.revision > recovered.expected_revision && (!recovered.conflict || base.revision > recovered.conflict.latest_revision)) {
+        recovered.conflict = {
+          source_id: source.source_id, source_sha256: source.sha256, record_id: recovered.record_id,
+          kind: recovered.kind, latest_revision: base.revision, server_data: clone(base.data),
+          server_status: base.status, server_needs_review: Boolean(base.needs_review), local_data: clone(recovered.data),
+        };
+        recovered.recoverable_data = clone(recovered.data);
+        recovered.error = "Сервер сохранил более новую версию. Сравните обе версии и явно выберите дальнейшее действие.";
+        recovered.saveState = "error";
+      }
+      drafts.set(local.record_id, recovered);
       recoveredIds.add(local.record_id);
     }
     const progress = result.progress;
@@ -570,6 +697,13 @@ export async function mountWorkbench() {
     if (field) setField(field, event.target);
   });
   listen(editor, "click", event => {
+    const conflictAction = event.target.closest("button[data-conflict-action]");
+    if (conflictAction) {
+      const draft = selectedDraft();
+      if (conflictAction.dataset.conflictAction === "save-local") saveConflictAsDraft(draft);
+      else chooseConflictVersion(draft, conflictAction.dataset.conflictAction);
+      return;
+    }
     const mark = event.target.closest("button[data-mark]");
     if (mark) {
       const draft = selectedDraft(); draft.data[mark.dataset.mark] = currentTime(); setDirty(draft); renderEditor(); return;

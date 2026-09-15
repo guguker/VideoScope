@@ -213,6 +213,12 @@ describe('full-match annotation workbench editing', () => {
     }
     await mount([legacy])
     expect(screen.getByText('Нужно дополнить два решения из новой схемы')).toBeInTheDocument()
+    expect(screen.getByText('1 объектов · 0 подтверждено')).toBeInTheDocument()
+    expect(screen.queryByText('Подтверждено')).not.toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('Состояние'), { target: { value: 'human_reviewed' } })
+    expect(screen.queryByRole('button', { name: 'Событие: Импортированный бросок' })).not.toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('Состояние'), { target: { value: 'draft' } })
+    expect(screen.getByRole('button', { name: 'Событие: Импортированный бросок' })).toBeInTheDocument()
     const context = screen.getByRole('button', { name: 'Перейти к исходному контексту' })
     expect(context).toHaveTextContent('00:58:20–00:58:40')
     fireEvent.click(context)
@@ -230,6 +236,77 @@ describe('full-match annotation workbench editing', () => {
     expect(screen.getByLabelText('Комментарий к событию')).toHaveValue('Новая несохранённая правка')
     expect(screen.getByText('Сохранено локально, ожидает отправки')).toBeInTheDocument()
     expect(screen.queryByText('Черновик сохранён')).not.toBeInTheDocument()
+  })
+
+  it('shows both stale versions and explicitly rebases the local draft onto the latest revision', async () => {
+    const recordId = `event-${'9'.repeat(32)}`
+    await mount([eventRecord(recordId, 'Серверная версия 1', 1)])
+    fireEvent.input(screen.getByLabelText('Комментарий к событию'), { target: { value: 'Моя локальная правка' } })
+    serverRecords = [eventRecord(recordId, 'Серверная версия 2', 2)]
+    fetchMock.mockImplementationOnce(() => Promise.resolve(reply({ detail: 'stale revision' }, 409)))
+    fireEvent.click(screen.getByRole('button', { name: 'Сохранить черновик' }))
+    const conflict = (await screen.findByText('Конфликт версий')).closest('section')!
+    expect(within(conflict).getByText('Моя локальная правка')).toBeInTheDocument()
+    expect(within(conflict).getByText('Серверная версия 2')).toBeInTheDocument()
+    expect(within(conflict).getByText(/Версия сервера: 2\./)).toBeInTheDocument()
+
+    dispose?.()
+    document.documentElement.innerHTML = html.replace(/<!doctype html>/i, '')
+    screen = within(document.body)
+    dispose = await mountWorkbench()
+    await screen.findByRole('heading', { name: 'Матч 01' })
+    expect(await screen.findByText('Конфликт версий')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Загрузить серверную версию' }))
+    expect(screen.getByLabelText('Комментарий к событию')).toHaveValue('Серверная версия 2')
+    fireEvent.click(screen.getByRole('button', { name: 'Вернуть мои локальные изменения' }))
+    expect(screen.getByLabelText('Комментарий к событию')).toHaveValue('Моя локальная правка')
+    fireEvent.click(screen.getByRole('button', { name: 'Сохранить мои изменения черновиком' }))
+    await screen.findByText('Черновик сохранён')
+    const finalSave = fetchMock.mock.calls.filter(([url, options]) => url === '/api/records' && options?.method === 'POST').at(-1)!
+    const payload = JSON.parse(String(finalSave[1].body))
+    expect(payload.expected_revision).toBe(2)
+    expect(payload.status).toBe('draft')
+    expect(payload.data.notes).toBe('Моя локальная правка')
+  })
+
+  it('normalizes a cleared optional enum to null in the saved record', async () => {
+    const saved: Record<string, any> = eventRecord(`event-${'a'.repeat(32)}`, 'Очистить защиту')
+    saved.data.defensive_action = 'help'
+    await mount([saved])
+    fireEvent.change(screen.getByLabelText('Защитное действие'), { target: { value: '' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Сохранить черновик' }))
+    await screen.findByText('Черновик сохранён')
+    const payload = JSON.parse(String(fetchMock.mock.calls.filter(([url, options]) =>
+      url === '/api/records' && options?.method === 'POST').at(-1)![1].body))
+    expect(payload.data.defensive_action).toBeNull()
+    const card = screen.getByRole('button', { name: 'Событие: Очистить защиту' })
+    expect(card).toHaveTextContent('черновик')
+    expect(card).not.toHaveTextContent('нужно дополнить')
+  })
+
+  it('does not replace the active field or cursor when an older save is acknowledged', async () => {
+    await mount([eventRecord(`event-${'b'.repeat(32)}`, 'Начало')])
+    const notes = screen.getByLabelText('Комментарий к событию') as HTMLTextAreaElement
+    fireEvent.input(notes, { target: { value: 'Первая правка' } })
+    let finishSave!: (response: Response) => void
+    fetchMock.mockImplementationOnce((_url: string, options: RequestInit) => {
+      const payload = JSON.parse(String(options.body))
+      return new Promise<Response>(resolve => { finishSave = response => resolve(response) }).then(() =>
+        reply({ ...payload, revision: 2, source_sha256: source.sha256, needs_review: true,
+          created_at: '2026-09-11T10:00:00Z', updated_at: '2026-09-11T10:01:00Z', origin: 'human' }))
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Сохранить черновик' }))
+    await waitFor(() => expect(finishSave).toBeTypeOf('function'))
+    fireEvent.input(notes, { target: { value: 'Вторая правка продолжается' } })
+    notes.focus()
+    notes.setSelectionRange(8, 8)
+    finishSave(reply({ ok: true }))
+    await waitFor(() => expect(screen.getByText('Сохраняем…')).toBeInTheDocument())
+    expect(screen.getByLabelText('Комментарий к событию')).toBe(notes)
+    expect(notes).toHaveValue('Вторая правка продолжается')
+    expect(document.activeElement).toBe(notes)
+    expect(notes.selectionStart).toBe(8)
   })
 
   it('autosaves edits only as drafts and requires a separate review action', async () => {
@@ -404,5 +481,15 @@ describe('full-match annotation workbench editing', () => {
     await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => url === '/api/progress')).toBe(true))
     const payload = JSON.parse(String(fetchMock.mock.calls.find(([url]) => url === '/api/progress')![1].body))
     expect(payload.position_seconds).toBe(3601)
+  })
+
+  it('exposes native long-match playback controls except while placing frame points', async () => {
+    await mount()
+    const video = screen.getByLabelText('Видео матча') as HTMLVideoElement
+    expect(video.controls).toBe(true)
+    fireEvent.click(screen.getByRole('button', { name: 'Добавить кадр с точками' }))
+    expect(video.controls).toBe(false)
+    fireEvent.click(screen.getByRole('button', { name: 'Добавить событие' }))
+    expect(video.controls).toBe(true)
   })
 })
