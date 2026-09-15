@@ -190,6 +190,11 @@ try {
   }
   receipt.runner_sha256 = sha(await readFile(fileURLToPath(import.meta.url)))
   receipt.started_at = new Date().toISOString()
+  const { stdout: pythonRuntime } = await command(python, ['-c',
+    'import json,platform; print(json.dumps({"python":platform.python_version(),"machine":platform.machine(),"macos":platform.mac_ver()[0]}))'])
+  receipt.runtime = { ...JSON.parse(pythonRuntime), node: process.version,
+    ffmpeg: (await command('ffmpeg', ['-version'])).stdout.split('\n')[0],
+    cpu: (await command('sysctl', ['-n', 'machdep.cpu.brand_string'])).stdout.trim() }
   await command(python, ['-m', 'videoscope.annotation_workbench.prepare', '--help'])
   const media = [path.join(temporary, 'long.mp4'), path.join(temporary, 'short.mp4')]
   await ffmpeg(['-f', 'lavfi', '-i', 'testsrc2=size=320x180:rate=1', '-f', 'lavfi', '-i',
@@ -365,6 +370,37 @@ try {
   await page.getByRole('button', { name: 'Показать историю', exact: true }).click()
   await expect.poll(() => page.locator('#history-list li').count()).toBeGreaterThan(1)
 
+  const otherTab = await context.newPage()
+  otherTab.on('pageerror', (error) => pageErrors.push(error.message))
+  otherTab.on('request', (request) => {
+    if (new URL(request.url()).origin !== current.origin) externalRequests.push(request.url())
+  })
+  await otherTab.goto(current.origin)
+  await otherTab.locator(`[data-record-id="${shot.record_id}"]`).click()
+  await otherTab.getByLabel('Комментарий к событию', { exact: true }).fill('Правка из второй вкладки')
+  await otherTab.locator('#save-draft').click()
+  await expect(otherTab.locator('#save-state')).toHaveText('Черновик сохранён')
+  await otherTab.close()
+  await field('Комментарий к событию').fill('Согласованная локальная правка')
+  await page.locator('#save-draft').click()
+  await expect(page.getByRole('heading', { name: 'Конфликт версий', exact: true })).toBeVisible()
+  await expect(page.getByText('Правка из второй вкладки', { exact: true })).toBeVisible()
+  await page.screenshot({ path: path.join(temporary, 'conflict.png'), fullPage: true })
+  await page.getByRole('button', { name: 'Загрузить серверную версию', exact: true }).click()
+  await expect(field('Комментарий к событию')).toHaveValue('Правка из второй вкладки')
+  await page.getByRole('button', { name: 'Вернуть мои локальные изменения', exact: true }).click()
+  await expect(field('Комментарий к событию')).toHaveValue('Согласованная локальная правка')
+  await page.getByRole('button', { name: 'Сохранить мои изменения черновиком', exact: true }).click()
+  await expect(page.locator('#save-state')).toHaveText('Черновик сохранён')
+  assert.equal((await uniqueRecord((record) => record.record_id === shot.record_id)).data.notes, 'Согласованная локальная правка')
+  const reconciledHistory = await api(current.origin, `/api/records/${shot.record_id}/history`)
+  assert.ok(reconciledHistory.some((record) => record.data.notes === 'Правка из второй вкладки'))
+  await field('Защитное действие').selectOption('help')
+  await save('draft')
+  await field('Защитное действие').selectOption('')
+  await save('draft')
+  assert.equal((await uniqueRecord((record) => record.record_id === shot.record_id)).data.defensive_action, null)
+
   const downloadPromise = page.waitForEvent('download')
   await page.getByRole('link', { name: 'Скачать резервную копию', exact: true }).click()
   const download = await downloadPromise
@@ -396,11 +432,18 @@ try {
   assert.deepEqual(await treeHashes(first.batch), legacyBefore)
   assert.deepEqual(pageErrors, [])
   assert.deepEqual(externalRequests, [])
+  for (const [file, expectedHash] of Object.entries(receipt.executed_files_sha256)) {
+    assert.equal(sha(await readFile(path.join(root, file))), expectedHash, `Executed file changed during smoke: ${file}`)
+  }
+  assert.equal(sha(await readFile(fileURLToPath(import.meta.url))), receipt.runner_sha256, 'Runner changed during smoke')
+  assert.equal((await command('git', ['rev-parse', 'HEAD'])).stdout.trim(), receipt.code_sha)
+  receipt.executed_code_unchanged = true
   receipt.status = 'ready'
   receipt.checks = ['long_video_range_and_hour_seek', 'eight_sources_two_allowed_six_unopened',
     'legacy_v1_v2_v3_history_and_absolute_times', 'team_players_00_possession_shot_pass_substitution',
     'frame_player_and_ball_points', 'desktop_and_narrow_layout', 'independent_draft_reload_and_server_restart',
     'correction_retains_other_events_and_history', 'download_restore_different_root_and_idempotence',
+    'two_browser_tabs_explicit_conflict_reconciliation', 'cleared_optional_enum_persists_null',
     'legacy_bytes_unchanged', 'no_external_requests_or_browser_errors']
   receipt.record_count = beforeRestore.length
   receipt.backup_sha256 = sha(backupBytes)
