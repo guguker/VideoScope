@@ -41,3 +41,7 @@ outputs/
 data/
 .artifact-work/
 .codex-tmp/
+
+/Данные матчи/
+
+/.youtube-downloader/

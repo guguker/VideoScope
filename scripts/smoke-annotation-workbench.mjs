@@ -380,7 +380,6 @@ try {
   await otherTab.getByLabel('Комментарий к событию', { exact: true }).fill('Правка из второй вкладки')
   await otherTab.locator('#save-draft').click()
   await expect(otherTab.locator('#save-state')).toHaveText('Черновик сохранён')
-  await otherTab.close()
   await field('Комментарий к событию').fill('Согласованная локальная правка')
   await page.locator('#save-draft').click()
   await expect(page.getByRole('heading', { name: 'Конфликт версий', exact: true })).toBeVisible()
@@ -388,6 +387,13 @@ try {
   await page.screenshot({ path: path.join(temporary, 'conflict.png'), fullPage: true })
   await page.getByRole('button', { name: 'Загрузить серверную версию', exact: true }).click()
   await expect(field('Комментарий к событию')).toHaveValue('Правка из второй вкладки')
+  await otherTab.getByLabel('Комментарий к событию', { exact: true }).fill('Следующая серверная правка')
+  await otherTab.locator('#save-draft').click()
+  await expect(otherTab.locator('#save-state')).toHaveText('Черновик сохранён')
+  await otherTab.close()
+  await page.reload()
+  await expect(page.getByRole('heading', { name: 'Конфликт версий', exact: true })).toBeVisible()
+  await expect(page.getByText('Следующая серверная правка', { exact: true })).toBeVisible()
   await page.getByRole('button', { name: 'Вернуть мои локальные изменения', exact: true }).click()
   await expect(field('Комментарий к событию')).toHaveValue('Согласованная локальная правка')
   await page.getByRole('button', { name: 'Сохранить мои изменения черновиком', exact: true }).click()
@@ -395,6 +401,7 @@ try {
   assert.equal((await uniqueRecord((record) => record.record_id === shot.record_id)).data.notes, 'Согласованная локальная правка')
   const reconciledHistory = await api(current.origin, `/api/records/${shot.record_id}/history`)
   assert.ok(reconciledHistory.some((record) => record.data.notes === 'Правка из второй вкладки'))
+  assert.ok(reconciledHistory.some((record) => record.data.notes === 'Следующая серверная правка'))
   await field('Защитное действие').selectOption('help')
   await save('draft')
   await field('Защитное действие').selectOption('')
@@ -443,7 +450,8 @@ try {
     'legacy_v1_v2_v3_history_and_absolute_times', 'team_players_00_possession_shot_pass_substitution',
     'frame_player_and_ball_points', 'desktop_and_narrow_layout', 'independent_draft_reload_and_server_restart',
     'correction_retains_other_events_and_history', 'download_restore_different_root_and_idempotence',
-    'two_browser_tabs_explicit_conflict_reconciliation', 'cleared_optional_enum_persists_null',
+    'two_browser_tabs_explicit_conflict_reconciliation', 'conflict_reload_after_second_server_revision',
+    'cleared_optional_enum_persists_null',
     'legacy_bytes_unchanged', 'no_external_requests_or_browser_errors']
   receipt.record_count = beforeRestore.length
   receipt.backup_sha256 = sha(backupBytes)

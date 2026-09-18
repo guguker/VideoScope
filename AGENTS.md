@@ -187,8 +187,12 @@ workbench for sustained annotation of full matches: resume progress, create and
 correct multiple events and possessions, identify participants, add spatial
 observations, and retain/export all revisions with source/time evidence. Design
 it for the eight-file UBA collection, without requiring manual clip preparation
-or repeated entry of existing answers. This is the next delivery target, not a
-claim that those capabilities already exist. The detailed completion contract is
+or repeated entry of existing answers. The implementation is now present on the
+annotation-workbench line. Local synthetic publication checks on 2026-09-18
+passed backend/frontend suites, both annotation browser flows and backup/restore;
+their dirty-checkout status and remaining recovery limits are documented in
+`docs/benchmarks/phase1/workbench/README.md`. A clean release acceptance receipt
+and the full data exit gate remain separate. The detailed completion contract is
 in `docs/ml-autonomy-plan.md` under “Текущая цель Фазы 1”.
 
 Research public dataset/model descriptions as candidates, including defensive

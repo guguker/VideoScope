@@ -7,6 +7,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { pointFromClient } from '../../../backend/src/videoscope/annotation_workbench/web/geometry.js'
 // @ts-expect-error JavaScript server asset intentionally has no TS declaration.
 import { mountWorkbench } from '../../../backend/src/videoscope/annotation_workbench/web/app.js'
+// @ts-expect-error JavaScript server asset intentionally has no TS declaration.
+import { loadLocalDrafts, storageKey, writeLocalDrafts } from '../../../backend/src/videoscope/annotation_workbench/web/state.js'
 
 const { readFileSync } = await vi.importActual<{
   readFileSync: (path: string, encoding: 'utf8') => string
@@ -118,9 +120,68 @@ describe('full-match annotation workbench geometry', () => {
   })
 })
 
+describe('full-match annotation workbench draft ownership', () => {
+  it('preserves one tab’s local conflict when another tab saves the same record', () => {
+    const storage = new MemoryStorage()
+    const id = `event-${'d'.repeat(32)}`
+    const draft = { record_id: id, kind: 'event', data: { notes: 'Первая локальная версия' },
+      expected_revision: 1, generation: 1, dirty: true }
+    writeLocalDrafts(storage, 'workspace', 'revision', 'source', new Map([[id, draft]]), 'first-tab')
+    writeLocalDrafts(storage, 'workspace', 'revision', 'source', new Map([[id, {
+      ...draft, data: { notes: 'Вторая версия' }, expected_revision: 2, dirty: false,
+    }]]), 'second-tab')
+    expect(loadLocalDrafts(storage, 'workspace', 'revision', 'source', 'first-tab')[0].data.notes)
+      .toBe('Первая локальная версия')
+    expect(loadLocalDrafts(storage, 'workspace', 'revision', 'source', 'second-tab')).toEqual([])
+    expect(loadLocalDrafts(storage, 'workspace', 'revision', 'source', 'new-tab')[0].data.notes)
+      .toBe('Первая локальная версия')
+  })
+
+  it('recovers legacy shared drafts without deleting them during another tab’s save', () => {
+    const storage = new MemoryStorage()
+    const id = `event-${'e'.repeat(32)}`
+    const draft = { record_id: id, kind: 'event', data: { notes: 'Старый формат' },
+      expected_revision: 1, generation: 1, dirty: true }
+    writeLocalDrafts(storage, 'workspace', 'revision', 'source', new Map([[id, draft]]))
+    expect(loadLocalDrafts(storage, 'workspace', 'revision', 'source', 'new-tab')[0].data.notes)
+      .toBe('Старый формат')
+    writeLocalDrafts(storage, 'workspace', 'revision', 'source', new Map(), 'another-tab')
+    expect(loadLocalDrafts(storage, 'workspace', 'revision', 'source')[0].data.notes).toBe('Старый формат')
+  })
+
+  it('prefers the previous document snapshot, including an acknowledged empty one', () => {
+    const storage = new MemoryStorage()
+    const id = `event-${'f'.repeat(32)}`
+    const draft = { record_id: id, kind: 'event', data: { notes: 'Предыдущая вкладка' },
+      expected_revision: 1, generation: 1, dirty: true }
+    writeLocalDrafts(storage, 'workspace', 'revision', 'source', new Map([[id, draft]]), 'previous')
+    writeLocalDrafts(storage, 'workspace', 'revision', 'source', new Map([[id, {
+      ...draft, data: { notes: 'Другая вкладка' },
+    }]]), 'foreign')
+    expect(loadLocalDrafts(storage, 'workspace', 'revision', 'source', 'new-writer', 'previous'))
+      .toHaveLength(1)
+    expect(loadLocalDrafts(storage, 'workspace', 'revision', 'source', 'new-writer', 'previous')[0].data.notes)
+      .toBe('Предыдущая вкладка')
+    writeLocalDrafts(storage, 'workspace', 'revision', 'source', new Map(), 'previous')
+    expect(loadLocalDrafts(storage, 'workspace', 'revision', 'source', 'next-writer', 'previous')).toEqual([])
+  })
+
+  it('recovers valid pending edits even when a legacy snapshot is malformed', () => {
+    const storage = new MemoryStorage()
+    const id = `event-${'d'.repeat(32)}`
+    const draft = { record_id: id, kind: 'event', data: { notes: 'Сохранённая правка' },
+      expected_revision: 1, generation: 1, dirty: true }
+    storage.setItem(storageKey('workspace', 'revision', 'source'), '{broken')
+    writeLocalDrafts(storage, 'workspace', 'revision', 'source', new Map([[id, draft]]), 'first-tab')
+    expect(loadLocalDrafts(storage, 'workspace', 'revision', 'source', 'new-tab')[0].data.notes)
+      .toBe('Сохранённая правка')
+  })
+})
+
 describe('full-match annotation workbench editing', () => {
   beforeEach(() => {
     vi.stubGlobal('localStorage', new MemoryStorage())
+    vi.stubGlobal('sessionStorage', new MemoryStorage())
     fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
     vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {})
@@ -191,6 +252,7 @@ describe('full-match annotation workbench editing', () => {
     await mount()
     fireEvent.click(screen.getByRole('button', { name: 'Добавить событие' }))
     fireEvent.input(screen.getByLabelText('Комментарий к событию'), { target: { value: 'Возвратить после перезапуска' } })
+    const previousWriter = sessionStorage.getItem('videoscope.annotation-workbench.tab')
     dispose?.()
     document.documentElement.innerHTML = html.replace(/<!doctype html>/i, '')
     screen = within(document.body)
@@ -198,6 +260,7 @@ describe('full-match annotation workbench editing', () => {
     await screen.findByRole('heading', { name: 'Матч 01' })
     expect(screen.getByLabelText('Комментарий к событию')).toHaveValue('Возвратить после перезапуска')
     expect(screen.getByText('Восстановлен локальный черновик')).toBeInTheDocument()
+    expect(sessionStorage.getItem('videoscope.annotation-workbench.tab')).not.toBe(previousWriter)
   })
 
   it('shows the original clip context and missing-review state for an imported v1 event', async () => {
@@ -259,15 +322,63 @@ describe('full-match annotation workbench editing', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Загрузить серверную версию' }))
     expect(screen.getByLabelText('Комментарий к событию')).toHaveValue('Серверная версия 2')
+    serverRecords = [eventRecord(recordId, 'Серверная версия 3', 3)]
+    dispose?.()
+    document.documentElement.innerHTML = html.replace(/<!doctype html>/i, '')
+    screen = within(document.body)
+    dispose = await mountWorkbench()
+    await screen.findByRole('heading', { name: 'Матч 01' })
+    const refreshedConflict = (await screen.findByText('Конфликт версий')).closest('section')!
+    expect(within(refreshedConflict).getByText('Моя локальная правка')).toBeInTheDocument()
+    expect(within(refreshedConflict).getByText('Серверная версия 3')).toBeInTheDocument()
+    expect(within(refreshedConflict).getByText(/Версия сервера: 3\./)).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Вернуть мои локальные изменения' }))
     expect(screen.getByLabelText('Комментарий к событию')).toHaveValue('Моя локальная правка')
     fireEvent.click(screen.getByRole('button', { name: 'Сохранить мои изменения черновиком' }))
     await screen.findByText('Черновик сохранён')
     const finalSave = fetchMock.mock.calls.filter(([url, options]) => url === '/api/records' && options?.method === 'POST').at(-1)!
     const payload = JSON.parse(String(finalSave[1].body))
-    expect(payload.expected_revision).toBe(2)
+    expect(payload.expected_revision).toBe(3)
     expect(payload.status).toBe('draft')
     expect(payload.data.notes).toBe('Моя локальная правка')
+  })
+
+  it('keeps edits made while a stale save and its history request are pending', async () => {
+    const recordId = `event-${'c'.repeat(32)}`
+    await mount([eventRecord(recordId, 'Серверная версия 1', 1)])
+    let finishPost!: (response: Response) => void
+    let finishHistory!: (response: Response) => void
+    let firstPost = true
+    fetchMock.mockImplementation((url: string, options: RequestInit = {}) => {
+      if (url === '/api/records' && options.method === 'POST' && firstPost) {
+        firstPost = false
+        return new Promise<Response>(resolve => { finishPost = resolve })
+      }
+      if (/\/api\/records\/[^/]+\/history$/.test(url)) {
+        return new Promise<Response>(resolve => { finishHistory = resolve })
+      }
+      return completeNetwork(url, options)
+    })
+
+    const notes = screen.getByLabelText('Комментарий к событию')
+    fireEvent.input(notes, { target: { value: 'Правка при отправке' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Сохранить черновик' }))
+    await waitFor(() => expect(finishPost).toBeTypeOf('function'))
+    fireEvent.input(notes, { target: { value: 'Правка после отправки' } })
+    serverRecords = [eventRecord(recordId, 'Серверная версия 2', 2)]
+    finishPost(reply({ detail: 'stale revision' }, 409))
+    await waitFor(() => expect(finishHistory).toBeTypeOf('function'))
+    fireEvent.input(notes, { target: { value: 'Самая новая локальная правка' } })
+    finishHistory(reply(serverRecords))
+
+    const conflict = (await screen.findByText('Конфликт версий')).closest('section')!
+    expect(within(conflict).getByText('Самая новая локальная правка')).toBeInTheDocument()
+    expect(within(conflict).queryByText('Правка при отправке')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Сохранить мои изменения черновиком' }))
+    await screen.findByText('Черновик сохранён')
+    const finalSave = fetchMock.mock.calls.filter(([url, options]) =>
+      url === '/api/records' && options?.method === 'POST').at(-1)!
+    expect(JSON.parse(String(finalSave[1].body)).data.notes).toBe('Самая новая локальная правка')
   })
 
   it('normalizes a cleared optional enum to null in the saved record', async () => {

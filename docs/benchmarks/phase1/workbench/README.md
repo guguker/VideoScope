@@ -3,8 +3,8 @@
 This is the Phase 1 local annotation tool described by the
 [approved design](../../../superpowers/specs/2026-09-11-annotation-workbench-design.md)
 and [implementation plan](../../../superpowers/plans/2026-09-11-annotation-workbench.md).
-Implementation verification is in progress; no accepted smoke receipt is claimed
-by this document yet. The tool creates annotation-inbox records, not gold labels,
+The implementation has passed the local synthetic checks recorded below; a clean
+release acceptance receipt is still separate. The tool creates annotation-inbox records, not gold labels,
 training jobs or production indexes.
 
 ## Owner workflow
@@ -85,8 +85,48 @@ The accepted run must include source Range playback after the one-hour mark,
 multiple events, teams/players, possessions, spatial observations, draft recovery,
 server restart, immutable legacy preservation and portable backup restore. Full
 backend/frontend suites and the legacy browser smoke also remain required for
-handoff. Actual counts, serving SHA and receipt location will be recorded after
-those checks finish.
+handoff. Local check results are recorded below; clean-commit acceptance remains
+a separate post-commit check.
+
+### Local publication check — 2026-09-18
+
+A separate local checkout based on `codex/annotation-workbench` at `fafd0a4`
+was checked with uncommitted publication changes. The run used the existing
+Python 3.12.14 environment, Node.js 26.5.0 and FFmpeg 8.1.2 on an Apple M4 Pro.
+It was not a clean install, a fresh full-ML attestation or a model-quality run.
+
+- Backend: 2,724 tests passed; the three workbench files contain 35 tests.
+- Frontend: 96 tests passed across 13 files; workbench coverage includes 28 tests.
+- TypeScript and Vite build passed.
+- Synthetic workbench browser smoke passed: long-video Range playback, events,
+  participants, spatial points, draft recovery, server restart, backup/restore,
+  two-tab conflict reconciliation and reload after a further server revision.
+- Legacy annotation-review browser smoke passed: six revision records across
+  two synthetic examples, restart and export with immutable legacy history.
+- Both browser runs reported no external requests or JavaScript errors; their
+  owned servers stopped. Private source videos and human annotations were not used.
+
+The workbench receipt records `working_tree_dirty: true`, hashes of executed
+files and the runner, and unchanged code during the run. These are local
+prepublication checks, not a clean-commit acceptance claim. After committing,
+rerun `node scripts/smoke-annotation-workbench.mjs --require-clean` to attest the
+published implementation.
+
+### Local draft recovery boundaries
+
+Each opened document writes a separate local draft snapshot. The previous
+document's snapshot is preferred on reload; duplicated tabs receive independent
+writer identities. Editing during a pending save/history request retains the
+latest local content, and previewing a newer server version preserves the local
+alternative until an explicit choice.
+
+Old shared snapshots remain readable and are not silently deleted. A fresh tab
+without a preferred snapshot can recover pending snapshots from other tabs.
+If several contain different variants of the same record, the editor currently
+shows one variant; the original snapshots remain stored. There is no multi-variant
+recovery chooser or automatic snapshot cleanup yet. Do not describe this as
+automatic merging of every unsaved variant; use explicit conflict resolution and
+keep server backups for important completed annotations.
 
 ## Phase and rollback
 

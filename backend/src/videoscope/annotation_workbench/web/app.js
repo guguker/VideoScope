@@ -50,6 +50,11 @@ function responseDetail(payload, fallback) {
 }
 
 export async function mountWorkbench() {
+  const tabStorageKey = "videoscope.annotation-workbench.tab";
+  const recoveryTabId = sessionStorage.getItem(tabStorageKey);
+  // Duplicate Tab can copy sessionStorage; each document must own a fresh writer.
+  const draftTabId = newRecordId("tab");
+  sessionStorage.setItem(tabStorageKey, draftTabId);
   const controller = new AbortController();
   const { signal } = controller;
   const queue = createEntitySaveQueue();
@@ -122,7 +127,7 @@ export async function mountWorkbench() {
   function selectedDraft() { return selectedId ? drafts.get(selectedId) : null; }
   function persistPending(context = { source, drafts }) {
     if (!workspace || !context.source) return;
-    writeLocalDrafts(localStorage, workspace.workspace_id, workspace.workspace_revision, context.source.source_id, context.drafts);
+    writeLocalDrafts(localStorage, workspace.workspace_id, workspace.workspace_revision, context.source.source_id, context.drafts, draftTabId);
   }
   function setDirty(draft) {
     draft.dirty = true;
@@ -178,11 +183,13 @@ export async function mountWorkbench() {
         Number.isInteger(item.revision) && item.revision > draft.expected_revision && !item.archived)
       .sort((left, right) => right.revision - left.revision)[0] || null;
   }
-  async function recoverConflict(draft, context, localData) {
+  async function recoverConflict(draft, context) {
     const result = await request(`/api/records/${encodeURIComponent(draft.record_id)}/history`);
     const history = result?.records || result?.revisions || result?.history || (Array.isArray(result) ? result : []);
     const latest = validLatestRevision(history, draft, context.source);
     if (!latest) throw new Error("Не удалось получить более новую версию этой записи");
+    // Include edits made while the save or history request was in flight.
+    const localData = clone(draft.conflict?.local_data || draft.data);
     draft.conflict = {
       source_id: context.source.source_id, source_sha256: context.source.sha256,
       record_id: draft.record_id, kind: draft.kind, latest_revision: latest.revision,
@@ -236,7 +243,7 @@ export async function mountWorkbench() {
         draft.dirty = true;
         draft.saveState = "error";
         if (error.status === 409) {
-          try { await recoverConflict(draft, context, data); }
+          try { await recoverConflict(draft, context); }
           catch (historyError) { draft.error = `Конфликт версий: ${historyError.message}. Ваша правка сохранена локально.`; }
         } else draft.error = `Не удалось отправить черновик: ${error.message}. Правка сохранена локально.`;
         persistPending(context);
@@ -620,7 +627,7 @@ export async function mountWorkbench() {
     records = new Map((result.records || []).map(record => [record.record_id, record]));
     drafts = new Map([...records.values()].map(record => [record.record_id, draftFromRecord(record)]));
     recoveredIds = new Set();
-    for (const local of loadLocalDrafts(localStorage, workspace.workspace_id, workspace.workspace_revision, source.source_id)) {
+    for (const local of loadLocalDrafts(localStorage, workspace.workspace_id, workspace.workspace_revision, source.source_id, draftTabId, recoveryTabId)) {
       const base = records.get(local.record_id);
       const recovered = { ...clone(local), dirty: true, saveState: "local", error: "", generation: local.generation || 1,
         origin: base?.origin, legacy: clone(base?.legacy), needs_review: Boolean(base?.needs_review) };
@@ -630,18 +637,21 @@ export async function mountWorkbench() {
         recovered.conflict = null;
       }
       if (base && base.revision > recovered.expected_revision && (!recovered.conflict || base.revision > recovered.conflict.latest_revision)) {
+        // Previewing the server version must not replace the recoverable local copy.
+        const localData = clone(recovered.conflict?.local_data || recovered.data);
         recovered.conflict = {
           source_id: source.source_id, source_sha256: source.sha256, record_id: recovered.record_id,
           kind: recovered.kind, latest_revision: base.revision, server_data: clone(base.data),
-          server_status: base.status, server_needs_review: Boolean(base.needs_review), local_data: clone(recovered.data),
+          server_status: base.status, server_needs_review: Boolean(base.needs_review), local_data: localData,
         };
-        recovered.recoverable_data = clone(recovered.data);
+        recovered.recoverable_data = clone(localData);
         recovered.error = "Сервер сохранил более новую версию. Сравните обе версии и явно выберите дальнейшее действие.";
         recovered.saveState = "error";
       }
       drafts.set(local.record_id, recovered);
       recoveredIds.add(local.record_id);
     }
+    persistPending();
     const progress = result.progress;
     selectedId = progress?.selected_record_id && drafts.has(progress.selected_record_id) ? progress.selected_record_id : null;
     selectedPointId = null;

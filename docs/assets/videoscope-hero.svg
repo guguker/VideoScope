@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="360" viewBox="0 0 1200 360" role="img" aria-labelledby="title desc">
+  <title id="title">VideoScope</title>
+  <desc id="desc">Локальный поиск моментов в видео. Мультимодальный поиск, разметка и экспорт.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#0c1726"/><stop offset="1" stop-color="#142d42"/></linearGradient>
+    <linearGradient id="line"><stop stop-color="#fca66e"/><stop offset="1" stop-color="#ec724e"/></linearGradient>
+    <pattern id="grid" width="30" height="30" patternUnits="userSpaceOnUse"><path d="M30 0H0V30" fill="none" stroke="#e2effb" stroke-opacity=".045"/></pattern>
+  </defs>
+  <rect width="1200" height="360" rx="24" fill="url(#bg)"/>
+  <rect width="1200" height="360" rx="24" fill="url(#grid)"/>
+  <g font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif">
+    <rect x="48" y="42" width="142" height="27" rx="13.5" fill="#e99561" fill-opacity=".13"/>
+    <text x="65" y="60" fill="#f4b68b" font-size="11" letter-spacing="1.6" font-weight="600">LOCAL VIDEO AI</text>
+    <text x="46" y="133" fill="#f3f7fb" font-size="57" font-weight="700" letter-spacing="-2">VideoScope</text>
+    <text x="49" y="176" fill="#d6e1ea" font-size="24">От длинной записи к нужному моменту</text>
+    <text x="49" y="211" fill="#8ba2b5" font-size="16">Мультимодальный поиск · разметка · экспорт</text>
+    <g transform="translate(49 272)">
+      <rect width="112" height="33" rx="8" fill="#20394d"/><text x="16" y="22" fill="#c0d1df" font-size="13">VISUAL + ASR</text>
+      <rect x="124" width="96" height="33" rx="8" fill="#20394d"/><text x="140" y="22" fill="#c0d1df" font-size="13">OCR + VLM</text>
+      <rect x="232" width="141" height="33" rx="8" fill="#20394d"/><text x="248" y="22" fill="#c0d1df" font-size="13">APPLE SILICON</text>
+    </g>
+  </g>
+  <g transform="translate(782 40)" fill="none" stroke="#7693a6" stroke-opacity=".26" stroke-width="1.6">
+    <rect width="367" height="187" rx="10"/><path d="M183.5 0V187"/><circle cx="183.5" cy="93.5" r="39"/>
+    <path d="M0 47H59V140H0M367 47H308V140H367"/>
+    <path d="M0 16C151 16 151 171 0 171M367 16C216 16 216 171 367 171"/>
+    <circle cx="23" cy="93.5" r="9"/><circle cx="344" cy="93.5" r="9"/>
+  </g>
+  <path d="M854 174Q913 93 1073 134" fill="none" stroke="url(#line)" stroke-width="3" stroke-linecap="round" stroke-dasharray="5 7"/>
+  <circle cx="854" cy="174" r="7" fill="#efa178"/><circle cx="1073" cy="134" r="10" fill="#ee9b68"/>
+  <path d="M1064 132Q1073 140 1081 132M1071 125Q1068 134 1076 142" fill="none" stroke="#754a35" stroke-width="1.3"/>
+  <g transform="translate(778 268)">
+    <rect width="373" height="40" rx="9" fill="#0b1e30"/>
+    <path d="M16 20H357" stroke="#385469" stroke-width="2"/>
+    <rect x="61" y="10" width="72" height="20" rx="4" fill="#ea9864" fill-opacity=".85"/>
+    <rect x="173" y="10" width="47" height="20" rx="4" fill="#61a2ba" fill-opacity=".65"/>
+    <rect x="273" y="10" width="65" height="20" rx="4" fill="#61a2ba" fill-opacity=".45"/>
+    <path d="M96 3V37" stroke="#fff1e7" stroke-width="2"/>
+    <circle cx="96" cy="4" r="3" fill="#fff1e7"/>
+  </g>
+</svg>
