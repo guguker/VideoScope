@@ -93,6 +93,48 @@ def test_darwin_provider_aggregates_system_wide_accelerators_and_vm() -> None:
     )
 
 
+def test_darwin_provider_and_receipt_preserve_independent_metal_gauges() -> None:
+    # Observed on the macOS CI runner: in-use exceeds allocated memory.
+    provider = DarwinHostResourceSnapshotProvider(
+        _api=_ScriptedDarwinApi(
+            accelerators=(
+                {
+                    "In use system memory": 35_163_136,
+                    "Alloc system memory": 27_492_352,
+                    "recoveryCount": 0,
+                },
+            ),
+            vm={"swapins": 0, "swapouts": 0, "page_size": 16_384},
+        )
+    )
+
+    snapshot = provider.snapshot()
+    assert snapshot.metal_in_use_system_memory_bytes == 35_163_136
+    assert snapshot.metal_alloc_system_memory_bytes == 27_492_352
+
+    receipt = HostResourceSampler.receipt_from_samples(
+        provider_identity=provider.identity,
+        sample_interval_milliseconds=250,
+        samples=(HostResourceRawSample(0, snapshot),),
+    )
+    payload = receipt.to_portable_dict()
+    assert payload["raw_samples"][0]["metal"] == {
+        "in_use_system_memory_bytes": 35_163_136,
+        "alloc_system_memory_bytes": 27_492_352,
+        "recovery_count": 0,
+    }
+    assert payload["metal"]["in_use_system_memory"] == {
+        "baseline_bytes": 35_163_136,
+        "peak_bytes": 35_163_136,
+        "increment_bytes": 0,
+    }
+    assert payload["metal"]["alloc_system_memory"] == {
+        "baseline_bytes": 27_492_352,
+        "peak_bytes": 27_492_352,
+        "increment_bytes": 0,
+    }
+
+
 @pytest.mark.parametrize(
     ("accelerators", "vm", "code"),
     (
@@ -520,9 +562,10 @@ def test_real_darwin_provider_reads_system_wide_metal_and_swap() -> None:
     snapshot = provider.snapshot()
 
     assert provider.scope == "system_wide"
-    assert snapshot.metal_alloc_system_memory_bytes >= (
-        snapshot.metal_in_use_system_memory_bytes
-    )
+    # The snapshot contract bounds each raw gauge independently.
+    assert snapshot.metal_in_use_system_memory_bytes >= 0
+    assert snapshot.metal_alloc_system_memory_bytes >= 0
+    assert snapshot.metal_recovery_count >= 0
     assert snapshot.page_size_bytes == os.sysconf("SC_PAGE_SIZE")
     assert snapshot.swapins_pages >= 0
     assert snapshot.swapouts_pages >= 0
