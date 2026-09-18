@@ -32,7 +32,7 @@ dev = [
   "uv==0.12.3",
 ]
 video = [
-  "mlx-vlm==0.6.7",
+  "mlx-vlm==0.6.10",
 ]
 
 [project.scripts]
