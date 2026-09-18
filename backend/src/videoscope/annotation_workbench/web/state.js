@@ -11,29 +11,52 @@ export function newRecordId(kind) {
   return `${kind}-${value}`;
 }
 
-export function storageKey(workspaceId, workspaceRevision, sourceId) {
-  return `${STORAGE_PREFIX}:${workspaceId}:${workspaceRevision}:${sourceId}`;
+export function storageKey(workspaceId, workspaceRevision, sourceId, tabId = null) {
+  const base = `${STORAGE_PREFIX}:${workspaceId}:${workspaceRevision}:${sourceId}`;
+  return tabId ? `${base}:tab:${tabId}` : base;
 }
 
-export function loadLocalDrafts(storage, workspaceId, workspaceRevision, sourceId) {
+export function loadLocalDrafts(storage, workspaceId, workspaceRevision, sourceId, tabId = null, recoveryTabId = null) {
   try {
-    const parsed = JSON.parse(storage.getItem(storageKey(workspaceId, workspaceRevision, sourceId)) || "[]");
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter(item => item && item.record_id && item.kind && item.data && Number.isInteger(item.expected_revision));
+    const key = storageKey(workspaceId, workspaceRevision, sourceId, tabId);
+    const own = storage.getItem(key);
+    let keys = [key];
+    if (tabId && own === null) {
+      const previous = recoveryTabId && storageKey(workspaceId, workspaceRevision, sourceId, recoveryTabId);
+      // Reloads prefer their previous writer, including its empty snapshot.
+      if (previous && storage.getItem(previous) !== null) keys = [previous];
+      else {
+        // A fresh tab can recover a closed tab or the legacy shared format.
+        const base = storageKey(workspaceId, workspaceRevision, sourceId);
+        keys.push(base);
+        for (let index = 0; index < storage.length; index += 1) {
+          const candidate = storage.key(index);
+          if (candidate?.startsWith(`${base}:tab:`) && candidate !== key) keys.push(candidate);
+        }
+      }
+    }
+    return keys.flatMap(candidate => {
+      try {
+        const parsed = JSON.parse(storage.getItem(candidate) || "[]");
+        if (!Array.isArray(parsed)) return [];
+        return parsed.filter(item => item && item.record_id && item.kind && item.data && Number.isInteger(item.expected_revision));
+      } catch { return []; }
+    });
   } catch {
     return [];
   }
 }
 
-export function writeLocalDrafts(storage, workspaceId, workspaceRevision, sourceId, drafts) {
+export function writeLocalDrafts(storage, workspaceId, workspaceRevision, sourceId, drafts, tabId = null) {
   const pending = [...drafts.values()]
     .filter(draft => draft.dirty)
     .map(({ record_id, kind, status, archived, data, expected_revision, generation, conflict, recoverable_data }) => ({
       record_id, kind, status, archived, data: clone(data), expected_revision, generation,
       conflict: clone(conflict), recoverable_data: clone(recoverable_data),
     }));
-  const key = storageKey(workspaceId, workspaceRevision, sourceId);
-  if (pending.length) storage.setItem(key, JSON.stringify(pending));
+  const key = storageKey(workspaceId, workspaceRevision, sourceId, tabId);
+  // Keep an empty owned snapshot so a reload does not import another tab's drafts.
+  if (pending.length || tabId) storage.setItem(key, JSON.stringify(pending));
   else storage.removeItem(key);
 }
 
