@@ -19,7 +19,10 @@ jobs:
           bash scripts/test-repository-hygiene.sh
 
   backend:
-    runs-on: ubuntu-latest
+    # Benchmark snapshots retain directories through macOS /.vol file-ID paths.
+    runs-on: macos-15
+    env:
+      UV_PROJECT_ENVIRONMENT: ${{ github.workspace }}/.venv
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -30,9 +33,9 @@ jobs:
       - name: Install locked backend
         run: uv sync --project backend --locked --extra dev
       - name: Check dependency consistency
-        run: uv pip check --python backend/.venv/bin/python
+        run: uv pip check --python .venv/bin/python
       - name: Test backend
-        run: backend/.venv/bin/python -m pytest backend/tests --cov=videoscope --cov-report=term-missing
+        run: .venv/bin/python -m pytest backend/tests --cov=videoscope --cov-report=term-missing
 
   frontend:
     runs-on: ubuntu-latest
